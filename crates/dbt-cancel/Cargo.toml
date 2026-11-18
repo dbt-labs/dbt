@@ -1,0 +1,21 @@
+[package]
+authors.workspace = true
+description = "CancellationTokenSource and CancellationToken"
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-cancel"
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+[lib]
+doctest = true
+name = "dbt_cancel"
+path = "src/lib.rs"

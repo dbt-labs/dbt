@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/cross_database_model.sql
+   Parsing models/same_database_model.sql
+ Rendering models/same_database_model.sql
+   Running models/same_database_model.sql
+ Succeeded model adapters_redshift_cross_database_use.same_database_model (table) [1 of 2 in duration]
+ Rendering models/cross_database_model.sql
+   Running models/cross_database_model.sql
+ Succeeded model adapters_redshift_cross_database_use.cross_database_model (table) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

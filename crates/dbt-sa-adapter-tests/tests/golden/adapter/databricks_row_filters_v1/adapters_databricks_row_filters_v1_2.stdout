@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/properties.yml
+   Parsing models/row_filter_incremental.sql
+   Parsing models/row_filter_table.sql
+ Rendering models/row_filter_table.sql
+   Running models/row_filter_table.sql
+ Succeeded model adapters_databricks_row_filters_v1.row_filter_table (table) [1 of 2 in duration]
+ Rendering models/row_filter_incremental.sql
+   Running models/row_filter_incremental.sql
+ Succeeded model adapters_databricks_row_filters_v1.row_filter_incremental (incremental) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'databricks' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

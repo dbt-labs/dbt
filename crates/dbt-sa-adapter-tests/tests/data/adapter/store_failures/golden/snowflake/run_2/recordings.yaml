@@ -1,0 +1,83 @@
+11c29749:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_store_failures_dbt_test__audit
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+test.store_failures.not_null_one_id.fe01050880:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    
+    
+    
+    
+    
+    
+    select id
+    from development.adapters_snowflake_store_failures.one
+    where id is null
+    
+    
+    
+    
+    
+    
+    ) dbt_internal_test
+test.store_failures.unique_one_id.7d693d05ef:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_STORE_FAILURES_DBT_TEST__AUDIT" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_store_failures_dbt_test__audit.unique_one_id
+    
+    
+    
+    
+    as (
+    
+    
+    
+    
+    
+    select
+    id as unique_field,
+    count(*) as n_records
+    
+    from development.adapters_snowflake_store_failures.one
+    where id is not null
+    group by id
+    having count(*) > 1
+    
+    
+    
+    
+    
+    )
+- sequence: 2
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    select *
+    from development.adapters_snowflake_store_failures_dbt_test__audit.unique_one_id
+    
+    
+    ) dbt_internal_test

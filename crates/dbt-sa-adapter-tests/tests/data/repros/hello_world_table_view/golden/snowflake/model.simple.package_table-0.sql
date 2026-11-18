@@ -1,0 +1,1 @@
+show objects like 'PACKAGE_TABLE' in schema development.adapters_snowflake_repros_hello_world_table_view

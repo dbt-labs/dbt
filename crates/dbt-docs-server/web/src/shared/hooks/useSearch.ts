@@ -1,8 +1,7 @@
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMetadataDataSource } from 'dbt-docs-lib';
+import type { SearchFilter, SearchHit, SearchResult } from 'dbt-docs-lib/domain';
 
-import { useMetadataDataSource } from '../context/MetadataDataProvider';
 import type { ListArgs } from '../typings/args';
-import type { SearchFilter, SearchHit, SearchResult } from '../typings/domain/search';
 import { searchKey } from '../util/queryKeys';
 import { UNSUPPORTED_SURFACE_MESSAGE } from './unsupportedSurface';
 

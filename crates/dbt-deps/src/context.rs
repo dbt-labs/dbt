@@ -9,7 +9,7 @@ use dbt_schemas::schemas::packages::DbtPackagesLock;
 
 use crate::git_client::GitClientContext;
 use crate::hub_client::{DBT_HUB_URL, HubClient};
-use crate::network_client::retrying_http_client;
+use crate::network_client::LazyHttpClient;
 use crate::notices::{EmitPolicy, NoticeBuffer, prepare_for_emit};
 use crate::private_package::PrivatePackageResolver;
 use crate::tarball_client::TarballClient;
@@ -60,7 +60,7 @@ impl<'a> DepsOperationContext<'a> {
                 }
             })
             .unwrap_or(DBT_HUB_URL);
-        let http_client = retrying_http_client();
+        let http_client = LazyHttpClient::new();
         let tarball_client = TarballClient::from_client(http_client.clone(), cancellation.clone());
 
         Self {

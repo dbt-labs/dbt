@@ -270,6 +270,15 @@ impl serde::Serialize for InvocationEvalArgs {
         if self.manage_state.is_some() {
             len += 1;
         }
+        if self.warn_error.is_some() {
+            len += 1;
+        }
+        if self.warn_error_options.is_some() {
+            len += 1;
+        }
+        if self.full_refresh.is_some() {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.invocation.InvocationEvalArgs", len)?;
         if !self.command.is_empty() {
             struct_ser.serialize_field("command", &self.command)?;
@@ -350,6 +359,15 @@ impl serde::Serialize for InvocationEvalArgs {
         if let Some(v) = self.manage_state.as_ref() {
             struct_ser.serialize_field("manage_state", v)?;
         }
+        if let Some(v) = self.warn_error.as_ref() {
+            struct_ser.serialize_field("warn_error", v)?;
+        }
+        if let Some(v) = self.warn_error_options.as_ref() {
+            struct_ser.serialize_field("warn_error_options", v)?;
+        }
+        if let Some(v) = self.full_refresh.as_ref() {
+            struct_ser.serialize_field("full_refresh", v)?;
+        }
         struct_ser.end()
     }
 }
@@ -400,6 +418,12 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
             "writeCatalog",
             "manage_state",
             "manageState",
+            "warn_error",
+            "warnError",
+            "warn_error_options",
+            "warnErrorOptions",
+            "full_refresh",
+            "fullRefresh",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -429,6 +453,9 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
             WriteJson,
             WriteCatalog,
             ManageState,
+            WarnError,
+            WarnErrorOptions,
+            FullRefresh,
             __SkipField__,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
@@ -476,6 +503,9 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
                             "writeJson" | "write_json" => Ok(GeneratedField::WriteJson),
                             "writeCatalog" | "write_catalog" => Ok(GeneratedField::WriteCatalog),
                             "manageState" | "manage_state" => Ok(GeneratedField::ManageState),
+                            "warnError" | "warn_error" => Ok(GeneratedField::WarnError),
+                            "warnErrorOptions" | "warn_error_options" => Ok(GeneratedField::WarnErrorOptions),
+                            "fullRefresh" | "full_refresh" => Ok(GeneratedField::FullRefresh),
                             _ => Ok(GeneratedField::__SkipField__),
                         }
                     }
@@ -520,6 +550,9 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
                 let mut write_json__ = None;
                 let mut write_catalog__ = None;
                 let mut manage_state__ = None;
+                let mut warn_error__ = None;
+                let mut warn_error_options__ = None;
+                let mut full_refresh__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::Command => {
@@ -676,6 +709,24 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
                             }
                             manage_state__ = map_.next_value()?;
                         }
+                        GeneratedField::WarnError => {
+                            if warn_error__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("warnError"));
+                            }
+                            warn_error__ = map_.next_value()?;
+                        }
+                        GeneratedField::WarnErrorOptions => {
+                            if warn_error_options__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("warnErrorOptions"));
+                            }
+                            warn_error_options__ = map_.next_value()?;
+                        }
+                        GeneratedField::FullRefresh => {
+                            if full_refresh__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("fullRefresh"));
+                            }
+                            full_refresh__ = map_.next_value()?;
+                        }
                         GeneratedField::__SkipField__ => {
                             let _ = map_.next_value::<serde::de::IgnoredAny>()?;
                         }
@@ -707,6 +758,9 @@ impl<'de> serde::Deserialize<'de> for InvocationEvalArgs {
                     write_json: write_json__,
                     write_catalog: write_catalog__,
                     manage_state: manage_state__,
+                    warn_error: warn_error__,
+                    warn_error_options: warn_error_options__,
+                    full_refresh: full_refresh__,
                 })
             }
         }
@@ -736,6 +790,9 @@ impl serde::Serialize for InvocationMetrics {
         if !self.status_counts.is_empty() {
             len += 1;
         }
+        if !self.probe_counts.is_empty() {
+            len += 1;
+        }
         let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.invocation.InvocationMetrics", len)?;
         if let Some(v) = self.total_errors.as_ref() {
             #[allow(clippy::needless_borrow)]
@@ -762,6 +819,11 @@ impl serde::Serialize for InvocationMetrics {
                 .map(|(k, v)| (k, v.to_string())).collect();
             struct_ser.serialize_field("status_counts", &v)?;
         }
+        if !self.probe_counts.is_empty() {
+            let v: std::collections::HashMap<_, _> = self.probe_counts.iter()
+                .map(|(k, v)| (k, v.to_string())).collect();
+            struct_ser.serialize_field("probe_counts", &v)?;
+        }
         struct_ser.end()
     }
 }
@@ -782,6 +844,8 @@ impl<'de> serde::Deserialize<'de> for InvocationMetrics {
             "nodeTypeCounts",
             "status_counts",
             "statusCounts",
+            "probe_counts",
+            "probeCounts",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -791,6 +855,7 @@ impl<'de> serde::Deserialize<'de> for InvocationMetrics {
             AutofixSuggestions,
             NodeTypeCounts,
             StatusCounts,
+            ProbeCounts,
             __SkipField__,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
@@ -818,6 +883,7 @@ impl<'de> serde::Deserialize<'de> for InvocationMetrics {
                             "autofixSuggestions" | "autofix_suggestions" => Ok(GeneratedField::AutofixSuggestions),
                             "nodeTypeCounts" | "node_type_counts" => Ok(GeneratedField::NodeTypeCounts),
                             "statusCounts" | "status_counts" => Ok(GeneratedField::StatusCounts),
+                            "probeCounts" | "probe_counts" => Ok(GeneratedField::ProbeCounts),
                             _ => Ok(GeneratedField::__SkipField__),
                         }
                     }
@@ -842,6 +908,7 @@ impl<'de> serde::Deserialize<'de> for InvocationMetrics {
                 let mut autofix_suggestions__ = None;
                 let mut node_type_counts__ = None;
                 let mut status_counts__ = None;
+                let mut probe_counts__ = None;
                 while let Some(k) = map_.next_key()? {
                     match k {
                         GeneratedField::TotalErrors => {
@@ -886,6 +953,15 @@ impl<'de> serde::Deserialize<'de> for InvocationMetrics {
                                     .into_iter().map(|(k,v)| (k, v.0)).collect()
                             );
                         }
+                        GeneratedField::ProbeCounts => {
+                            if probe_counts__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("probeCounts"));
+                            }
+                            probe_counts__ = Some(
+                                map_.next_value::<std::collections::HashMap<_, ::pbjson::private::NumberDeserialize<u64>>>()?
+                                    .into_iter().map(|(k,v)| (k, v.0)).collect()
+                            );
+                        }
                         GeneratedField::__SkipField__ => {
                             let _ = map_.next_value::<serde::de::IgnoredAny>()?;
                         }
@@ -897,9 +973,139 @@ impl<'de> serde::Deserialize<'de> for InvocationMetrics {
                     autofix_suggestions: autofix_suggestions__,
                     node_type_counts: node_type_counts__.unwrap_or_default(),
                     status_counts: status_counts__.unwrap_or_default(),
+                    probe_counts: probe_counts__.unwrap_or_default(),
                 })
             }
         }
         deserializer.deserialize_struct("v1.public.events.fusion.invocation.InvocationMetrics", FIELDS, GeneratedVisitor)
+    }
+}
+impl serde::Serialize for InvocationWarnErrorOptions {
+    #[allow(deprecated)]
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut len = 0;
+        if !self.error.is_empty() {
+            len += 1;
+        }
+        if !self.warn.is_empty() {
+            len += 1;
+        }
+        if !self.silence.is_empty() {
+            len += 1;
+        }
+        let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.invocation.InvocationWarnErrorOptions", len)?;
+        if !self.error.is_empty() {
+            struct_ser.serialize_field("error", &self.error)?;
+        }
+        if !self.warn.is_empty() {
+            struct_ser.serialize_field("warn", &self.warn)?;
+        }
+        if !self.silence.is_empty() {
+            struct_ser.serialize_field("silence", &self.silence)?;
+        }
+        struct_ser.end()
+    }
+}
+impl<'de> serde::Deserialize<'de> for InvocationWarnErrorOptions {
+    #[allow(deprecated)]
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &[
+            "error",
+            "warn",
+            "silence",
+        ];
+
+        #[allow(clippy::enum_variant_names)]
+        enum GeneratedField {
+            Error,
+            Warn,
+            Silence,
+            __SkipField__,
+        }
+        impl<'de> serde::Deserialize<'de> for GeneratedField {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct GeneratedVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+                    type Value = GeneratedField;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(formatter, "expected one of: {:?}", &FIELDS)
+                    }
+
+                    #[allow(unused_variables)]
+                    fn visit_str<E>(self, value: &str) -> std::result::Result<GeneratedField, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        match value {
+                            "error" => Ok(GeneratedField::Error),
+                            "warn" => Ok(GeneratedField::Warn),
+                            "silence" => Ok(GeneratedField::Silence),
+                            _ => Ok(GeneratedField::__SkipField__),
+                        }
+                    }
+                }
+                deserializer.deserialize_identifier(GeneratedVisitor)
+            }
+        }
+        struct GeneratedVisitor;
+        impl<'de> serde::de::Visitor<'de> for GeneratedVisitor {
+            type Value = InvocationWarnErrorOptions;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct v1.public.events.fusion.invocation.InvocationWarnErrorOptions")
+            }
+
+            fn visit_map<V>(self, mut map_: V) -> std::result::Result<InvocationWarnErrorOptions, V::Error>
+                where
+                    V: serde::de::MapAccess<'de>,
+            {
+                let mut error__ = None;
+                let mut warn__ = None;
+                let mut silence__ = None;
+                while let Some(k) = map_.next_key()? {
+                    match k {
+                        GeneratedField::Error => {
+                            if error__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("error"));
+                            }
+                            error__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::Warn => {
+                            if warn__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("warn"));
+                            }
+                            warn__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::Silence => {
+                            if silence__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("silence"));
+                            }
+                            silence__ = Some(map_.next_value()?);
+                        }
+                        GeneratedField::__SkipField__ => {
+                            let _ = map_.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(InvocationWarnErrorOptions {
+                    error: error__.unwrap_or_default(),
+                    warn: warn__.unwrap_or_default(),
+                    silence: silence__.unwrap_or_default(),
+                })
+            }
+        }
+        deserializer.deserialize_struct("v1.public.events.fusion.invocation.InvocationWarnErrorOptions", FIELDS, GeneratedVisitor)
     }
 }

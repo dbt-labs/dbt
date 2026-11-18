@@ -6,9 +6,9 @@ use crate::run_cache::run_cache_request::{
     snapshot_clone_table_properties, snapshot_execution_type_input,
 };
 use crate::run_cache::run_cache_service::{
-    RunCacheCloneDecision, clone_chain_depth_limit_for_adapter,
+    RunCacheCloneDecision, RunCacheCloneGrantsOrder, clone_chain_depth_limit_for_adapter,
     confirm_run_cache_service_execution, execute_run_cache_service_clone, has_metadata_address,
-    legacy_freshness, run_cache_metadata_query_options,
+    legacy_freshness, run_cache_dialect, run_cache_metadata_query_options,
 };
 use crate::run_cache::run_cache_service::{record_dev_clone_decision, replay_dev_clone_decision};
 use dbt_adapter::errors::{AdapterErrorKind, Cancellable};
@@ -38,7 +38,16 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
         let Some(clone) = replay_dev_clone_decision(node_id) else {
             return;
         };
-        match execute_run_cache_service_clone(ctx, node.as_ref(), &clone, None, false).await {
+        match execute_run_cache_service_clone(
+            ctx,
+            node.as_ref(),
+            &clone,
+            None,
+            false,
+            RunCacheCloneGrantsOrder::BeforePostHooks,
+        )
+        .await
+        {
             Ok(_) => {
                 finish_dev_clone(
                     ctx,
@@ -112,7 +121,16 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
     };
 
     let clone = RunCacheCloneDecision::from_response(&ready_to_clone, 0);
-    match execute_run_cache_service_clone(ctx, node.as_ref(), &clone, None, false).await {
+    match execute_run_cache_service_clone(
+        ctx,
+        node.as_ref(),
+        &clone,
+        None,
+        false,
+        RunCacheCloneGrantsOrder::BeforePostHooks,
+    )
+    .await
+    {
         Ok(_) => {
             record_dev_clone_decision(node_id, &clone);
             finish_dev_clone(
@@ -161,7 +179,8 @@ async fn finish_dev_clone(
     ctx.inner
         .run_cache_ctx
         .run_cache_dev_cloned_nodes
-        .insert(node.unique_id(), explain_dev_clone);
+        .upsert_async(node.unique_id().to_string(), explain_dev_clone)
+        .await;
     confirm_run_cache_service_execution(ctx, node, clone.success_confirmation(), None).await;
 }
 
@@ -441,8 +460,8 @@ async fn prepare_dev_clone_request(
 
     let request = CloneRequestInput {
         target_table: target_table.clone(),
-        dialect: ctx.default_adapter_type().to_string(),
-        default_catalog: candidate.local().database(),
+        dialect: run_cache_dialect(ctx),
+        default_catalog: candidate.local().database().to_string(),
         execution_type: candidate.execution_type(&ctx.inner.materialization_resolver)?,
         clone_source_table: clone_source_table.clone(),
         clone_source_last_modified_epoch: source_last_modified_epoch,
@@ -451,7 +470,8 @@ async fn prepare_dev_clone_request(
         table_properties: candidate.table_properties(),
         clone_chain_depth_limit: clone_chain_depth_limit_for_adapter(
             ctx.default_adapter_type(),
-            false,
+            false, // dev clone target is never the prod/defer target
+            ctx.inner.arg.defer,
             ctx.dbt_profile().allow_clones,
         ),
         table_namespace: project_info.table_namespace,
@@ -678,6 +698,7 @@ mod tests {
             pre_clone: Some(StatePreClone::Always),
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         let candidate = DevCloneCandidate::Model {
             local: Arc::new(local),
@@ -748,6 +769,7 @@ mod tests {
             pre_clone: Some(StatePreClone::IfMissing),
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         let candidate = DevCloneCandidate::Snapshot {
             local: Arc::new(local),
@@ -826,7 +848,7 @@ mod tests {
         let request = CloneRequestInput {
             target_table: target_relation.semantic_fqn(),
             dialect: "snowflake".to_string(),
-            default_catalog: candidate.local().database(),
+            default_catalog: candidate.local().database().to_string(),
             execution_type: candidate.execution_type(&test_resolver()).unwrap(),
             clone_source_table: source_relation.semantic_fqn(),
             clone_source_last_modified_epoch: Some(123),
@@ -933,7 +955,8 @@ mod tests {
                         dbt_schemas::schemas::serde::StringOrInteger::Integer(12),
                     )),
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             },
             __other__: Default::default(),
@@ -950,7 +973,8 @@ mod tests {
                 __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                     partition_expiration_days: Some(7),
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             },
             ..Default::default()

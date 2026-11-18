@@ -12,6 +12,9 @@
 
 #![allow(unused_qualifications)]
 
+mod wait_guard;
+pub use wait_guard::spawn_blocking_with_wait_guard;
+
 mod pool;
 pub use pool::{spawn_blocking, spawn_mandatory_blocking};
 

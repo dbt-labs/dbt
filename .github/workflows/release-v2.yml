@@ -51,9 +51,9 @@
 # `dbt-core` specifically, so they're gated on the same input too.
 #
 # `dbt-core`'s wheels are built by `maturin build` in the `build` job
-# (abi3-py311, one cp311-abi3 wheel per platform) — not `cargo ci pypi pack`,
+# (abi3-py310, one cp310-abi3 wheel per platform) — not `cargo ci pypi pack`,
 # which only packs the standalone analyzer binary into `dbt-core-experimental-
-# parser`. `publish-pypi` passes `--python-tag cp311 --abi-tag abi3` for the
+# parser`. `publish-pypi` passes `--python-tag cp310 --abi-tag abi3` for the
 # dbt-core publish step so the sdist's manifest matches the maturin wheel
 # filenames actually sitting at the GitHub Release download URL (the default
 # `py3`/`none` tags are for the binary-CLI wheel, used for the parser publish
@@ -64,7 +64,7 @@
 #
 # `dbt-oss` is the identical rebrand of `dbt-core` — same extension, only
 # `[project].name` differs — built by a second `maturin build` in the
-# `build` job and published with the same `cp311`/`abi3` tags. Its publish
+# `build` job and published with the same `cp310`/`abi3` tags. Its publish
 # step swaps `[project].name` in the root pyproject, like the parser's.
 #
 # **Homebrew publishing**
@@ -411,24 +411,23 @@ jobs:
           ls -la archives/
 
       # dbt-core is the maturin abi3 extension wheel (CLI + dbtRunner), not a
-      # packed binary. abi3-py311 → one cp311-abi3 wheel per platform, valid
-      # on any interpreter >= 3.11 (crates/dbt-sa-python's own requires-python
+      # packed binary. abi3-py310 → one cp310-abi3 wheel per platform, valid
+      # on any interpreter >= 3.10 (crates/dbt-sa-python's own requires-python
       # floor). abi3 does NOT support older interpreters — maturin only
       # *warns* and silently falls back to a version-specific, non-abi3
       # cp3xx-cp3xx wheel if handed one, so `--interpreter` must resolve to
-      # an actual >=3.11 build or the release ships a wheel that's
-      # uninstallable everywhere (its own metadata says >=3.11, but the
+      # an actual >=3.10 build or the release ships a wheel that's
+      # uninstallable everywhere (its own metadata says >=3.10, but the
       # wheel tag says otherwise).
       #
-      # The manylinux containers bundle cp311 under /opt/python; the
-      # mac/windows runner images don't reliably ship 3.11 as `python3` (this
-      # bit us once already — the containers only had cp310 available), so
+      # The manylinux containers bundle cp310 under /opt/python; the
+      # mac/windows runner images don't reliably ship 3.10 as `python3`, so
       # those two pin it explicitly via actions/setup-python.
-      - name: Setup Python 3.11 (macOS/Windows)
+      - name: Setup Python 3.10 (macOS/Windows)
         if: ${{ matrix.container == '' }}
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
       # Runs after Setup Python above: on macOS/Windows legs, `python3` isn't
       # guaranteed on PATH until setup-python has run (Windows runner images
@@ -439,8 +438,8 @@ jobs:
         env:
           CORE_WHEEL_VERSION: ${{ inputs.core_wheel_version }}
         run: |
-          if [ -x /opt/python/cp311-cp311/bin/python ]; then
-            PY=/opt/python/cp311-cp311/bin/python
+          if [ -x /opt/python/cp310-cp310/bin/python ]; then
+            PY=/opt/python/cp310-cp310/bin/python
           else
             PY=python3
           fi
@@ -480,14 +479,14 @@ jobs:
           TARGET: ${{ matrix.target }}
           CORE_WHEEL_VERSION: ${{ steps.core-wheel-version.outputs.pep440 }}
         run: |
-          if [ -x /opt/python/cp311-cp311/bin/python ]; then
-            PY=/opt/python/cp311-cp311/bin/python
+          if [ -x /opt/python/cp310-cp310/bin/python ]; then
+            PY=/opt/python/cp310-cp310/bin/python
           else
             PY=python3
           fi
           # Belt-and-suspenders: fail loudly instead of letting maturin
           # silently downgrade to a version-specific, non-abi3 wheel.
-          "$PY" -c 'import sys; assert sys.version_info[:2] >= (3, 11), f"need Python >=3.11, got {sys.version}"'
+          "$PY" -c 'import sys; assert sys.version_info[:2] >= (3, 10), f"need Python >=3.10, got {sys.version}"'
 
           "$PY" -m venv .maturin-venv
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -650,7 +649,7 @@ jobs:
       - name: Run tests
         run: cargo nextest run
 
-      # Pinned to 3.11 explicitly, same as the `build` job's maturin
+      # Pinned to 3.10 explicitly, same as the `build` job's maturin
       # invocation — this job's whole point is gating `pack` on a build of
       # the actual shipped artifact, so testing against anything other than
       # the abi3 floor (crates/dbt-sa-python's own requires-python) wouldn't
@@ -658,7 +657,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
       # Prepending .venv/bin to PATH lets every later step call `maturin`/
       # `pytest` directly instead of the full .venv/bin/... path. This
@@ -904,14 +903,14 @@ jobs:
       # One --target per wheel uploaded to the Release; keep in lockstep with
       # the `build` job's matrix — each target's wheel is fetched and hashed.
       #
-      # dbt-core's wheels are maturin abi3 extension wheels (cp311-abi3), not
+      # dbt-core's wheels are maturin abi3 extension wheels (cp310-abi3), not
       # the binary CLI wheel (py3-none) `cargo ci pypi pack` produces — pass
       # the matching python/abi tags so the sdist manifest's filenames match
       # what's actually sitting at BASE_URL.
       #
       # No --project-dir: the workspace root carries the descriptive metadata
       # the PyPI page renders from, and --runtime-metadata-from overlays just
-      # requires-python + dependencies from the crate maturin built (>=3.11 +
+      # requires-python + dependencies from the crate maturin built (>=3.10 +
       # mashumaro; the root says >=3.9, for the binary CLI wheel). uv trusts
       # the sdist's PKG-INFO over the wheel's, so a mismatch installs broken —
       # `cargo ci pypi publish` cross-checks both and fails the release.
@@ -931,7 +930,7 @@ jobs:
             --version "$CORE_WHEEL_VERSION" \
             --download-base-url "$BASE_URL" \
             --runtime-metadata-from crates/dbt-sa-python \
-            --python-tag cp311 \
+            --python-tag cp310 \
             --abi-tag abi3 \
             --target x86_64-unknown-linux-gnu \
             --target aarch64-unknown-linux-gnu \
@@ -993,7 +992,7 @@ jobs:
             --version "${{ needs.prepare-release.outputs.version }}" \
             --download-base-url "$BASE_URL" \
             --runtime-metadata-from crates/dbt-sa-python \
-            --python-tag cp311 \
+            --python-tag cp310 \
             --abi-tag abi3 \
             --target x86_64-unknown-linux-gnu \
             --target aarch64-unknown-linux-gnu \

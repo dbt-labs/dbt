@@ -16,9 +16,14 @@ pub trait ResolverHooks: Send + Sync {
     }
 
     /// Hook called after the resolve phase completes.
+    ///
+    /// `adapter_type` is the target's default adapter, passed for the same reason
+    /// `pre_resolve` takes it: a hook may synthesize nodes, and every node carries
+    /// the adapter it resolves against rather than inferring one downstream.
     fn post_resolve(
         &self,
         _io: &IoArgs,
+        _adapter_type: AdapterType,
         _nodes: &mut Nodes,
         _root_project_name: &str,
         _quoting: DbtQuoting,

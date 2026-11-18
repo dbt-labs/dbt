@@ -18,6 +18,8 @@ const DEFAULT_SHARED_NOTEBOOK_ROOT: &str = "/Shared/dbt_python_model";
 const USER_AGENT: &str = "dbt-fs";
 const REQUEST_TIMEOUT_SECS: u64 = 60;
 const POLL_INTERVAL_SECS: u64 = 10;
+const CLUSTER_POLL_INTERVAL_SECS: u64 = 5;
+const JOBS_RESET_ENDPOINT: &str = "/api/2.1/jobs/reset";
 
 pub(crate) struct DatabricksApiClient {
     agent: Agent,
@@ -25,6 +27,7 @@ pub(crate) struct DatabricksApiClient {
     auth_header: String,
     use_user_folder: bool,
     cached_user: RefCell<Option<String>>,
+    cluster_poll_interval: Duration,
 }
 
 impl DatabricksApiClient {
@@ -44,6 +47,7 @@ impl DatabricksApiClient {
 
         let base_url = Self::normalize_host(host.as_ref());
         let agent: Agent = Agent::config_builder()
+            .tls_config(dbt_adbc::install::build_tls_config())
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
             .build()
@@ -55,6 +59,7 @@ impl DatabricksApiClient {
             auth_header: format!("Bearer {}", token),
             use_user_folder,
             cached_user: RefCell::new(None),
+            cluster_poll_interval: Duration::from_secs(CLUSTER_POLL_INTERVAL_SECS),
         })
     }
 
@@ -325,10 +330,15 @@ impl DatabricksApiClient {
     }
 
     fn http_error(status: u16, body: String) -> AdapterError {
-        if let Ok(err) = serde_json::from_str::<DatabricksErrorResponse>(&body) {
+        let parsed = serde_json::from_str::<DatabricksErrorResponse>(&body)
+            .ok()
+            .filter(|err| err.message.is_some() || err.error.is_some() || err.error_code.is_some());
+        if let Some(err) = parsed {
             let code = err.error_code.unwrap_or_else(|| "Unknown".to_string());
+            // The legacy /api/1.2 endpoints report failures as `{"error": "..."}`.
             let message = err
                 .message
+                .or(err.error)
                 .unwrap_or_else(|| "Databricks API request failed".to_string());
             AdapterError::new(
                 AdapterErrorKind::Driver,
@@ -366,10 +376,18 @@ impl DatabricksApiClient {
     fn ensure_cluster_ready(&self, cluster_id: &str) -> AdapterResult<()> {
         let current_status = self.get_cluster_status(cluster_id)?;
 
-        if matches!(current_status.as_str(), "TERMINATED" | "TERMINATING") {
-            self.start_cluster(cluster_id)?;
-        } else if current_status != "RUNNING" {
-            self.wait_for_cluster(cluster_id)?;
+        match current_status.as_str() {
+            "RUNNING" => {}
+            "TERMINATING" => {
+                self.wait_for_cluster_state(cluster_id, "TERMINATED")?;
+                self.start_cluster(cluster_id)?;
+                self.wait_for_cluster_state(cluster_id, "RUNNING")?;
+            }
+            "TERMINATED" => {
+                self.start_cluster(cluster_id)?;
+                self.wait_for_cluster_state(cluster_id, "RUNNING")?;
+            }
+            _ => self.wait_for_cluster_state(cluster_id, "RUNNING")?,
         }
 
         Ok(())
@@ -390,7 +408,7 @@ impl DatabricksApiClient {
         self.post_json_noop("/api/2.0/clusters/start", payload)
     }
 
-    fn wait_for_cluster(&self, cluster_id: &str) -> AdapterResult<()> {
+    fn wait_for_cluster_state(&self, cluster_id: &str, target_state: &str) -> AdapterResult<()> {
         let max_wait_time = Duration::from_secs(900); // 15 minutes
         let start = Instant::now();
 
@@ -398,22 +416,32 @@ impl DatabricksApiClient {
             // DBX uses get_cluster_libraries_status instead
             let status = self.get_cluster_status(cluster_id)?;
 
-            if status == "RUNNING" {
+            if status == target_state {
                 return Ok(());
+            }
+
+            if status == "ERROR" {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::Driver,
+                    format!(
+                        "Cluster {cluster_id} entered ERROR state while waiting for {target_state}"
+                    ),
+                ));
             }
 
             if start.elapsed() >= max_wait_time {
                 return Err(AdapterError::new(
                     AdapterErrorKind::Driver,
                     format!(
-                        "Cluster {} did not reach RUNNING state within {} seconds",
+                        "Cluster {} did not reach {} state within {} seconds",
                         cluster_id,
+                        target_state,
                         max_wait_time.as_secs()
                     ),
                 ));
             }
 
-            thread::sleep(Duration::from_secs(5));
+            thread::sleep(self.cluster_poll_interval);
         }
     }
 
@@ -604,18 +632,18 @@ impl DatabricksApiClient {
         Ok(response.job_id)
     }
 
-    /// https://docs.databricks.com/api/workspace/jobs/update
+    /// Overwrites all settings of the job, like dbt-databricks `update_job_settings`:
+    /// https://github.com/databricks/dbt-databricks/blob/8fb1f22/dbt/adapters/databricks/api_client.py#L836
+    /// https://docs.databricks.com/api/workspace/jobs/reset
     pub(crate) fn update_workflow(
         &self,
         job_id: u64,
         workflow_spec: serde_json::Value,
     ) -> AdapterResult<()> {
-        let mut payload = workflow_spec;
-        if let serde_json::Value::Object(ref mut map) = payload {
-            map.insert("job_id".to_string(), json!(job_id));
-        }
-
-        self.post_json::<serde_json::Value>("/api/2.1/jobs/update", payload)?;
+        self.post_json::<serde_json::Value>(
+            JOBS_RESET_ENDPOINT,
+            json!({ "job_id": job_id, "new_settings": workflow_spec }),
+        )?;
         Ok(())
     }
 
@@ -664,6 +692,7 @@ struct DatabricksErrorResponse {
     #[serde(rename = "error_code")]
     error_code: Option<String>,
     message: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -713,4 +742,172 @@ struct CreateWorkflowResponse {
 #[derive(Deserialize)]
 struct RunWorkflowResponse {
     run_id: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+    use ureq::SendBody;
+    use ureq::middleware::{Middleware, MiddlewareNext};
+
+    /// What the fake received, in order, as ("METHOD path", request body).
+    struct Calls(Receiver<(String, String)>);
+
+    impl Calls {
+        /// Everything received since the last call.
+        fn take(&self) -> Vec<(String, String)> {
+            self.0.try_iter().collect()
+        }
+
+        /// The "METHOD path" of everything received since the last call.
+        fn lines(&self) -> Vec<String> {
+            self.take().into_iter().map(|(line, _)| line).collect()
+        }
+    }
+
+    /// Answers `responses` in order and records each request.
+    ///
+    /// The handler returns the body itself and does not continue the ureq chain, so the
+    /// client never resolves a host or opens a socket.
+    struct ScriptedApi {
+        responses: Mutex<VecDeque<(u16, &'static str)>>,
+        calls: Sender<(String, String)>,
+    }
+
+    impl Middleware for ScriptedApi {
+        fn handle(
+            &self,
+            request: http::Request<SendBody>,
+            _next: MiddlewareNext,
+        ) -> Result<http::Response<Body>, UreqError> {
+            let (parts, body) = request.into_parts();
+            let mut sent = String::new();
+            body.into_reader()
+                .read_to_string(&mut sent)
+                .expect("request body");
+            // A test that ignores the calls may have dropped its receiver.
+            let _ = self
+                .calls
+                .send((format!("{} {}", parts.method, parts.uri.path()), sent));
+
+            let (status, body) = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted Databricks API ran out of responses");
+
+            Ok(http::Response::builder()
+                .status(status)
+                .body(Body::builder().data(body))
+                .expect("scripted response"))
+        }
+    }
+
+    fn fake_databricks(responses: Vec<(u16, &'static str)>) -> (DatabricksApiClient, Calls) {
+        let (sender, receiver) = channel();
+        let agent = Agent::config_builder()
+            .http_status_as_error(false)
+            .middleware(ScriptedApi {
+                responses: Mutex::new(responses.into()),
+                calls: sender,
+            })
+            .build()
+            .into();
+        let client = DatabricksApiClient {
+            agent,
+            base_url: "http://databricks.invalid".to_string(),
+            auth_header: "Bearer test".to_string(),
+            use_user_folder: false,
+            cached_user: RefCell::new(None),
+            cluster_poll_interval: Duration::from_millis(1),
+        };
+        (client, Calls(receiver))
+    }
+
+    #[test]
+    fn update_workflow_resets_job_with_spec_under_new_settings() {
+        let (client, calls) = fake_databricks(vec![(200, "{}")]);
+        let spec = json!({"name": "j", "tasks": [{"notebook_task": {"notebook_path": "/b/m"}}]});
+        client.update_workflow(7, spec.clone()).unwrap();
+        let calls = calls.take();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "POST /api/2.1/jobs/reset");
+        let body: serde_json::Value = serde_json::from_str(&calls[0].1).unwrap();
+        assert_eq!(body, json!({"job_id": 7, "new_settings": spec}));
+    }
+
+    const GET: &str = "GET /api/2.0/clusters/get";
+    const START: &str = "POST /api/2.0/clusters/start";
+
+    #[test]
+    fn terminated_cluster_is_started_and_awaited() {
+        let (client, calls) = fake_databricks(vec![
+            (200, r#"{"state":"TERMINATED"}"#),
+            (200, "{}"),
+            (200, r#"{"state":"PENDING"}"#),
+            (200, r#"{"state":"RUNNING"}"#),
+        ]);
+        client.ensure_cluster_ready("c1").unwrap();
+        assert_eq!(calls.lines(), [GET, START, GET, GET]);
+    }
+
+    #[test]
+    fn terminating_cluster_waits_for_terminated_before_start() {
+        let (client, calls) = fake_databricks(vec![
+            (200, r#"{"state":"TERMINATING"}"#),
+            (200, r#"{"state":"TERMINATING"}"#),
+            (200, r#"{"state":"TERMINATED"}"#),
+            (200, "{}"),
+            (200, r#"{"state":"RUNNING"}"#),
+        ]);
+        client.ensure_cluster_ready("c1").unwrap();
+        assert_eq!(calls.lines(), [GET, GET, GET, START, GET]);
+    }
+
+    #[test]
+    fn cluster_error_state_fails_fast() {
+        let (client, _) = fake_databricks(vec![
+            (200, r#"{"state":"PENDING"}"#),
+            (200, r#"{"state":"ERROR"}"#),
+        ]);
+        let err = client.ensure_cluster_ready("c1").unwrap_err();
+        assert!(err.to_string().contains("ERROR state"), "{err}");
+    }
+
+    #[test]
+    fn http_error_reports_message_with_error_code() {
+        let err = DatabricksApiClient::http_error(
+            400,
+            r#"{"error_code":"INVALID_PARAMETER_VALUE","message":"bad value"}"#.to_string(),
+        );
+        assert_eq!(
+            err.to_string(),
+            "Databricks API (status 400, code INVALID_PARAMETER_VALUE): bad value"
+        );
+    }
+
+    #[test]
+    fn http_error_reports_legacy_error_field() {
+        let err = DatabricksApiClient::http_error(
+            500,
+            r#"{"error":"ContextStatus.Error: cluster not running"}"#.to_string(),
+        );
+        assert_eq!(
+            err.to_string(),
+            "Databricks API (status 500, code Unknown): ContextStatus.Error: cluster not running"
+        );
+    }
+
+    #[test]
+    fn http_error_falls_back_to_raw_body_for_unrecognized_json() {
+        let err = DatabricksApiClient::http_error(500, r#"{"detail":"boom"}"#.to_string());
+        assert_eq!(
+            err.to_string(),
+            r#"Databricks API (status 500) returned an error: {"detail":"boom"}"#
+        );
+    }
 }

@@ -6,7 +6,7 @@
 //! external) and maps them to their respective on-disk namespaces.
 
 use crate::{
-    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaEntry, SchemaStoreResult,
+    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaEntry, SchemaOwner, SchemaStoreResult,
     SchemaStoreTrait, parquet_cache::ParquetSchemaCache,
 };
 use arrow::array::RecordBatch;
@@ -71,10 +71,11 @@ struct SchemaEntryWrapper {
     schema_entry: OnceLock<SchemaEntry>,
     #[allow(dead_code)]
     timestamp: u128,
+    from_prior_invocation: bool,
 }
 
 impl SchemaEntryWrapper {
-    pub fn new(schema_entry: SchemaEntry, timestamp: u128) -> Self {
+    pub fn new(schema_entry: SchemaEntry, timestamp: u128, from_prior_invocation: bool) -> Self {
         let once_lock = OnceLock::new();
         once_lock
             .set(schema_entry)
@@ -82,6 +83,7 @@ impl SchemaEntryWrapper {
         Self {
             schema_entry: once_lock,
             timestamp,
+            from_prior_invocation,
         }
     }
 
@@ -182,7 +184,7 @@ impl SchemaStoreState {
                 remote.get(&key)
             };
             if let Some(schema_entry) = maybe {
-                let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry.clone(), now_ms));
+                let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry.clone(), now_ms, true));
                 let _ = cached_schemas.upsert_sync(entry.clone(), wrapper);
             }
         }
@@ -221,7 +223,7 @@ impl SchemaStoreState {
                 .as_millis();
             let schema_entry = guard.get(&key)?.clone();
             drop(guard);
-            let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry, now_ms));
+            let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry, now_ms, true));
             let _ = self
                 .cached_entries
                 .upsert_sync(entry.clone(), wrapper.clone());
@@ -276,7 +278,7 @@ impl SchemaStoreState {
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap_or(Duration::ZERO)
                     .as_millis();
-                let wrapper = Arc::new(SchemaEntryWrapper::new(existing.clone(), now_ms));
+                let wrapper = Arc::new(SchemaEntryWrapper::new(existing.clone(), now_ms, true));
                 let _ = self.cached_entries.upsert_sync(entry.clone(), wrapper);
                 return Ok(existing);
             }
@@ -301,7 +303,7 @@ impl SchemaStoreState {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_millis();
-        let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry.clone(), now_ms));
+        let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry.clone(), now_ms, false));
         let _ = self.cached_entries.upsert_sync(entry.clone(), wrapper);
         Ok(schema_entry)
     }
@@ -376,6 +378,7 @@ pub struct SchemaStore {
     external: SccHashSet<CanonicalFqn>,
     local: BiMap<CanonicalFqn, UniqueId>,
     state: SchemaStoreState,
+    lookup_errors: RwLock<HashMap<CanonicalFqn, String>>,
 }
 
 impl SchemaStore {
@@ -425,6 +428,7 @@ impl SchemaStore {
             external: SccHashSet::new(),
             local: local.into_iter().collect(),
             state,
+            lookup_errors: RwLock::new(HashMap::new()),
         };
 
         // Register local schemas during construction
@@ -437,6 +441,14 @@ impl SchemaStore {
         }
 
         store
+    }
+
+    /// Retains a metadata lookup failure for this invocation only.
+    pub fn register_lookup_error(&self, cfqn: CanonicalFqn, message: String) {
+        self.lookup_errors
+            .write()
+            .expect("lookup errors lock poisoned")
+            .insert(cfqn, message);
     }
 
     /// Finds the [`LookupEntry`] corresponding to a canonical FQN.
@@ -590,7 +602,7 @@ impl SchemaStore {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_millis();
-        let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry, now_ms));
+        let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry, now_ms, false));
         let _ = self
             .state
             .cached_entries
@@ -621,6 +633,14 @@ impl SchemaStore {
 
 #[async_trait::async_trait]
 impl SchemaStoreTrait for SchemaStore {
+    fn lookup_error(&self, cfqn: &CanonicalFqn) -> Option<String> {
+        self.lookup_errors
+            .read()
+            .expect("lookup errors lock poisoned")
+            .get(cfqn)
+            .cloned()
+    }
+
     fn exists(&self, cfqn: &CanonicalFqn) -> bool {
         let entry = self.resolve_lookup_entry_by_cfqn(cfqn);
         entry.as_ref().is_some_and(|entry| self.state.exists(entry))
@@ -631,6 +651,30 @@ impl SchemaStoreTrait for SchemaStore {
             self.state.exists_async(&entry).await
         } else {
             false
+        }
+    }
+
+    fn schema_owner(&self, cfqn: &CanonicalFqn) -> Option<SchemaOwner> {
+        match self.resolve_lookup_entry_by_cfqn(cfqn)? {
+            LookupEntry::Selected(unique_id) => Some(SchemaOwner::Current(unique_id)),
+            LookupEntry::Local(cfqn) => self
+                .local
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Current),
+            LookupEntry::Frontier(cfqn) => self
+                .frontier
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Current),
+            LookupEntry::Deferred(cfqn) => self
+                .deferred
+                .read()
+                .expect("deferred lock poisoned")
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Deferred),
+            LookupEntry::External(_) => None,
         }
     }
 
@@ -647,6 +691,16 @@ impl SchemaStoreTrait for SchemaStore {
     async fn get_schema_async(&self, cfqn: &CanonicalFqn) -> Option<SchemaEntry> {
         let entry = self.resolve_lookup_entry_by_cfqn(cfqn)?;
         self.state.get_schema_async(&entry).await
+    }
+
+    fn schema_is_from_prior_invocation(&self, cfqn: &CanonicalFqn) -> bool {
+        let Some(entry) = self.resolve_lookup_entry_by_cfqn(cfqn) else {
+            return false;
+        };
+        self.state
+            .cached_entries
+            .read_sync(&entry, |_, wrapper| wrapper.from_prior_invocation)
+            .unwrap_or(false)
     }
 
     fn get_schema_by_unique_id(&self, unique_id: &str) -> Option<SchemaEntry> {
@@ -674,6 +728,10 @@ impl SchemaStoreTrait for SchemaStore {
         let result = self
             .state
             .register_schema(&entry, original_schema, schema, overwrite)?;
+        self.lookup_errors
+            .write()
+            .expect("lookup errors lock poisoned")
+            .remove(cfqn);
         if let LookupEntry::External(cfqn) = entry {
             let _ = self.external.insert_sync(cfqn);
         }

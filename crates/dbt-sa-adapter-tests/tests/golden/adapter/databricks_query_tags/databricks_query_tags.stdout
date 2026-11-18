@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/tagged_model.sql
+   Parsing tests/assert_query_tags.sql
+ Rendering models/tagged_model.sql
+   Running models/tagged_model.sql
+ Succeeded model databricks_query_tags.tagged_model (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

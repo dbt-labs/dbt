@@ -2,23 +2,28 @@ use crate::emit::{create_root_info_span, emit_info_event};
 use crate::init::create_tracing_subcriber_with_layer;
 use crate::layer::{ConsumerLayer, TelemetryConsumer};
 use crate::layers::pretty_writer::TelemetryPrettyWriterLayer;
+use crate::shared_writer::SharedWriter;
 use crate::test_support::mocks::{
     MockDynLogEvent, MockDynSpanEvent, TestLayer, TestWriter, test_data_layer,
 };
 use crate::{TelemetryOutputFlags, TelemetryRecordRef};
 
-fn mock_format_telemetry_record(record: TelemetryRecordRef, _is_tty: bool) -> Option<String> {
+fn mock_format_telemetry_record(
+    record: TelemetryRecordRef,
+    _is_tty: bool,
+    writer: &dyn SharedWriter,
+) {
     match record {
-        TelemetryRecordRef::LogRecord(log) => Some(format!(
+        TelemetryRecordRef::LogRecord(log) => writer.writeln(&format_args!(
             "[LOG] msg=\"{}\" span=\"{}\"",
             log.body,
             log.span_name.as_deref().unwrap_or_default()
         )),
-        TelemetryRecordRef::SpanStart(span) => Some(format!(
+        TelemetryRecordRef::SpanStart(span) => writer.writeln(&format_args!(
             "[SPAN START] name=\"{}\"",
             span.attributes.event_display_name()
         )),
-        TelemetryRecordRef::SpanEnd(span) => Some(format!(
+        TelemetryRecordRef::SpanEnd(span) => writer.writeln(&format_args!(
             "[SPAN END] name=\"{}\"",
             span.attributes.event_display_name()
         )),

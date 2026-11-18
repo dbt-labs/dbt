@@ -7,7 +7,8 @@ use std::{
 
 use chrono::Utc;
 use dbt_adapter::relation::{
-    RelationObject, create_relation, create_relation_from_node, create_relation_from_source,
+    RelationObject, canonical_relation_parts, create_relation, create_relation_from_node,
+    create_relation_from_source,
 };
 use dbt_adapter_core::AdapterType;
 use dbt_common::{
@@ -23,7 +24,7 @@ use dbt_schemas::{
     filter::RunFilter,
     schemas::{
         DbtFunction, DbtSource, InternalDbtNodeAttributes, IntrospectionKind, Nodes,
-        common::{DbtMaterialization, DbtQuoting, parse_deprecation_date},
+        common::{DbtMaterialization, DbtQuoting, ResolvedQuoting, parse_deprecation_date},
         ref_and_source::{DbtRef, DbtSourceWrapper},
         telemetry::NodeType,
     },
@@ -32,6 +33,31 @@ use dbt_schemas::{
 use minijinja::{Value as MinijinjaValue, value::function_object::FunctionObject};
 
 type RefRecord = (String, MinijinjaValue, ModelStatus, Option<MinijinjaValue>);
+
+fn create_ref_relation(
+    node: &dyn InternalDbtNodeAttributes,
+    adapter_type: AdapterType,
+    run_filter: Option<RunFilter>,
+) -> FsResult<Box<dyn dbt_schemas::schemas::relations::base::BaseRelation>> {
+    if node.base().effective_propagation_target == Some(AdapterType::Databricks) {
+        let (database, schema, identifier) = canonical_relation_parts(
+            Some(AdapterType::Databricks),
+            node.database(),
+            node.schema(),
+            node.alias(),
+        );
+        create_relation(
+            node.node_adapter(),
+            database,
+            schema,
+            Some(identifier),
+            Some(RelationType::from(node.materialized())),
+            ResolvedQuoting::falses(),
+        )
+    } else {
+        create_relation_from_node(adapter_type, node, run_filter)
+    }
+}
 
 fn downgraded_node_dependency_warning(
     error: &FsError,
@@ -138,18 +164,11 @@ impl NodeResolver {
             ..Default::default()
         };
         for (_, node) in nodes.iter() {
-            // A node's relation is rendered with *its own* adapter, not the
-            // target's default. `ref('x')` returns x's relation, and x lives in
-            // x's adapter's warehouse, so it must render with x's rules however it
-            // is referenced. Both inputs are per-node: the node carries its own
-            // quoting (resolved against its `+adapter` during resolve) and the
-            // adapter type decides `include_policy` -- DuckDB suppresses the
+            // A node's quoting resolves against the adapter that owns its relation.
+            // `ref('x')` keeps x's quote policy and takes the caller's quote character.
+            // The node's own adapter decides `include_policy`: DuckDB suppresses the
             // database component for `main`/`memory` while others do not.
-            //
-            // Each relation stays cached one-per-node; only the adapter type used
-            // to build it changes.
-            let node_adapter_type = node.node_adapter();
-
+            // Each relation stays cached one-per-node.
             if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
                 // Sources have no `+adapter`: they are external data, so they take
                 // the target's default.
@@ -160,11 +179,12 @@ impl NodeResolver {
                     ModelStatus::Enabled,
                 )?;
             } else if let Some(function) = node.as_any().downcast_ref::<DbtFunction>() {
-                node_resolver.insert_function(function, node_adapter_type, ModelStatus::Enabled)?;
+                node_resolver.insert_function(function, ModelStatus::Enabled)?;
             } else {
                 match node.resource_type() {
-                    NodeType::Model | NodeType::Snapshot | NodeType::Seed => node_resolver
-                        .insert_ref(node, node_adapter_type, ModelStatus::Enabled, false)?,
+                    NodeType::Model | NodeType::Snapshot | NodeType::Seed => {
+                        node_resolver.insert_ref(node, ModelStatus::Enabled, false)?
+                    }
                     _ => (),
                 }
             }
@@ -342,7 +362,6 @@ impl NodeResolverTracker for NodeResolver {
     fn insert_ref(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         status: ModelStatus,
         override_existing: bool,
     ) -> FsResult<()> {
@@ -357,7 +376,7 @@ impl NodeResolverTracker for NodeResolver {
         };
 
         let relation = RelationObject::new_with_filter(
-            create_relation_from_node(adapter_type, node, Some(self.run_filter.clone()))?.into(),
+            create_ref_relation(node, node.node_adapter(), Some(self.run_filter.clone()))?.into(),
             self.run_filter.clone(),
             node.event_time(),
         )
@@ -365,14 +384,8 @@ impl NodeResolverTracker for NodeResolver {
 
         if maybe_version == maybe_latest_version {
             // Lookup by ref name
-            let ref_entry = self.refs.entry(model_name.clone()).or_default();
-            Self::push_or_replace_entry(
-                ref_entry,
-                &unique_id,
-                &relation,
-                status,
-                override_existing,
-            );
+            let ref_entry = self.refs.entry(model_name.to_string()).or_default();
+            Self::push_or_replace_entry(ref_entry, unique_id, &relation, status, override_existing);
 
             // Lookup by package and ref name
             let package_ref_entry = self
@@ -381,7 +394,7 @@ impl NodeResolverTracker for NodeResolver {
                 .or_default();
             Self::push_or_replace_entry(
                 package_ref_entry,
-                &unique_id,
+                unique_id,
                 &relation,
                 status,
                 override_existing,
@@ -399,7 +412,7 @@ impl NodeResolverTracker for NodeResolver {
                 .or_default();
             Self::push_or_replace_entry(
                 versioned_ref_entry,
-                &unique_id,
+                unique_id,
                 &relation,
                 status,
                 override_existing,
@@ -412,14 +425,14 @@ impl NodeResolverTracker for NodeResolver {
             if override_existing {
                 Self::push_or_replace_entry(
                     package_versioned_ref_entry,
-                    &unique_id,
+                    unique_id,
                     &relation,
                     status,
                     true,
                 );
             } else if !package_versioned_ref_entry
                 .iter()
-                .any(|(id, _, _, _)| id == &unique_id)
+                .any(|(id, _, _, _)| id == unique_id)
             {
                 package_versioned_ref_entry.push((
                     unique_id.to_string(),
@@ -436,7 +449,6 @@ impl NodeResolverTracker for NodeResolver {
     fn insert_function(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         status: ModelStatus,
     ) -> FsResult<()> {
         let package_name = &node.package_name();
@@ -444,13 +456,14 @@ impl NodeResolverTracker for NodeResolver {
         let unique_id = node.unique_id();
 
         // For functions, create a FunctionObject that renders function calls
-        let function_object = create_function_object_from_node(adapter_type, node)?.into_value();
+        let function_object =
+            create_function_object_from_node(node.node_adapter(), node)?.into_value();
 
         // Lookup by function name
-        let function_entry = self.functions.entry(function_name.clone()).or_default();
+        let function_entry = self.functions.entry(function_name.to_string()).or_default();
         Self::push_or_replace_function_entry(
             function_entry,
-            &unique_id,
+            unique_id,
             &function_object,
             status,
             true,
@@ -463,7 +476,7 @@ impl NodeResolverTracker for NodeResolver {
             .or_default();
         Self::push_or_replace_function_entry(
             package_function_entry,
-            &unique_id,
+            unique_id,
             &function_object,
             status,
             true,
@@ -484,9 +497,9 @@ impl NodeResolverTracker for NodeResolver {
         let mut schema = source.base().schema.clone();
         let mut identifier = source.base().alias.clone();
         let mapper = &self.renaming;
-        if mapper.contains_key(&source.unique_id()) {
+        if mapper.contains_key(source.unique_id()) {
             // When a plan is present, remap all sources.
-            (database, schema, identifier) = mapper[&source.unique_id()].clone();
+            (database, schema, identifier) = mapper[source.unique_id()].clone();
         }
 
         let base_rel = create_relation_from_source(
@@ -794,7 +807,7 @@ impl NodeResolverTracker for NodeResolver {
                     )
                 } else {
                     err!(
-                        ErrorCode::InvalidConfig,
+                        ErrorCode::DependencyNotFound,
                         "Function '{}' not found in project. Searched for '{}'",
                         function_name,
                         search_function_names.join(", ")
@@ -817,14 +830,14 @@ impl NodeResolverTracker for NodeResolver {
             let deferred_function =
                 create_function_object_from_node(adapter_type, node)?.into_value();
 
-            let function_entry = self.functions.entry(function_name.clone()).or_default();
-            Self::set_deferred_function(function_entry, &unique_id, &deferred_function);
+            let function_entry = self.functions.entry(function_name.to_string()).or_default();
+            Self::set_deferred_function(function_entry, unique_id, &deferred_function);
 
             let package_function_entry = self
                 .functions
                 .entry(format!("{package_name}.{function_name}"))
                 .or_default();
-            Self::set_deferred_function(package_function_entry, &unique_id, &deferred_function);
+            Self::set_deferred_function(package_function_entry, unique_id, &deferred_function);
 
             return Ok(());
         }
@@ -839,17 +852,17 @@ impl NodeResolverTracker for NodeResolver {
         };
 
         let deferred_relation = RelationObject::new_with_filter(
-            create_relation_from_node(adapter_type, node, Some(self.run_filter.clone()))?.into(),
+            create_ref_relation(node, adapter_type, Some(self.run_filter.clone()))?.into(),
             self.run_filter.clone(),
             node.event_time(),
         )
         .into_value();
 
         if maybe_version == maybe_latest_version {
-            let ref_entry = self.refs.entry(model_name.clone()).or_default();
+            let ref_entry = self.refs.entry(model_name.to_string()).or_default();
             Self::set_deferred_relation(
                 ref_entry,
-                &unique_id,
+                unique_id,
                 &deferred_relation,
                 is_frontier,
                 node,
@@ -861,7 +874,7 @@ impl NodeResolverTracker for NodeResolver {
                 .or_default();
             Self::set_deferred_relation(
                 package_ref_entry,
-                &unique_id,
+                unique_id,
                 &deferred_relation,
                 is_frontier,
                 node,
@@ -876,7 +889,7 @@ impl NodeResolverTracker for NodeResolver {
                 .or_default();
             Self::set_deferred_relation(
                 versioned_ref_entry,
-                &unique_id,
+                unique_id,
                 &deferred_relation,
                 is_frontier,
                 node,
@@ -888,7 +901,7 @@ impl NodeResolverTracker for NodeResolver {
                 .or_default();
             Self::set_deferred_relation(
                 package_versioned_ref_entry,
-                &unique_id,
+                unique_id,
                 &deferred_relation,
                 is_frontier,
                 node,
@@ -952,8 +965,8 @@ pub fn resolve_dependencies(
     for node in nodes.iter_values_mut() {
         // Clone needed values first to avoid borrowing issues
         let node_path = node.common().path.clone();
-        let node_package_name = node.package_name();
-        let node_unique_id = node.unique_id();
+        let node_package_name = node.package_name().to_string();
+        let node_unique_id = node.unique_id().to_string();
         let is_test = node.is_test();
         let is_exposure = node.resource_type() == NodeType::Exposure;
 
@@ -1105,11 +1118,23 @@ pub fn resolve_dependencies(
                         .push((dependency_id, location));
                 }
                 Err(e) => {
-                    // Check if this is a disabled dependency error for tests or exposures
-                    if (is_test || is_exposure) && e.code == ErrorCode::DisabledDependency {
+                    // A test whose function target is merely disabled is excluded silently:
+                    // dbt-core reports this at debug level only.
+                    if is_test && e.code == ErrorCode::DisabledDependency {
                         has_disabled_or_missing_dependency = true;
-                        let err_with_loc = e.with_location(location);
-                        emit_warn_log_from_fs_error(err_with_loc);
+                        emit_debug_log_message(format!("{node_unique_id} ({location}): {e}"));
+                    } else if is_test
+                        && let Some((warning, disable)) =
+                            downgraded_node_dependency_warning(&e, location.clone())
+                    {
+                        // A missing target stays a user-visible warning, and the node is
+                        // still excluded.
+                        has_disabled_or_missing_dependency = disable;
+                        emit_warn_log_from_fs_error(warning);
+                    } else if is_exposure && e.code == ErrorCode::DisabledDependency {
+                        // An exposure is only excluded for a disabled target; a missing one errors.
+                        has_disabled_or_missing_dependency = true;
+                        emit_warn_log_from_fs_error(e.with_location(location));
                     } else {
                         // Track this node as having an error (unresolved function)
                         nodes_with_errors.insert(node_unique_id.clone());
@@ -1119,6 +1144,12 @@ pub fn resolve_dependencies(
                 }
             };
         }
+
+        // These vectors live as long as the node. Drop the spare capacity left by
+        // growing them one element at a time.
+        node_base.refs.shrink_to_fit();
+        node_base.depends_on.nodes.shrink_to_fit();
+        node_base.depends_on.nodes_with_ref_location.shrink_to_fit();
 
         if is_test && has_disabled_or_missing_dependency {
             tests_to_disable.push(node_unique_id.clone());
@@ -1379,8 +1410,8 @@ pub fn create_function_object_from_node(
 ) -> FsResult<FunctionObject> {
     let relation = create_relation(
         adapter_type,
-        node.database(),
-        node.schema(),
+        node.database().to_string(),
+        node.schema().to_string(),
         Some(node.base().alias.clone()),
         Some(RelationType::from(node.materialized())),
         node.quoting(),
@@ -1394,9 +1425,12 @@ pub fn create_function_object_from_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_schemas::schemas::common::NodeDependsOn;
+    use dbt_schemas::schemas::common::{DbtQuoting, NodeDependsOn};
+    use dbt_schemas::schemas::manifest::{
+        DbtManifest, DbtNode, ManifestMetadata, ManifestModel, nodes_from_dbt_manifest,
+    };
     use dbt_schemas::schemas::nodes::{
-        CommonAttributes, DbtModel, DbtModelAttr, NodeBaseAttributes,
+        CommonAttributes, DbtExposure, DbtModel, DbtModelAttr, DbtTest, NodeBaseAttributes,
     };
     use dbt_schemas::state::Operations;
     use std::sync::Arc;
@@ -1482,6 +1516,123 @@ mod tests {
             );
         }
         node_resolver
+    }
+
+    #[test]
+    fn databricks_relation_policy_tests() {
+        let mut model = make_model(
+            "model.root_project.orders",
+            "orders",
+            "root_project",
+            None,
+            vec![],
+        );
+        let base = &mut Arc::make_mut(&mut model).__base_attr__;
+        base.adapter = AdapterType::LakeCompute;
+        base.database = "Cat".to_string();
+        base.schema = "Sch".to_string();
+        base.alias = "Tbl".to_string();
+        base.effective_propagation_target = Some(AdapterType::Databricks);
+
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(model.as_ref(), ModelStatus::Enabled, false)
+            .unwrap();
+        let (relation, deferred) = resolver
+            .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
+            .unwrap();
+        assert_eq!(relation.to_string(), "cat.sch.tbl");
+        assert_eq!(
+            relation
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner()
+                .adapter_type(),
+            AdapterType::LakeCompute
+        );
+        assert!(
+            relation
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner()
+                .is_table()
+        );
+        assert_eq!(
+            relation
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner()
+                .get_canonical_fqn()
+                .unwrap()
+                .to_string(),
+            "cat.sch.tbl"
+        );
+        assert!(deferred.is_none());
+    }
+
+    #[test]
+    fn deferred_manifest_databricks_ref_uses_lake_compute_canonical_namespace() {
+        let mut manifest = DbtManifest {
+            metadata: ManifestMetadata {
+                adapter_type: "snowflake".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut manifest_model = ManifestModel::default();
+        manifest_model.__common_attr__.unique_id = "model.root_project.orders".to_string();
+        manifest_model.__common_attr__.name = "orders".to_string();
+        manifest_model.__common_attr__.package_name = "root_project".to_string();
+        manifest_model.__common_attr__.database = "Cat".to_string();
+        manifest_model.__common_attr__.schema = "Sch".to_string();
+        manifest_model.__base_attr__.alias = "Tbl".to_string();
+        manifest_model.__base_attr__.canonical_relation_adapter = Some(AdapterType::Databricks);
+
+        manifest.nodes = [(
+            "model.root_project.orders".to_string(),
+            DbtNode::Model(manifest_model),
+        )]
+        .into_iter()
+        .collect();
+        let model = nodes_from_dbt_manifest(
+            manifest,
+            DbtQuoting {
+                database: Some(false),
+                identifier: Some(false),
+                schema: Some(false),
+                snowflake_ignore_case: Some(false),
+            },
+        )
+        .models
+        .into_iter()
+        .next()
+        .map(|(_, model)| model)
+        .expect("manifest model should be rehydrated");
+        assert_eq!(model.node_adapter(), AdapterType::LakeCompute);
+
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(model.as_ref(), ModelStatus::Enabled, false)
+            .unwrap();
+        resolver
+            .update_ref_with_deferral(model.as_ref(), AdapterType::Snowflake, true)
+            .unwrap();
+
+        let (relation, deferred) = resolver
+            .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
+            .unwrap();
+        let deferred = deferred.expect("deferred ref should be populated");
+        for value in [relation, deferred] {
+            assert_eq!(value.to_string(), "cat.sch.tbl");
+            let relation = value
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner();
+            assert_eq!(
+                relation.get_canonical_fqn().unwrap().to_string(),
+                "cat.sch.tbl"
+            );
+        }
     }
 
     #[test]
@@ -1620,6 +1771,145 @@ mod tests {
         );
     }
 
+    /// An `--inline` node lives in an empty-named package, so its function candidates must still
+    /// fall through to the root package and the bare name. Nothing else pins this.
+    #[test]
+    fn function_dependency_resolves_from_empty_node_package() {
+        let mut node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            ..Default::default()
+        };
+        insert_test_function(&mut node_resolver, "root_project", ROOT_FUNCTION_ID);
+
+        let mut model = make_model("model..inline_query", "inline_query", "", None, vec![]);
+        let base = &mut Arc::make_mut(&mut model).__base_attr__;
+        base.enabled = true;
+        base.functions = vec![DbtRef {
+            name: "shared".to_string(),
+            package: None,
+            version: None,
+            location: None,
+        }];
+
+        let model_id = model.__common_attr__.unique_id.clone();
+        let mut nodes = Nodes::default();
+        nodes.models.insert(model_id.clone(), model);
+        let mut disabled_nodes = Nodes::default();
+        let mut operations = Operations::default();
+
+        let errors = resolve_dependencies(
+            &mut nodes,
+            &mut disabled_nodes,
+            &mut operations,
+            &node_resolver,
+        );
+
+        assert!(errors.is_empty());
+        assert_eq!(
+            nodes.models[&model_id].__base_attr__.depends_on.nodes,
+            vec![ROOT_FUNCTION_ID.to_string()]
+        );
+    }
+
+    /// A missing `function()` is a warning that disables a data test in place, but stays a hard
+    /// error for a model - dbt-core's `invalid_target_fail_unless_test` draws the same line.
+    #[test]
+    fn missing_function_errors_for_models_but_disables_tests() {
+        let node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            ..Default::default()
+        };
+        let missing_function = vec![DbtRef {
+            name: "not_exist".to_string(),
+            package: None,
+            version: None,
+            location: None,
+        }];
+
+        let model_id = "model.root_project.consumer";
+        let mut model = make_model(model_id, "consumer", "root_project", None, vec![]);
+        let base = &mut Arc::make_mut(&mut model).__base_attr__;
+        base.enabled = true;
+        base.functions = missing_function.clone();
+
+        let test_id = "test.root_project.singular";
+        let test = Arc::new(DbtTest {
+            __common_attr__: CommonAttributes {
+                unique_id: test_id.to_string(),
+                name: "singular".to_string(),
+                package_name: "root_project".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                enabled: true,
+                functions: missing_function,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(model_id.to_string(), model);
+        nodes.tests.insert(test_id.to_string(), test);
+        let mut disabled_nodes = Nodes::default();
+        let mut operations = Operations::default();
+
+        let errors = resolve_dependencies(
+            &mut nodes,
+            &mut disabled_nodes,
+            &mut operations,
+            &node_resolver,
+        );
+
+        assert_eq!(errors, HashSet::from([model_id.to_string()]));
+        assert!(!nodes.tests[test_id].__base_attr__.enabled);
+    }
+
+    /// Unlike a data test, an exposure with a missing `function()` stays a hard error.
+    #[test]
+    fn missing_function_errors_for_exposures() {
+        let node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            ..Default::default()
+        };
+
+        let exposure_id = "exposure.root_project.dashboard";
+        let exposure = Arc::new(DbtExposure {
+            __common_attr__: CommonAttributes {
+                unique_id: exposure_id.to_string(),
+                name: "dashboard".to_string(),
+                package_name: "root_project".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                enabled: true,
+                functions: vec![DbtRef {
+                    name: "not_exist".to_string(),
+                    package: None,
+                    version: None,
+                    location: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let mut nodes = Nodes::default();
+        nodes.exposures.insert(exposure_id.to_string(), exposure);
+        let mut disabled_nodes = Nodes::default();
+        let mut operations = Operations::default();
+
+        let errors = resolve_dependencies(
+            &mut nodes,
+            &mut disabled_nodes,
+            &mut operations,
+            &node_resolver,
+        );
+
+        assert_eq!(errors, HashSet::from([exposure_id.to_string()]));
+        assert!(nodes.exposures.contains_key(exposure_id));
+    }
+
     #[test]
     fn search_packages_mirrors_dbt_core_candidate_order() {
         let mut node_resolver = NodeResolver {
@@ -1714,6 +2004,19 @@ mod tests {
             &FsError::new(
                 ErrorCode::InvalidConfig,
                 "Found ambiguous ref('x') pointing to multiple nodes: ['a', 'b']",
+            ),
+            CodeLocationWithFile::default(),
+        );
+
+        assert!(warning.is_none());
+    }
+
+    #[test]
+    fn downgraded_warning_does_not_map_ambiguous_function_errors() {
+        let warning = downgraded_node_dependency_warning(
+            &FsError::new(
+                ErrorCode::InvalidConfig,
+                "Found ambiguous function('x') pointing to multiple nodes: ['a', 'b']",
             ),
             CodeLocationWithFile::default(),
         );

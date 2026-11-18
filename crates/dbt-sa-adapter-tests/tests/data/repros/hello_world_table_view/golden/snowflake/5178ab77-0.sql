@@ -1,0 +1,1 @@
+CREATE SCHEMA IF NOT EXISTS development.adapters_snowflake_repros_hello_world_table_view

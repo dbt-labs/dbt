@@ -5,8 +5,8 @@ mod oauth;
 pub use cloud_yaml::CloudYamlResolver;
 pub use env_var::EnvVarResolver;
 pub use oauth::{
-    INTERACTIVE_TIMEOUT, OAUTH_SCOPES, OAuthAbortHandle, OAuthInteractiveResolver,
-    OAuthInteractiveResolverBuilder, OAuthPassiveResolver, Opener,
+    INTERACTIVE_TIMEOUT, LOGIN_ACCOUNT_ID_ENV, LOGIN_HOST_ENV, OAUTH_SCOPES, OAuthAbortHandle,
+    OAuthInteractiveResolver, OAuthInteractiveResolverBuilder, OAuthPassiveResolver, Opener,
 };
 
 use crate::{AuthError, Credential};

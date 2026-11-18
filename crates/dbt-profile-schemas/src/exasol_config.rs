@@ -137,7 +137,7 @@ impl InteractiveSetup for ExasolDbConfig {
     }
 }
 
-pub fn setup_exasol_profile(
+pub(crate) fn setup_exasol_profile(
     existing_config: Option<&ExasolDbConfig>,
 ) -> FsResult<Box<ExasolDbConfig>> {
     let default_config = ExasolDbConfig::default();

@@ -1,0 +1,11 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: |-
+    select name, type from system.columns where table = 'a'
+    
+    
+    and database = 'adapters_clickhouse_get_columns_in_relation_missing'
+    
+    
+    order by position

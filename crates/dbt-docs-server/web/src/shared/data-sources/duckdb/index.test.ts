@@ -1,3 +1,4 @@
+import type { DuckDbEngine, TableName } from 'dbt-docs-lib/duckdb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -5,7 +6,6 @@ import {
   SUPPORTED_BOOTSTRAP_SCHEMA_VERSION,
 } from '../../../lib/siteBootstrap';
 import type { BootstrapData } from './bootstrap';
-import type { DuckDbEngine, TableName } from './engine';
 import { createDuckDbDataSource } from './index';
 
 /**
@@ -43,6 +43,7 @@ function fakeEngine(
     },
     hasTable: (t) => present.has(t),
     ready: async () => {},
+    dispose: async () => {},
   };
 }
 
@@ -168,6 +169,7 @@ describe('createDuckDbDataSource', () => {
       },
       hasTable: () => false,
       ready: async () => {},
+      dispose: async () => {},
     };
     const caps = await makeSource(engine).fetchCapabilities?.();
     expect(caps?.hasColumnLineage).toBe(false);
@@ -410,6 +412,7 @@ describe('createDuckDbDataSource', () => {
         },
         hasTable: () => true,
         ready: async () => {},
+        dispose: async () => {},
       };
       await expect(
         makeSource(engine).fetchColumnLineage?.({ uniqueId: 'model.a.b' }),

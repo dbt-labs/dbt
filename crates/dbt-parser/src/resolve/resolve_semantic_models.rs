@@ -230,9 +230,9 @@ pub async fn resolve_semantic_models(
 
         let dimensions = model_props_to_dimensions(model_props.clone());
         let node_relation = NodeRelation {
-            database: Some(resolved_model.database()),
-            schema_name: resolved_model.schema(),
-            alias: resolved_model.alias(),
+            database: Some(resolved_model.database().to_string()),
+            schema_name: resolved_model.schema().to_string(),
+            alias: resolved_model.alias().to_string(),
             relation_name: resolved_model.__base_attr__.relation_name.clone(),
         };
 
@@ -308,6 +308,7 @@ pub async fn resolve_semantic_models(
                 adapter: adapter_type,
                 // This node type has no `+propagate` config; nothing is published.
                 propagate: Vec::new(),
+                effective_propagation_target: None,
                 database: "".to_string(),
                 schema: "".to_string(),
                 alias: "".to_string(),

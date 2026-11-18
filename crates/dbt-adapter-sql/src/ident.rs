@@ -1,10 +1,19 @@
-use core::fmt;
+use std::borrow::Cow;
+use std::fmt;
 use std::num::NonZero;
 
 use dbt_adapter_core::{AdapterType, quote_char};
 
 use super::is_keyword_ignore_ascii_case;
 use super::tokenizer::QuotingStyle;
+
+pub mod bigquery;
+pub mod clickhouse;
+pub mod databricks;
+pub mod duckdb;
+pub mod redshift;
+pub mod snowflake;
+pub mod spark;
 
 /// An identifier and its provenance (from quoted or an plain identifier in the input source).
 ///
@@ -51,12 +60,32 @@ impl Ident {
         }
     }
 
+    /// Create an [Ident] from an unescaped string that must always be rendered
+    /// in the backend's canonical quotes. Escaping happens on [Ident::display].
+    ///
+    /// ```ignore
+    /// let id = Ident::from_unquoted(r"a\b`c", AdapterType::Bigquery);
+    /// assert_eq!(id.display(AdapterType::Bigquery).to_string(), r"`a\\b\`c`");
+    /// ```
+    pub fn from_unquoted(s: impl Into<String>, backend: AdapterType) -> Self {
+        Ident::unquoted(canonical_quote(backend), s)
+    }
+
     pub fn plain(s: impl Into<String>) -> Self {
         Ident::Plain(s.into())
     }
 
     pub fn unquoted(quote: QuotingStyle, s: impl Into<String>) -> Self {
         Ident::Unquoted(quote, s.into())
+    }
+
+    pub fn from_string(s: impl Into<String>, must_quote: bool, backend: AdapterType) -> Self {
+        let s = s.into();
+        if must_quote || must_be_quoted(&s, backend) {
+            Ident::Unquoted(canonical_quote(backend), s)
+        } else {
+            Ident::Plain(s)
+        }
     }
 
     pub fn display(&self, backend: AdapterType) -> IdentDisplay<'_> {
@@ -75,11 +104,16 @@ impl Ident {
             Ident::Plain(s) => s,
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.as_ref().is_empty()
+    }
 }
 
 pub struct IdentDisplay<'a>(&'a Ident, AdapterType);
 
 impl fmt::Display for IdentDisplay<'_> {
+    #[inline(never)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             Ident::Unquoted(quote, s) => _render_ident_in_quotes(*quote, s, self.1, f),
@@ -88,24 +122,17 @@ impl fmt::Display for IdentDisplay<'_> {
     }
 }
 
+#[inline(always)]
 fn _render_ident_in_quotes(
     quote: QuotingStyle,
     s: &str,
-    _backend: AdapterType,
+    backend: AdapterType,
     f: &mut fmt::Formatter<'_>,
 ) -> fmt::Result {
-    // TODO: use backend to determine how to escape the quote character
     write!(f, "{}", quote.opening())?;
     let closing: &str = quote.closing();
     let q = closing.chars().next().unwrap(); // `, ", or '
-    for c in s.chars() {
-        if c == q {
-            // Escape the quote character by doubling it
-            write!(f, "{closing}{closing}")?;
-        } else {
-            write!(f, "{c}")?;
-        }
-    }
+    write!(f, "{}", escaped_identifier(s.into(), backend, q))?;
     write!(f, "{closing}")
 }
 
@@ -136,6 +163,10 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
 // https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
 
 /// The canonical quoting style used to quote identifiers in this backend's dialect.
+///
+/// Always inline because the backend is often known at compile and
+/// constant propagation eliminates the match entirely.
+#[inline(always)]
 pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
@@ -248,27 +279,113 @@ pub fn sanitize_identifier(name: &str, backend: AdapterType) -> String {
     }
 }
 
+/// Escape all occurrences of `from` in `s` with `to` avoiding allocations when possible.
+///
+/// Always inline to avoid passing [Cow] over the stack where possible.
+#[inline(always)]
+fn with_replaced_char<'a>(s: Cow<'a, str>, from: char, to: &str) -> Cow<'a, str> {
+    if s.contains(from) {
+        Cow::Owned(s.replace(from, to))
+    } else {
+        s
+    }
+}
+
+/// Escape all occurrences of `quote` in `s` with the backend's escape sequence for that quote.
+///
+/// No wrapping quotes are added. `\` might be duplicated depending on the backend's escaping
+/// rules.
+///
+/// Always inline to avoid passing [Cow] over the stack where possible.
+#[inline(always)]
+pub fn escaped_identifier<'a>(id: Cow<'a, str>, backend: AdapterType, quote: char) -> Cow<'a, str> {
+    match backend {
+        AdapterType::Bigquery => {
+            let id = with_replaced_char(id, '\\', "\\\\");
+            with_replaced_char(id, quote, &format!("\\{quote}"))
+        }
+        AdapterType::ClickHouse => {
+            let id = with_replaced_char(id, '\\', "\\\\");
+            with_replaced_char(id, quote, &format!("{quote}{quote}"))
+        }
+        _ => with_replaced_char(id, quote, &format!("{quote}{quote}")),
+    }
+}
+
 /// Render `id` as an unconditionally quoted identifier for `backend`, escaping
-/// embedded quote characters by doubling. Unlike [`Ident::new`], which quotes
-/// only when required, this always quotes — for composing SQL over identifiers
-/// of unknown provenance (e.g. DuckDB `DESCRIBE "db"."schema"."table"`), where
-/// an unquoted rendering could re-interpret case or special characters.
+/// embedded delimiters using the backend's identifier rules. Unlike
+/// [`Ident::new`], which quotes only when required, this always quotes — for
+/// composing SQL over identifiers of unknown provenance (e.g. DuckDB
+/// `DESCRIBE "db"."schema"."table"`), where an unquoted rendering could
+/// re-interpret case or special characters.
 pub fn quote_identifier(id: &str, backend: AdapterType) -> String {
-    Ident::unquoted(canonical_quote(backend), id)
+    Ident::from_unquoted(id, backend)
         .display(backend)
         .to_string()
 }
 
-/// Escape `s` for inclusion inside a single-quoted SQL *string literal*, so a
-/// value can never terminate the literal early. The literal-value member of
-/// the family next to [`sanitize_identifier`] (strip) and [`quote_identifier`]
-/// (quote), which handle identifiers.
-pub fn escape_string_literal(s: &str, _backend: AdapterType) -> String {
-    // ANSI '' doubling — correct for every currently supported backend.
-    // Dialects with different literal-escape rules (e.g. backslash-escaped
-    // strings) grow a match arm on `_backend` when they arrive.
-    s.replace('\'', "''")
+/// Define an `Ident` newtype over [Ident] that is bound to one [AdapterType],
+/// so callers don't pass the backend to every constructor and when formatting.
+///
+/// Expands to items in the invoking module, e.g. `ident::bigquery::Ident`:
+///
+/// ```ignore
+/// define_adapter_ident!(AdapterType::Bigquery);
+/// ```
+macro_rules! define_adapter_ident {
+    ($backend:expr) => {
+        /// [Ident](super::Ident) bound to a single backend.
+        #[derive(Debug, Clone)]
+        pub struct Ident($crate::ident::Ident);
+
+        impl AsRef<str> for Ident {
+            #[inline]
+            fn as_ref(&self) -> &str {
+                self.0.as_ref()
+            }
+        }
+
+        impl Ident {
+            #[inline]
+            pub fn new(s: impl Into<String>) -> Self {
+                Self($crate::ident::Ident::new(s, $backend))
+            }
+
+            #[inline]
+            pub fn from_unquoted(s: impl Into<String>) -> Self {
+                Self($crate::ident::Ident::from_unquoted(s, $backend))
+            }
+
+            #[inline]
+            pub fn plain(s: impl Into<String>) -> Self {
+                Self($crate::ident::Ident::plain(s))
+            }
+
+            #[inline]
+            pub fn from_string(s: impl Into<String>, must_quote: bool) -> Self {
+                Self($crate::ident::Ident::from_string(s, must_quote, $backend))
+            }
+
+            pub fn into_inner(self) -> $crate::ident::Ident {
+                self.0
+            }
+
+            #[inline]
+            pub fn is_empty(&self) -> bool {
+                self.0.is_empty()
+            }
+        }
+
+        impl ::std::fmt::Display for Ident {
+            #[inline]
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::Display::fmt(&self.0.display($backend), f)
+            }
+        }
+    };
 }
+
+pub(crate) use define_adapter_ident;
 
 #[cfg(test)]
 mod sanitize_tests {
@@ -278,6 +395,12 @@ mod sanitize_tests {
     fn snowflake_hyphen_must_be_quoted() {
         assert!(must_be_quoted("GIFT-CARDS", AdapterType::Snowflake));
         assert!(!must_be_quoted("GIFT_CARDS", AdapterType::Snowflake));
+    }
+
+    #[test]
+    fn from_unquoted_always_quotes_and_escapes() {
+        let id = Ident::from_unquoted(r"a\b`c", AdapterType::Bigquery);
+        assert_eq!(id.display(AdapterType::Bigquery).to_string(), r"`a\\b\`c`");
     }
 
     #[test]
@@ -291,14 +414,18 @@ mod sanitize_tests {
             "\"od\"\"d\""
         );
         assert_eq!(quote_identifier("col", AdapterType::Bigquery), "`col`");
-    }
-
-    #[test]
-    fn escape_string_literal_doubles_single_quotes() {
-        let e = |s: &str| escape_string_literal(s, AdapterType::DuckDB);
-        assert_eq!(e("o'brien"), "o''brien");
-        assert_eq!(e("'; DROP TABLE x; --"), "''; DROP TABLE x; --");
-        assert_eq!(e("plain"), "plain");
+        assert_eq!(
+            quote_identifier(r"odd\`name", AdapterType::Bigquery),
+            r"`odd\\\`name`"
+        );
+        assert_eq!(
+            quote_identifier(r#"we\"ird"#, AdapterType::ClickHouse),
+            r#""we\\""ird""#
+        );
+        assert_eq!(
+            quote_identifier("trail\\", AdapterType::ClickHouse),
+            r#""trail\\""#
+        );
     }
 
     #[test]
@@ -311,5 +438,234 @@ mod sanitize_tests {
         assert_eq!(s("under_score123"), "under_score123");
         // Multi-byte Unicode is dropped entirely (no stray continuation bytes).
         assert_eq!(s("café—x"), "cafx");
+    }
+}
+
+#[cfg(test)]
+mod quote_ident_tests {
+    use super::*;
+
+    pub fn quote_ident(adapter_type: AdapterType, identifier: &str) -> String {
+        let quote = quote_char(adapter_type);
+        let escaped = escaped_identifier(identifier.into(), adapter_type, quote);
+        format!("{quote}{escaped}{quote}")
+    }
+
+    const IDENTIFIERS: &[&str] = &[
+        "",
+        "a",
+        "A",
+        "abc",
+        "ABC",
+        "MixedCase",
+        "snake_case",
+        "_leading_underscore",
+        "trailing_underscore_",
+        "with1digits",
+        "1leading_digit",
+        "123",
+        "with space",
+        " leading_space",
+        "trailing_space ",
+        "  ",
+        "tab\there",
+        "new\nline",
+        "carriage\rreturn",
+        "hyphen-ated",
+        "GIFT-CARDS",
+        "dot.ted",
+        "my.catalog.name",
+        "dollar$sign",
+        "at@sign",
+        "hash#tag",
+        "percent%",
+        "star*",
+        "plus+minus-",
+        "slash/and\\back",
+        "colon:semi;",
+        "comma,here",
+        "paren(thesis)",
+        "brackets[x]",
+        "braces{x}",
+        "angle<brackets>",
+        "question?",
+        "bang!",
+        "tilde~",
+        "caret^",
+        "pipe|",
+        "ampersand&",
+        "equals=",
+        "\"",
+        "\"\"",
+        "\"\"\"",
+        "a\"b",
+        "\"leading",
+        "trailing\"",
+        "\"wrapped\"",
+        "a\"\"b",
+        "`",
+        "``",
+        "```",
+        "a`b",
+        "`leading",
+        "trailing`",
+        "`wrapped`",
+        "a``b",
+        "'",
+        "''",
+        "a'b",
+        "'wrapped'",
+        "\\",
+        "\\\\",
+        "\\\\\\",
+        "a\\b",
+        "\\leading",
+        "trailing\\",
+        "a\\\\b",
+        "\\\"",
+        "\\`",
+        "\\'",
+        "\"\\",
+        "`\\",
+        "\\\"\\\"",
+        "\\`\\`",
+        "mix\"of`quotes'and\\backslashes",
+        "foo\";DROP TABLE bar;--",
+        "foo`;DROP TABLE bar;--",
+        "'); DROP",
+        "Robert'); DROP TABLE Students;--",
+        "select",
+        "SELECT",
+        "from",
+        "table",
+        "order",
+        "group",
+        "null",
+        "true",
+        "café",
+        "café—x",
+        "日本語",
+        "naïve",
+        "ñandú",
+        "emoji😀name",
+        "😀",
+        "ünï\"cödé`",
+        "zero\u{200b}width",
+        "nul\0byte",
+        "very_long_identifier_name_that_goes_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_and_on_end",
+    ];
+
+    fn assert_equivalent(adapter_type: AdapterType, identifier: &str) {
+        assert_eq!(
+            quote_ident(adapter_type, identifier),
+            quote_identifier(identifier, adapter_type),
+            "adapter_type={adapter_type:?} identifier={identifier:?}",
+        );
+    }
+
+    /// Adapters where both functions are expected to agree.
+    ///
+    /// Left out on purpose:
+    /// - `Dremio` and `Oracle`: `quote_char` is `todo!()` and panics.
+    /// - `ClickHouse` and `Athena`: `quote_char` and `canonical_quote` disagree
+    ///   about the quote character (see the ignored tests below).
+    const COMPARABLE_ADAPTERS: &[AdapterType] = &[
+        AdapterType::Snowflake,
+        AdapterType::Bigquery,
+        AdapterType::Databricks,
+        AdapterType::Redshift,
+        AdapterType::Spark,
+        AdapterType::DuckDB,
+        AdapterType::Postgres,
+        AdapterType::Salesforce,
+        AdapterType::Fabric,
+        AdapterType::Exasol,
+        AdapterType::Starburst,
+        AdapterType::Trino,
+        AdapterType::Datafusion,
+        AdapterType::LakeCompute,
+    ];
+
+    #[test]
+    fn quote_ident_matches_quote_identifier_for_all_adapters_and_identifiers() {
+        for &adapter_type in COMPARABLE_ADAPTERS {
+            for identifier in IDENTIFIERS {
+                assert_equivalent(adapter_type, identifier);
+            }
+        }
+    }
+
+    #[test]
+    fn comparable_adapters_cover_every_adapter_but_the_known_exceptions() {
+        let excluded = [
+            AdapterType::Dremio,
+            AdapterType::Oracle,
+            AdapterType::ClickHouse,
+            AdapterType::Athena,
+        ];
+        for (adapter_type, _) in AdapterType::iter_with_names() {
+            assert!(
+                COMPARABLE_ADAPTERS.contains(&adapter_type) != excluded.contains(&adapter_type),
+                "{adapter_type:?} must be in exactly one of COMPARABLE_ADAPTERS or the exclusions",
+            );
+        }
+    }
+
+    macro_rules! equivalence_tests {
+        ($($name:ident => $adapter_type:expr),* $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    for identifier in IDENTIFIERS {
+                        assert_equivalent($adapter_type, identifier);
+                    }
+                }
+            )*
+        };
+    }
+
+    equivalence_tests! {
+        quote_ident_matches_snowflake => AdapterType::Snowflake,
+        quote_ident_matches_bigquery => AdapterType::Bigquery,
+        quote_ident_matches_databricks => AdapterType::Databricks,
+        quote_ident_matches_redshift => AdapterType::Redshift,
+        quote_ident_matches_spark => AdapterType::Spark,
+        quote_ident_matches_duckdb => AdapterType::DuckDB,
+        quote_ident_matches_postgres => AdapterType::Postgres,
+        quote_ident_matches_salesforce => AdapterType::Salesforce,
+        quote_ident_matches_fabric => AdapterType::Fabric,
+        quote_ident_matches_exasol => AdapterType::Exasol,
+        quote_ident_matches_starburst => AdapterType::Starburst,
+        quote_ident_matches_trino => AdapterType::Trino,
+        quote_ident_matches_datafusion => AdapterType::Datafusion,
+        quote_ident_matches_lakecompute => AdapterType::LakeCompute,
+    }
+
+    #[test]
+    #[ignore = "quote_char(ClickHouse) is a backtick but canonical_quote(ClickHouse) is a double quote"]
+    fn quote_ident_matches_clickhouse() {
+        for identifier in IDENTIFIERS {
+            assert_equivalent(AdapterType::ClickHouse, identifier);
+        }
+    }
+
+    #[test]
+    #[ignore = "quote_char(Athena) is a double quote but canonical_quote(Athena) is a backtick"]
+    fn quote_ident_matches_athena() {
+        for identifier in IDENTIFIERS {
+            assert_equivalent(AdapterType::Athena, identifier);
+        }
+    }
+
+    #[test]
+    fn quote_ident_wraps_in_the_adapter_quote_char() {
+        for &adapter_type in COMPARABLE_ADAPTERS
+            .iter()
+            .chain(&[AdapterType::ClickHouse, AdapterType::Athena])
+        {
+            let quote = quote_char(adapter_type);
+            let quoted = quote_ident(adapter_type, "plain");
+            assert_eq!(quoted, format!("{quote}plain{quote}"));
+        }
     }
 }

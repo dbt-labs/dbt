@@ -3,13 +3,13 @@
 //! This module contains the internal `ContextualProgressBar` struct that wraps
 //! indicatif's `ProgressBar` with additional context tracking and counter support.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use counter::Counter;
 use indicatif::ProgressBar;
 use indicatif::ProgressState;
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -147,7 +147,7 @@ impl AsRef<str> for ContextItem {
 pub(crate) struct ContextualProgressBar {
     main_bar: ProgressBar,
     context_bar: Option<ProgressBar>,
-    counters: Arc<RwLock<Counter<String>>>,
+    counters: Arc<RwLock<HashMap<String, usize>>>,
     items: Arc<RwLock<Vec<ContextItem>>>,
 }
 
@@ -161,7 +161,7 @@ impl ContextualProgressBar {
         Self {
             main_bar: progress,
             context_bar: None,
-            counters: Arc::new(RwLock::new(Counter::new())),
+            counters: Arc::new(RwLock::new(HashMap::new())),
             items: Arc::new(RwLock::new(Vec::new())),
         }
     }
@@ -185,7 +185,7 @@ impl ContextualProgressBar {
         let new_self = Self {
             main_bar,
             items: Arc::new(RwLock::new(Vec::new())),
-            counters: Arc::new(RwLock::new(Counter::with_capacity(5))),
+            counters: Arc::new(RwLock::new(HashMap::with_capacity(5))),
             context_bar: if style_type.needs_context_line() {
                 Some(ProgressBar::hidden())
             } else {
@@ -326,8 +326,14 @@ impl ContextualProgressBar {
     }
 
     /// Increments the progress bar by the specified number of steps.
+    ///
+    /// Clamps at `length`, so a caller whose upfront total was an estimate (e.g. parse,
+    /// where one source file can expand into several parsed assets) parks the bar at
+    /// 100% rather than overshooting or moving the denominator mid-run.
     pub fn inc(&self, inc: u64) {
-        self.main_bar.inc(inc);
+        let length = self.main_bar.length().unwrap_or(0);
+        let position = self.main_bar.position();
+        self.main_bar.inc(inc.min(length.saturating_sub(position)));
     }
 
     /// Increments the counter for the given item by the specified step.
@@ -390,5 +396,36 @@ impl ContextualProgressBar {
         {
             slot.set_active();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A caller's upfront total can be an estimate (e.g. parse, where one source
+    /// file can expand into several parsed assets), so `inc` must never leave the
+    /// bar showing a position past its length, nor move the length to accommodate one.
+    #[test]
+    fn inc_past_total_clamps_at_length() {
+        let bar = ContextualProgressBar::new_bar(3, "Parsing".to_string());
+
+        for _ in 0..5 {
+            bar.inc(1);
+        }
+
+        assert_eq!(bar.main_bar.position(), 3);
+        assert_eq!(bar.main_bar.length(), Some(3));
+    }
+
+    /// A single oversized increment must clamp the same way a run of small ones does.
+    #[test]
+    fn oversized_single_inc_clamps_at_length() {
+        let bar = ContextualProgressBar::new_bar(3, "Parsing".to_string());
+
+        bar.inc(10);
+
+        assert_eq!(bar.main_bar.position(), 3);
+        assert_eq!(bar.main_bar.length(), Some(3));
     }
 }

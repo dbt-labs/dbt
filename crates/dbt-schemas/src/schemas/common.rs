@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use dbt_adapter_core::{AdapterType, quote_char};
 use dbt_common::{CodeLocationWithFile, ErrorCode, FsError, FsResult, err, fs_err};
-use dbt_telemetry::NodeMaterialization;
+use dbt_telemetry::{NodeAccess, NodeMaterialization};
 use dbt_yaml::{DbtSchema, Spanned, UntaggedEnumDeserialize, Verbatim};
 use hex;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -428,6 +428,12 @@ pub enum DbtMaterialization {
     #[serde(untagged)]
     Unknown(String),
 }
+impl DbtMaterialization {
+    /// Constraints are only enforced for table and incremental materializations.
+    pub fn enforces_constraints(&self) -> bool {
+        matches!(self, Self::Table | Self::Incremental)
+    }
+}
 impl FromStr for DbtMaterialization {
     type Err = ();
 
@@ -536,6 +542,16 @@ impl From<&DbtMaterialization> for NodeMaterialization {
             DbtMaterialization::Snapshot => Self::Snapshot,
             DbtMaterialization::Seed => Self::Seed,
             DbtMaterialization::Function => Self::Function,
+        }
+    }
+}
+
+impl From<&Access> for NodeAccess {
+    fn from(value: &Access) -> Self {
+        match value {
+            Access::Private => Self::Private,
+            Access::Protected => Self::Protected,
+            Access::Public => Self::Public,
         }
     }
 }
@@ -944,7 +960,9 @@ pub struct Constraint {
         serialize_with = "crate::schemas::serde::serialize_none_as_empty_vec"
     )]
     pub to_columns: Option<Vec<String>>,
+    #[serde(default = "crate::schemas::serde::default_true")]
     pub warn_unsupported: Option<bool>,
+    #[serde(default = "crate::schemas::serde::default_true")]
     pub warn_unenforced: Option<bool>,
 }
 
@@ -979,6 +997,116 @@ impl ConstraintType {
             ConstraintType::Custom => "custom",
         }
     }
+}
+
+/// The adapter's `CONSTRAINT_SUPPORT` table, or `None` for adapters without a table here.
+/// https://github.com/dbt-labs/dbt-adapters/blob/5379513bad9c75661b990a5ed5f32ac9c62a0758/dbt-adapters/src/dbt/adapters/base/impl.py#L293
+///
+/// This drives the unenforced/unsupported constraint warnings, constraint DDL rendering and
+/// `state:modified.contract` breaking-change detection, which only reports removed `Enforced`
+/// constraints. Known differences from the Python adapters, not yet audited for whether they are
+/// intentional. Where they apply, dbt-core reports a removed constraint and Fusion does not:
+/// - Postgres and DuckDB: dbt-postgres and dbt-duckdb mark every type `ENFORCED`.
+/// - Trino, Starburst and Oracle return `None`, but their Python adapters enforce some types
+///   (dbt-trino enforces `not_null`).
+///
+/// In dbt-core, an adapter that doesn't override the table gets the base table above. Spark,
+/// Athena and Dremio override it and enforce nothing, so `None` matches them.
+pub fn constraint_support(
+    adapter_type: AdapterType,
+    ct: ConstraintType,
+) -> Option<ConstraintSupport> {
+    use AdapterType::*;
+    use ConstraintSupport::*;
+    use ConstraintType::*;
+
+    let support = match (adapter_type, ct) {
+        // Postgres
+        (Postgres, NotNull) => Enforced,
+        (Postgres, ForeignKey) => Enforced,
+        (Postgres, Unique) => NotEnforced,
+        (Postgres, PrimaryKey) => NotEnforced,
+        (Postgres, Check) => NotSupported,
+        (Postgres, Custom) => NotSupported,
+
+        // Snowflake
+        // https://github.com/dbt-labs/dbt-adapters/blob/aa1de3d16267a456326a36045701fb48a61a6b6c/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L74
+        (Snowflake, NotNull) => Enforced,
+        (Snowflake, ForeignKey) => NotEnforced,
+        (Snowflake, Unique) => NotEnforced,
+        (Snowflake, PrimaryKey) => NotEnforced,
+        (Snowflake, Check) => NotSupported,
+        (Snowflake, Custom) => NotSupported,
+
+        // BigQuery
+        // https://github.com/dbt-labs/dbt-adapters/blob/4a00354a497214d9043bf4122810fe2d04de17bb/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L132
+        (Bigquery, NotNull) => Enforced,
+        (Bigquery, Unique) => NotSupported,
+        (Bigquery, PrimaryKey) => NotEnforced,
+        (Bigquery, ForeignKey) => NotEnforced,
+        (Bigquery, Check) => NotSupported,
+        (Bigquery, Custom) => NotSupported,
+
+        // Databricks
+        // https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/constraints.py#L17
+        (Databricks, NotNull) => Enforced,
+        (Databricks, Unique) => NotSupported,
+        (Databricks, PrimaryKey) => NotEnforced,
+        (Databricks, ForeignKey) => NotEnforced,
+        (Databricks, Check) => Enforced,
+        (Databricks, Custom) => NotSupported,
+
+        // Redshift
+        // https://github.com/dbt-labs/dbt-adapters/blob/2a94cc75dba1f98fa5caff1f396f5af7ee444598/dbt-redshift/src/dbt/adapters/redshift/impl.py#L53
+        (Redshift, NotNull) => Enforced,
+        (Redshift, Unique) => NotEnforced,
+        (Redshift, PrimaryKey) => NotEnforced,
+        (Redshift, ForeignKey) => NotEnforced,
+        (Redshift, Check) => NotSupported,
+        (Redshift, Custom) => NotSupported,
+
+        // DuckDB - follows Postgres
+        (DuckDB, NotNull) => Enforced,
+        (DuckDB, ForeignKey) => Enforced,
+        (DuckDB, Unique) => NotEnforced,
+        (DuckDB, PrimaryKey) => NotEnforced,
+        (DuckDB, Check) => NotSupported,
+        (DuckDB, Custom) => NotSupported,
+
+        // Lake compute - follows DuckDB
+        (LakeCompute, NotNull) => Enforced,
+        (LakeCompute, ForeignKey) => Enforced,
+        (LakeCompute, Unique) => NotEnforced,
+        (LakeCompute, PrimaryKey) => NotEnforced,
+        (LakeCompute, Check) => NotSupported,
+        (LakeCompute, Custom) => NotSupported,
+
+        // Fabric
+        (Fabric, Check) => NotSupported,
+        (Fabric, NotNull) => Enforced,
+        (Fabric, Unique) => Enforced,
+        (Fabric, PrimaryKey) => Enforced,
+        (Fabric, ForeignKey) => Enforced,
+        (Fabric, Custom) => NotSupported,
+
+        // Exasol (verified on Exasol 8)
+        (Exasol, NotNull) => Enforced,
+        (Exasol, PrimaryKey) => Enforced,
+        (Exasol, ForeignKey) => Enforced,
+        (Exasol, Unique) => NotSupported,
+        (Exasol, Check) => NotSupported,
+        (Exasol, Custom) => NotSupported,
+
+        // ClickHouse (dbt-clickhouse impl.py CONSTRAINT_SUPPORT)
+        (ClickHouse, Check) => Enforced,
+        (ClickHouse, NotNull | Unique | PrimaryKey | ForeignKey | Custom) => NotSupported,
+
+        // Salesforce
+        (Salesforce | Spark | Starburst | Athena | Trino | Datafusion | Dremio | Oracle, _) => {
+            return None;
+        }
+    };
+    Some(support)
 }
 
 #[derive(Debug, Clone, Serialize, UntaggedEnumDeserialize)]
@@ -2881,12 +3009,12 @@ period: hour
     fn test_bigquery_partition_config_legacy_deserialize_from_jinja_values() {
         // Test String variant
         let string_value = MinijinjaValue::from("partition_field");
-        let result = minijinja_value_to_typed_struct::<PartitionConfig>(string_value).unwrap();
+        let result = minijinja_value_to_typed_struct::<PartitionConfig>(&string_value).unwrap();
         assert!(matches!(result, PartitionConfig::String(s) if s == "partition_field"));
 
         // Test List variant
         let list_value = MinijinjaValue::from(vec!["field1", "field2"]);
-        let result = minijinja_value_to_typed_struct::<PartitionConfig>(list_value).unwrap();
+        let result = minijinja_value_to_typed_struct::<PartitionConfig>(&list_value).unwrap();
         assert!(
             matches!(result, PartitionConfig::List(ref list) if list == &vec!["field1".to_string(), "field2".to_string()])
         );
@@ -2902,7 +3030,7 @@ period: hour
         )
         .unwrap();
         let config_value = MinijinjaValue::from_serialize(&config_json);
-        let result = minijinja_value_to_typed_struct::<PartitionConfig>(config_value).unwrap();
+        let result = minijinja_value_to_typed_struct::<PartitionConfig>(&config_value).unwrap();
         if let PartitionConfig::BigqueryPartitionConfig(config) = result {
             assert_eq!(config.field, "partition_date");
             assert_eq!(config.data_type, "date");

@@ -13,9 +13,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, io_args::IoArgs};
 use dbt_jinja_ctx::{GlobalCore, JinjaObject, ResolveCore, to_jinja_btreemap};
 use dbt_jinja_vars::DbtVars;
 use dbt_schemas::schemas::{
-    common::DbtQuoting,
-    dbt_catalogs::DbtCatalogs,
-    profiles::{DbConfig, TargetContext},
+    common::DbtQuoting, dbt_catalogs_deprecated::DbtCatalogs, profiles::DbConfig,
 };
 use indexmap::IndexMap;
 use minijinja::{
@@ -31,7 +29,7 @@ use crate::{
     invocation_args::InvocationArgs,
     jinja_environment::JinjaEnv,
     listener::{DefaultJinjaTypeCheckEventListenerFactory, JinjaTypeCheckingEventListenerFactory},
-    phases::utils::build_target_context_map,
+    phases::utils::{TargetGlobals, build_target_globals},
 };
 
 /// Factory for the Jinja services used during an invocation.
@@ -130,11 +128,13 @@ pub fn initialize_parse_jinja_environment(
     // Set the thread local dependencies
     THREAD_LOCAL_DEPENDENCIES.get_or_init(|| Mutex::new(all_package_names));
     let adapter_config_mapping = db_config.to_mapping().unwrap();
-    let database = db_config.get_database().cloned();
-    let schema = db_config.get_schema().cloned();
-    let target_context = TargetContext::try_from(db_config)
+    let TargetGlobals {
+        target: target_context,
+        database,
+        schema,
+    } = build_target_globals(profile, target, db_config)
         .map_err(|e| fs_err!(ErrorCode::InvalidConfig, "{}", &e))?;
-    let target_context = Arc::new(build_target_context_map(profile, target, target_context));
+    let target_context = Arc::new(target_context);
 
     let mut prj_flags = Flags::from_project_flags(flags);
     let inv_flags = Flags::from_invocation_args(invocation_args.to_dict());

@@ -17,9 +17,7 @@ pub fn format_value_for_jinja(
             // are emitted unquoted so Jinja evaluates them when the generated test SQL is
             // rendered. Core does the same in `add_rendered_test_kwargs` (clients/jinja.py)
             // by re-wrapping such values in `{{ }}` before native rendering.
-            if s.starts_with("get_where_subquery(")
-                || LOOKS_LIKE_FUNC.is_match(s)
-                || jinja_set_vars.iter().any(|(var_name, _)| var_name == s)
+            if is_renderable_test_arg(s) || jinja_set_vars.iter().any(|(var_name, _)| var_name == s)
             {
                 s.to_string()
             } else if s.starts_with("{{") && s.ends_with("}}") {
@@ -50,6 +48,11 @@ pub fn format_value_for_jinja(
         }
         _ => json_to_jinja_literal(value),
     }
+}
+
+/// Whether a test-argument string is emitted as an expression rather than a literal.
+pub fn is_renderable_test_arg(value: &str) -> bool {
+    value.starts_with("get_where_subquery(") || LOOKS_LIKE_FUNC.is_match(value)
 }
 
 /// Matches strings that are a single bare call to one of dbt-Core's whitelisted

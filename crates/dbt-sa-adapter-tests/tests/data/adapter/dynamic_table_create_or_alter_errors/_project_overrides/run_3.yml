@@ -1,0 +1,37 @@
+flags:
+  send_anonymous_usage_stats: false
+  snowflake_dynamic_table_create_or_alter: true
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+vars:
+  evolved: true
+
+models:
+  test:
+    +static_analysis: off
+    +materialized: dynamic_table
+    +snowflake_warehouse: FUSION_ADAPTER_TESTING
+
+    err_reorder:
+      +refresh_mode: FULL
+      +scheduler: disable
+    err_transient_drift:
+      +refresh_mode: FULL
+      +scheduler: disable
+    err_type_narrow:
+      +refresh_mode: FULL
+      +scheduler: disable
+    err_type_change:
+      +refresh_mode: FULL
+      +scheduler: disable
+    err_fail_fast:
+      +refresh_mode: FULL
+      +scheduler: disable
+      +on_configuration_change: fail
+      +cluster_by: [id]
+    ok_evolve:
+      +refresh_mode: FULL
+      +scheduler: disable

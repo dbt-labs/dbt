@@ -74,14 +74,16 @@ impl TelemetryConsumer for TelemetryJsonlWriterLayer {
     }
 
     fn on_span_start(&self, span: &SpanStartInfo, _: &mut DataProvider<'_>) {
+        // Records are serialized in full before writing: attribute serialization can fail
+        // midway, and a record that fails must not leave a partial line behind.
         if let Ok(json) = serde_json::to_string(&TelemetryRecordRef::SpanStart(span)) {
-            self.writer.writeln(json.as_str());
+            self.writer.writeln(&json);
         }
     }
 
     fn on_span_end(&self, span: &SpanEndInfo, _: &mut DataProvider<'_>) {
         if let Ok(json) = serde_json::to_string(&TelemetryRecordRef::SpanEnd(span)) {
-            self.writer.writeln(json.as_str());
+            self.writer.writeln(&json);
         }
     }
 
@@ -90,7 +92,7 @@ impl TelemetryConsumer for TelemetryJsonlWriterLayer {
             .log_preprocessor_hook
             .map_or(Cow::Borrowed(record), |hook| hook(record));
         if let Ok(json) = serde_json::to_string(&TelemetryRecordRef::LogRecord(record.as_ref())) {
-            self.writer.writeln(json.as_str());
+            self.writer.writeln(&json);
         }
     }
 }

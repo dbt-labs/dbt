@@ -24,7 +24,7 @@
 /// of tracking individual file impacts exceeds the cost of a clean full resolve.
 const INCREMENTAL_CACHE_FILE_THRESHOLD: usize = 100;
 
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, resource_extension};
 use dbt_common::{
     FsResult,
     constants::{
@@ -163,10 +163,10 @@ pub fn add_all_unchanged_nodes(resolved_state: &mut ResolverState, cached_nodes:
 
 // ----------------------------------------------------------
 
-type DbtNodeRef = Arc<dyn InternalDbtNodeAttributes>;
+type DbtNodeRef<'n> = &'n dyn InternalDbtNodeAttributes;
 
 fn is_sql_file_path(path: &Path) -> bool {
-    path.extension() == Some(OsStr::new("sql"))
+    resource_extension(path) == Some("sql")
 }
 
 fn is_yml_file_path(path: &Path) -> bool {
@@ -259,15 +259,18 @@ fn compute_impacted_models_by_schema_file_paths(
 
 /// Filter nodes based on file changes and command type.
 #[allow(clippy::too_many_arguments)]
-fn filter_dbt_nodes_by_file_changes(
+fn filter_dbt_nodes_by_file_changes<'n>(
     io: &IoArgs,
-    nodes: HashMap<String, DbtNodeRef>,
+    nodes: HashMap<String, DbtNodeRef<'n>>,
     node_statuses: &HashMap<String, NodeStatus>,
     input_file_lookup: HashMap<String, Vec<PathBuf>>,
     out_unimpacted_files: &mut HashSet<PathBuf>,
     out_impacted_files: &mut HashSet<PathBuf>,
     out_impacted_schema_files: &mut HashSet<PathBuf>,
-) -> FsResult<(HashMap<String, DbtNodeRef>, HashMap<String, DbtNodeRef>)> {
+) -> FsResult<(
+    HashMap<String, DbtNodeRef<'n>>,
+    HashMap<String, DbtNodeRef<'n>>,
+)> {
     // Build reverse dependency map (who depends on whom)
     let mut reverse_deps: HashMap<String, Vec<String>> = HashMap::new();
     for (unique_id, node) in &nodes {
@@ -374,7 +377,10 @@ fn filter_dbt_nodes_by_file_changes(
     }
 
     // Partition nodes into keep vs invalidated
-    let (keep, invalidated): (HashMap<String, DbtNodeRef>, HashMap<String, DbtNodeRef>) = nodes
+    let (keep, invalidated): (
+        HashMap<String, DbtNodeRef<'n>>,
+        HashMap<String, DbtNodeRef<'n>>,
+    ) = nodes
         .into_iter()
         .partition(|(unique_id, _)| !impacted_nodes_by_unique_id.contains(unique_id));
 
@@ -482,8 +488,8 @@ fn determine_changeset_from_previous_resolved_nodes<'a>(
     }
 
     let prev_dbt_nodes = prev_nodes
-        .into_iter()
-        .map(|node| (node.1.common().unique_id.to_string(), node.1.clone()))
+        .iter()
+        .map(|(_, node)| (node.common().unique_id.to_string(), node))
         .collect::<HashMap<_, _>>();
 
     let mut changed_nodes = HashSet::new();

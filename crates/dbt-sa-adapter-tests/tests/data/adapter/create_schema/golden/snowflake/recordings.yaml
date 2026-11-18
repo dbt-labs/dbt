@@ -1,0 +1,4 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_create_schema

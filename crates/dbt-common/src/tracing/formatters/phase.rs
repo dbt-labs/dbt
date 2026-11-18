@@ -1,7 +1,8 @@
+use std::fmt;
+
 use dbt_telemetry::{ExecutionPhase, PhaseExecuted};
 
-use super::{duration::format_duration_fixed_width, layout::right_align_static_action};
-
+use super::{duration::FixedWidthDuration, layout::RightAligned};
 /// Get the phase action text for a given `ExecutionPhase` (lowercase, no padding)
 pub fn get_phase_action(phase: ExecutionPhase) -> &'static str {
     match phase {
@@ -27,70 +28,84 @@ pub fn get_phase_action(phase: ExecutionPhase) -> &'static str {
     }
 }
 
-/// Get the padded phase action text for the progress bar or spinner.
+/// Get the phase action text for the progress bar or spinner.
 /// Returns `None` for some phases as of now.
-pub fn get_phase_progress_text(phase: ExecutionPhase) -> Option<String> {
+pub fn get_phase_progress_text(phase: ExecutionPhase) -> Option<RightAligned<&'static str>> {
     let action = match phase {
         ExecutionPhase::Analyze => "Analyzing",
         ExecutionPhase::Clean => "Cleaning",
         ExecutionPhase::Compare => "Comparing",
         ExecutionPhase::Debug => "Debugging",
         ExecutionPhase::DeferHydration => "Deferring",
-        // Special case - longer than action column width => no padding
-        ExecutionPhase::FreshnessAnalysis => return Some("Analyzing freshness".to_string()),
+        // Longer than the action column, so displayed without padding
+        ExecutionPhase::FreshnessAnalysis => "Analyzing freshness",
         ExecutionPhase::InitAdapter => return None,
         ExecutionPhase::Lineage => "Generating",
         ExecutionPhase::LoadProject => "Loading",
         ExecutionPhase::NodeCacheHydration => "Hydrating",
-        // Special case - longer than action column width => no padding
-        ExecutionPhase::OnRunStart => return Some("Running on-run-start".to_string()),
-        ExecutionPhase::OnRunEnd => return Some("Running on-run-end".to_string()),
+        // Longer than the action column, so displayed without padding
+        ExecutionPhase::OnRunStart => "Running on-run-start",
+        ExecutionPhase::OnRunEnd => "Running on-run-end",
         ExecutionPhase::Parse => "Parsing",
         ExecutionPhase::Render => "Rendering",
         ExecutionPhase::Run => "Running",
         ExecutionPhase::Schedule => "Scheduling",
-        // Special case - longer than action column width => no padding
-        ExecutionPhase::SchemaHydration => return Some("Downloading Schemas".to_string()),
+        // Longer than the action column, so displayed without padding
+        ExecutionPhase::SchemaHydration => "Downloading Schemas",
         ExecutionPhase::TaskGraphBuild => "Building",
         ExecutionPhase::Unspecified => return None,
     };
 
-    Some(right_align_static_action(action))
+    Some(RightAligned(action))
 }
 
-/// Format a `PhaseExecuted` event for the start of a phase
+/// Displays a `PhaseExecuted` event for the start of a phase
 ///
-/// Returns formatted string in the pattern:
+/// Writes the pattern:
 /// `Started {phase_action}` or `Started {phase_action} ({total} nodes)` if total > 0
-pub fn format_phase_executed_start(phase: &PhaseExecuted) -> String {
-    let phase_action = get_phase_action(phase.phase());
-    let total = phase.node_count_total.unwrap_or_default();
+pub struct PhaseExecutedStart<'a>(pub &'a PhaseExecuted);
 
-    if total > 0 {
-        format!("Started {} ({} nodes)", phase_action, total)
-    } else {
-        format!("Started {}", phase_action)
+impl fmt::Display for PhaseExecutedStart<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let phase = self.0;
+        let phase_action = get_phase_action(phase.phase());
+        let total = phase.node_count_total.unwrap_or_default();
+
+        if total > 0 {
+            write!(f, "Started {} ({} nodes)", phase_action, total)
+        } else {
+            write!(f, "Started {}", phase_action)
+        }
     }
 }
 
-/// Format a PhaseExecuted event for the end of a phase
+/// Displays a PhaseExecuted event for the end of a phase
 ///
-/// Returns formatted string in the pattern:
+/// Writes the pattern:
 /// `Finished {phase_action} [duration]` or
 /// `Finished {phase_action} [duration] ({total} nodes, {skipped} skipped, {errors} errors)` if total > 0
-pub fn format_phase_executed_end(phase: &PhaseExecuted, duration: std::time::Duration) -> String {
-    let phase_action = get_phase_action(phase.phase());
-    let duration_formatted = format_duration_fixed_width(duration);
-    let total = phase.node_count_total.unwrap_or_default();
+pub struct PhaseExecutedEnd<'a> {
+    pub phase: &'a PhaseExecuted,
+    pub duration: std::time::Duration,
+}
 
-    if total > 0 {
-        let skipped = phase.node_count_skipped.unwrap_or_default();
-        let errors = phase.node_count_error.unwrap_or_default();
-        format!(
-            "Finished {} [{}] ({} nodes, {} skipped, {} errors)",
-            phase_action, duration_formatted, total, skipped, errors
-        )
-    } else {
-        format!("Finished {} [{}]", phase_action, duration_formatted)
+impl fmt::Display for PhaseExecutedEnd<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let phase = self.phase;
+        let phase_action = get_phase_action(phase.phase());
+        let duration_formatted = FixedWidthDuration(self.duration);
+        let total = phase.node_count_total.unwrap_or_default();
+
+        if total > 0 {
+            let skipped = phase.node_count_skipped.unwrap_or_default();
+            let errors = phase.node_count_error.unwrap_or_default();
+            write!(
+                f,
+                "Finished {} [{}] ({} nodes, {} skipped, {} errors)",
+                phase_action, duration_formatted, total, skipped, errors
+            )
+        } else {
+            write!(f, "Finished {} [{}]", phase_action, duration_formatted)
+        }
     }
 }

@@ -8,11 +8,13 @@
   {% set tblproperties = changes.get("tblproperties") %}
   {% set query = changes.get("query") %}
 
+  {# Handle YAML definition changes via ALTER VIEW AS #}
   {% if query %}
     {% call statement('main') %}
       {{ get_alter_metric_view_as_sql(target_relation, query.query) }}
     {% endcall %}
   {% else %}
+    {# Ensure statement('main') is called for dbt to track the run #}
     {% call statement('main') %}
       select 1
     {% endcall %}
@@ -31,7 +33,7 @@
 {%- endmacro %}
 
 {% macro databricks__get_alter_metric_view_as_sql(relation, yaml_content) %}
-{%- set yaml_body = adapter.yaml_quote_backtick_values(yaml_content) -%}
+{%- set yaml_body = databricks__yaml_quote_backtick_values(yaml_content) -%}
 alter view {{ relation.render() }} as $$
 {{ yaml_body }}
 $$

@@ -137,6 +137,7 @@ impl DefaultTo for Option<ModelState> {
             pre_clone,
             execute_hooks_on_any_reuse,
             compare_unrendered_code,
+            ignore_external_modifications,
         } = state;
         *lag_tolerance = lag_tolerance
             .take()
@@ -149,6 +150,8 @@ impl DefaultTo for Option<ModelState> {
         *execute_hooks_on_any_reuse =
             execute_hooks_on_any_reuse.or(parent_state.execute_hooks_on_any_reuse);
         *compare_unrendered_code = compare_unrendered_code.or(parent_state.compare_unrendered_code);
+        *ignore_external_modifications =
+            ignore_external_modifications.or(parent_state.ignore_external_modifications);
     }
 }
 
@@ -340,6 +343,20 @@ impl DefaultTo for crate::schemas::project::configs::common::WarehouseSpecificNo
     fn inherit_from(&mut self, parent: &Self) {
         use crate::schemas::project::ResolvableConfig;
         ResolvableConfig::default_to(self, parent);
+    }
+}
+
+/// Inheriting from a default parent changes nothing, and a default child inherits a copy of the
+/// parent, so only the case where both are allocated merges field by field.
+impl DefaultTo for crate::schemas::project::configs::common::LazyWarehouseSpecificNodeConfig {
+    fn inherit_from(&mut self, parent: &Self) {
+        let Some(parent_config) = parent.get() else {
+            return;
+        };
+        match self.get_mut() {
+            Some(config) => config.inherit_from(parent_config),
+            None => *self = parent.clone(),
+        }
     }
 }
 

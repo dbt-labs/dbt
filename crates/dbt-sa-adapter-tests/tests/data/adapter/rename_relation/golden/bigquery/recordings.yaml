@@ -1,0 +1,13 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_rename_relation
+- sequence: 1
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_rename_relation.a (val int);
+- sequence: 2
+  type: execute
+  sql: DROP TABLE IF EXISTS adapters_bigquery_rename_relation.b;
+- sequence: 3
+  type: execute
+  sql: alter table `dbt-test-env`.`adapters_bigquery_rename_relation`.`a` rename to `b`

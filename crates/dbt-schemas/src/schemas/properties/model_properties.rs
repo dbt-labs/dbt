@@ -18,7 +18,7 @@ use crate::schemas::properties::MetricsProperties;
 use crate::schemas::properties::properties::GetConfig;
 use crate::schemas::semantic_layer::semantic_manifest::SemanticLayerElementConfig;
 use crate::schemas::serde::FloatOrString;
-use crate::schemas::serde::string_or_array;
+use crate::schemas::serde::{bool_or_string_bool, string_or_array};
 use dbt_common::io_args::StaticAnalysisOffReason;
 use dbt_yaml::{DbtSchema, Spanned};
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,9 @@ pub struct ModelConstraint {
     pub to_columns: Option<Vec<String>>,
     #[serde(default, deserialize_with = "string_or_array")]
     pub columns: Option<Vec<String>>,
+    #[serde(default = "crate::schemas::serde::default_true")]
     pub warn_unsupported: Option<bool>,
+    #[serde(default = "crate::schemas::serde::default_true")]
     pub warn_unenforced: Option<bool>,
 }
 // todo: consider revising this design: warn_unsupported, warn_unenforced are adapter specific constraint. You don't want to specify them on all models!
@@ -213,6 +215,8 @@ pub struct ModelState {
     #[serde(alias = "execute_hooks_on_reuse")]
     pub execute_hooks_on_any_reuse: Option<bool>,
     pub compare_unrendered_code: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub ignore_external_modifications: Option<bool>,
 }
 
 impl PartialEq for ModelState {
@@ -226,6 +230,7 @@ impl PartialEq for ModelState {
             && self.pre_clone == other.pre_clone
             && self.execute_hooks_on_any_reuse == other.execute_hooks_on_any_reuse
             && self.compare_unrendered_code == other.compare_unrendered_code
+            && self.ignore_external_modifications == other.ignore_external_modifications
     }
 }
 
@@ -319,6 +324,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
         let other = ModelState {
             require_fresh_data_from: Some(UpdatesOn::Any),
@@ -327,6 +333,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
 
         assert_eq!(base, other);
@@ -341,6 +348,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
         let other = ModelState {
             require_fresh_data_from: Some(UpdatesOn::All),
@@ -349,6 +357,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
 
         assert_ne!(base, other);
@@ -384,6 +393,7 @@ execute_hooks_on_reuse: true
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
         let other = ModelState {
             compare_unrendered_code: Some(true),
@@ -403,6 +413,28 @@ execute_hooks_on_reuse: true
         };
 
         assert_ne!(base_test, other_test);
+    }
+
+    #[test]
+    fn ignore_external_modifications_parses_and_participates_in_state_eq() {
+        let state: ModelState =
+            dbt_yaml::from_str("ignore_external_modifications: true\n").unwrap();
+        assert_eq!(state.ignore_external_modifications, Some(true));
+
+        let base = ModelState {
+            require_fresh_data_from: None,
+            lag_tolerance: None,
+            evaluate_volatile_sql: None,
+            pre_clone: None,
+            execute_hooks_on_any_reuse: None,
+            compare_unrendered_code: None,
+            ignore_external_modifications: None,
+        };
+        let other = ModelState {
+            ignore_external_modifications: Some(true),
+            ..base.clone()
+        };
+        assert_ne!(base, other);
     }
 
     #[test]

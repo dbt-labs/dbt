@@ -1,0 +1,10 @@
+version: 2
+
+seeds:
+  - name: my_seed
+    # No description — triggers the bug: 'description' in model is always True
+    # even when the description is an empty string, causing BigQuery to generate
+    # a malformed ALTER TABLE statement via update_table_description.
+    columns:
+      - name: id
+      - name: name

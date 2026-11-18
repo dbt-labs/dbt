@@ -20,7 +20,7 @@ use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::nodes::{
     CommonAttributes, DbtExposure, DbtExposureAttr, NodeBaseAttributes,
 };
-use dbt_schemas::schemas::project::{ExposureConfig, ResolvedExposureConfig};
+use dbt_schemas::schemas::project::{ExposureConfig, InlineConfigAliasing, ResolvableConfig};
 use dbt_schemas::schemas::properties::ExposureProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
 use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
@@ -28,6 +28,7 @@ use dbt_schemas::state::{DbtPackage, DbtRuntimeConfig};
 use dbt_yaml::Spanned;
 use minijinja::value::Value as MinijinjaValue;
 use regex::Regex;
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -141,7 +142,7 @@ pub async fn resolve_exposures(
                     depends_on,
                     env,
                     base_ctx,
-                    &exposure_properties_config,
+                    &ExposureConfig::from(exposure_properties_config.clone()),
                     database,
                     schema,
                     adapter_type,
@@ -195,6 +196,7 @@ pub async fn resolve_exposures(
                     adapter: adapter_type,
                     // This node type has no `+propagate` config; nothing is published.
                     propagate: Vec::new(),
+                    effective_propagation_target: None,
                     database: "".to_string(),
                     schema: "".to_string(),
                     alias: "".to_string(),
@@ -242,11 +244,12 @@ pub async fn resolve_exposures(
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
-pub fn resolve_yaml_depends_on(
+pub fn resolve_yaml_depends_on<T: ResolvableConfig<T> + Serialize + 'static>(
     depends_on: &[Spanned<String>],
     env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
-    exposure_config: &ResolvedExposureConfig,
+    // Only seeds the context the calls render in.
+    config: &T,
     database: &str,
     schema: &str,
     adapter_type: AdapterType,
@@ -256,7 +259,6 @@ pub fn resolve_yaml_depends_on(
     relative_path: &str,
     global_static_analysis: Option<StaticAnalysisKind>,
 ) -> FsResult<(Vec<DbtRef>, Vec<DbtSourceWrapper>, Vec<Vec<String>>)> {
-    let exposure_config: ExposureConfig = exposure_config.clone().into();
     let mut dependent_refs = vec![];
     let mut dependent_sources = vec![];
     let mut dependent_metrics = vec![];
@@ -265,16 +267,17 @@ pub fn resolve_yaml_depends_on(
         depends_on.iter().flat_map(split_depends_on_item).collect();
 
     for dependency in &expanded {
-        let sql_resources: Arc<Mutex<Vec<SqlResource<ExposureConfig>>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let sql_resources: Arc<Mutex<Vec<SqlResource<T>>>> = Arc::new(Mutex::new(Vec::new()));
 
         let mut resolve_model_context = base_ctx.clone();
         resolve_model_context.extend(build_resolve_model_context(
-            &exposure_config,
+            config,
             false,
             adapter_type,
             database,
             schema,
+            None,
+            InlineConfigAliasing::fixed(adapter_type),
             &fqn.join("."),
             fqn.clone(),
             package_name,
@@ -287,6 +290,7 @@ pub fn resolve_yaml_depends_on(
             &PathBuf::from(relative_path),
             &PathBuf::new(),
             global_static_analysis,
+            None,
         ));
 
         let sql_resource = render_extract_ref_or_source_expr(

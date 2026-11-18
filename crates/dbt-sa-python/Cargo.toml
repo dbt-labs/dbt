@@ -6,7 +6,7 @@ name = "dbt-sa-python"
 version.workspace = true
 
 [lib]
-# maturin turns this into dbt/_core.abi3.so (stable ABI, see abi3-py311 below)
+# maturin turns this into dbt/_core.abi3.so (stable ABI, see abi3-py310 below)
 # so `from dbt._core import dbtRunner` works alongside python/dbt/runner.py
 name = "dbt_core_pyo3"
 crate-type = ["cdylib"]
@@ -17,9 +17,9 @@ dbt-common = { workspace = true }
 dbt-features = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-python-core = { workspace = true }
-# abi3-py311: build a single stable-ABI wheel per platform that works on
-# CPython 3.11+, instead of one wheel per interpreter version.
-pyo3 = { workspace = true, features = ["abi3-py311"] }
+# abi3-py310: build a single stable-ABI wheel per platform that works on
+# CPython 3.10+, instead of one wheel per interpreter version.
+pyo3 = { workspace = true, features = ["abi3-py310"] }
 
 [features]
 default = ["embed-ui"]

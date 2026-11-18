@@ -50,7 +50,7 @@ impl RelationType {
                 "VIEW" => RelationType::View,
                 "MATERIALIZED VIEW" | "MATERIALIZED_VIEW" => RelationType::MaterializedView,
                 "EXTERNAL" => RelationType::External,
-                "FUNCTION" | "AGGREGATE FUNCTION" => RelationType::Function,
+                "FUNCTION" | "AGGREGATE FUNCTION" | "TABLE FUNCTION" => RelationType::Function,
                 _ => panic!("unknown table type: {type_string}"),
             },
             // https://docs.databricks.com/aws/en/sql/language-manual/information-schema/tables#table-types
@@ -187,6 +187,7 @@ mod tests {
             ("VIEW", (RelationType::View, "view")),
             ("EXTERNAL", (RelationType::External, "external")),
             ("FunCTion", (RelationType::Function, "function")),
+            ("TABLE FUNCTION", (RelationType::Function, "function")),
             (
                 "materialized view",
                 (RelationType::MaterializedView, "materialized_view"),

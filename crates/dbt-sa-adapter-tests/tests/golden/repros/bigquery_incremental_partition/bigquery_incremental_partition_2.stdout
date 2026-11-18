@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/model.sql
+ Rendering models/model.sql
+   Running models/model.sql
+ Succeeded model bigquery_incremental_partition.model (incremental) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

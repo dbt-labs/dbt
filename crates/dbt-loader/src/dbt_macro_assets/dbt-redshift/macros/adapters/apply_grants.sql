@@ -105,7 +105,7 @@
 {% macro redshift__get_grant_sql(relation, privilege, grantees) %}
     {% if redshift__use_grants_extended() %}
         {%- set formatted_grantees = redshift__format_grantees(grantees) -%}
-        grant {{ privilege }} on {{ relation.render() }} to {{ formatted_grantees | join(', ') }}
+        grant {{ privilege }} on {{ get_grant_object_sql(relation) }} to {{ formatted_grantees | join(', ') }}
     {% else %}
         {{ default__get_grant_sql(relation, privilege, grantees) }}
     {% endif %}
@@ -114,7 +114,7 @@
 {% macro redshift__get_revoke_sql(relation, privilege, grantees) %}
     {% if redshift__use_grants_extended() %}
         {%- set formatted_grantees = redshift__format_grantees(grantees) -%}
-        revoke {{ privilege }} on {{ relation.render() }} from {{ formatted_grantees | join(', ') }}
+        revoke {{ privilege }} on {{ get_grant_object_sql(relation) }} from {{ formatted_grantees | join(', ') }}
     {% else %}
         {{ default__get_revoke_sql(relation, privilege, grantees) }}
     {% endif %}

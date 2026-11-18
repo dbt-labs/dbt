@@ -118,6 +118,52 @@ my_project:
 }
 
 #[test]
+fn test_rendered_yaml_null_lookalikes_stay_strings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let profiles_dir = tmp.path();
+
+    unsafe {
+        std::env::set_var("DBT_PROFILE_TEST_HASH_PASSPHRASE", "#S3cret!");
+        std::env::set_var("DBT_PROFILE_TEST_TILDE_PASSWORD", "~");
+    }
+
+    write_file(
+        profiles_dir,
+        "profiles.yml",
+        r#"
+my_project:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      private_key_passphrase: "{{ env_var('DBT_PROFILE_TEST_HASH_PASSPHRASE') }}"
+      password: "{{ env_var('DBT_PROFILE_TEST_TILDE_PASSWORD') }}"
+"#,
+    );
+
+    let args = ResolveArgs {
+        profiles_dir: Some(profiles_dir.to_path_buf()),
+        profile: Some("my_project".to_owned()),
+        ..Default::default()
+    };
+
+    let result = resolve(&args).unwrap();
+    let get = |key| {
+        result
+            .credentials
+            .get(key)
+            .and_then(dbt_yaml::Value::as_str)
+    };
+    assert_eq!(get("private_key_passphrase"), Some("#S3cret!"));
+    assert_eq!(get("password"), Some("~"));
+
+    unsafe {
+        std::env::remove_var("DBT_PROFILE_TEST_HASH_PASSPHRASE");
+        std::env::remove_var("DBT_PROFILE_TEST_TILDE_PASSWORD");
+    }
+}
+
+#[test]
 fn test_rendered_query_tags_json_becomes_a_mapping() {
     let tmp = tempfile::tempdir().unwrap();
     let profiles_dir = tmp.path();

@@ -1,0 +1,9 @@
+name: 'store_failures'
+
+config-version: 2
+version: '0.1'
+
+profile: 'fusion_tests'
+
+data_tests:
+  +store_failures: true

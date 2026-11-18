@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 
 use minijinja::Environment;
 use minijinja::listener::RenderingEventListener;
@@ -456,6 +456,11 @@ fn render_value_recursive<S: Serialize>(
                         dbt_yaml::Value::String(_, _) => {
                             Ok(dbt_yaml::Value::String(resolved, span.clone()))
                         }
+                        // `#foo` (a comment) and `~` parse to null; keep the text. Empty
+                        // output stays null.
+                        dbt_yaml::Value::Null(_) if !resolved.trim().is_empty() => {
+                            Ok(dbt_yaml::Value::String(resolved, span.clone()))
+                        }
                         _ => Ok(parsed),
                     },
                     Err(_) => Ok(dbt_yaml::Value::String(resolved, span.clone())),
@@ -524,14 +529,15 @@ fn render_secrets(s: &str, overrides: &BTreeMap<String, String>) -> Result<Strin
         return Ok(s.to_owned());
     }
 
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let pattern = SECRET_PLACEHOLDER
-        .replace("{}", &format!("({SECRET_ENV_VAR_PREFIX}.*?)"))
-        .replace("$", r"\$");
-    let re = RE.get_or_init(|| Regex::new(&pattern).expect("valid secret placeholder regex"));
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        let pattern = SECRET_PLACEHOLDER
+            .replace("{}", &format!("({SECRET_ENV_VAR_PREFIX}.*?)"))
+            .replace("$", r"\$");
+        Regex::new(&pattern).expect("valid secret placeholder regex")
+    });
 
     let mut result = s.to_owned();
-    for caps in re.captures_iter(s) {
+    for caps in RE.captures_iter(s) {
         let var_name = &caps[1];
         let full_match = &caps[0];
         match lookup_env(overrides, var_name) {

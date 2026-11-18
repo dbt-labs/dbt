@@ -1339,6 +1339,35 @@ mod tests {
                 jinja_assert(wrapper, template, expect);
             }
 
+            /// The shape `databricks__get_mv_replace_strategy` reads from a materialized-view config.
+            #[test]
+            fn relation_config_exposes_mv_replace_strategy_inputs() {
+                use crate::relation::databricks::config::components::{
+                    PartitionByLoader, TblPropertiesLoader,
+                };
+
+                let cfg = RelationConfig::new(
+                    AdapterType::Databricks,
+                    [
+                        PartitionByLoader::new_component_type_erased(vec!["id".to_string()]),
+                        TblPropertiesLoader::new_component_type_erased(IndexMap::from([(
+                            "delta.universalFormat.compatibility.location".to_string(),
+                            "s3://b/a".to_string(),
+                        )])),
+                    ],
+                    return_true,
+                );
+                let template = "
+                partitions: {{ obj['partitioned_by'].partition_by | join(',') }} {{ obj['partitioned_by'].partition_by is sequence }}
+                location: {{ obj['tblproperties'].tblproperties['delta.universalFormat.compatibility.location'] }} {{ obj['tblproperties'].tblproperties is mapping }}
+                ";
+                let expect = "
+                partitions: id True
+                location: s3://b/a True
+                ";
+                jinja_assert(cfg, template, expect);
+            }
+
             #[test]
             fn changeset_empty() {
                 let cfg =

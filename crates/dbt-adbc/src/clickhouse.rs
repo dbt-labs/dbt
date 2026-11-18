@@ -15,3 +15,15 @@ pub fn setting_key(setting_name: &str) -> String {
 /// `User-Agent` (visible as `http_user_agent` in `system.query_log`), ahead
 /// of its own `adbc_clickhouse/<ver> clickhouse-rs/<ver>` identification.
 pub const PRODUCT_INFO: &str = "clickhouse.client.product_info";
+
+/// Statement option. The id the server runs the statement under (`query_id`
+/// in `system.query_log`). The driver generates one per statement.
+pub const QUERY_ID: &str = "clickhouse.client.query_id";
+
+// Names of schema metadata keys -----------------------------------------
+
+pub mod schema_metadata {
+    /// The [`super::QUERY_ID`] the statement ran under. The driver does not
+    /// put it in the result, so `adbc_execute_with_options` copies it here.
+    pub const QUERY_ID: &str = "CLICKHOUSE_QUERY_ID";
+}

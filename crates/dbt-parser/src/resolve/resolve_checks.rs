@@ -14,6 +14,7 @@ use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::{DbtMaterialization, DbtQuoting, ResolvedQuoting};
 use dbt_schemas::schemas::project::{CheckConfig, SUPPORTED_INFO_SCHEMA_VERSIONS};
 use dbt_schemas::schemas::properties::CheckProperties;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::{
     schemas::{
@@ -21,7 +22,6 @@ use dbt_schemas::{
     },
     state::{DbtPackage, DbtRuntimeConfig},
 };
-use minijinja::MacroSpans;
 
 use super::resolve_properties::MinimalPropertiesEntry;
 use crate::dbt_project_config::{
@@ -48,18 +48,16 @@ pub async fn resolve_checks(
     adapter_type: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
 ) -> FsResult<(
     HashMap<String, Arc<DbtCheck>>,
     HashMap<String, Arc<DbtCheck>>,
-    HashMap<String, (String, MacroSpans)>,
 )> {
     let mut checks: HashMap<String, Arc<DbtCheck>> = HashMap::new();
     let mut disabled_checks: HashMap<String, Arc<DbtCheck>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let jinja_type_checking_event_listener_factory =
         Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
 
@@ -85,9 +83,14 @@ pub async fn resolve_checks(
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
+            adapter_layer: None,
+            // A check's adapter is always the default (`adapter` below), even under `--adapter`.
+            parse_adapter_scopes: None,
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type,
             database: database.to_string(),
@@ -103,6 +106,7 @@ pub async fn resolve_checks(
             // (matches resolve_functions.rs, the other resource type with no compile-time
             // re-render).
             defer_render_errors_to_compile: false,
+            resource_type: Some(NodeType::Check),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
@@ -152,7 +156,6 @@ pub async fn resolve_checks(
         config: check_config,
         raw_code,
         rendered_sql,
-        macro_spans,
         properties: maybe_properties,
         status,
         patch_path,
@@ -212,6 +215,7 @@ pub async fn resolve_checks(
                 adapter: adapter_type,
                 // This node type has no `+propagate` config; nothing is published.
                 propagate: Vec::new(),
+                effective_propagation_target: None,
                 // A check is never materialized, so it has no relation of its own. These stay
                 // empty rather than being run through `update_node_relation_components`, which
                 // would invent a database/schema/alias for something that is never written.
@@ -242,17 +246,13 @@ pub async fn resolve_checks(
             __check_attr__: DbtCheckAttr {
                 // Carried to execution: the parse-time runner executes exactly this text.
                 // inferred from; checks have no render task to compile them later.
-                compiled_sql: Some(rendered_sql.clone()),
+                compiled_sql: Some(rendered_sql),
             },
             deprecated_config: check_config.into(),
         };
 
         if is_enabled {
             checks.insert(unique_id.to_owned(), Arc::new(dbt_check));
-            rendering_results.insert(
-                unique_id.to_owned(),
-                (rendered_sql.clone(), macro_spans.clone()),
-            );
         } else {
             // Recorded rather than dropped so callers can tell "this check is turned off" from
             // "no such check" — `dbt check <name>` must stay a no-op success for the former and
@@ -273,7 +273,7 @@ pub async fn resolve_checks(
         }
     }
 
-    Ok((checks, disabled_checks, rendering_results))
+    Ok((checks, disabled_checks))
 }
 
 /// `info_schema.version` has no default (see `InfoSchemaConfig`), so a package with checks but no

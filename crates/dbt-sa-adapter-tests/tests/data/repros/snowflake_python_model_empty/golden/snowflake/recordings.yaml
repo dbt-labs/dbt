@@ -1,0 +1,140 @@
+aa8b450f:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.snowflake_python_model_empty_flag
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.snowflake_python_model_empty.a:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_PYTHON_MODEL_EMPTY_FLAG" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace transient  table development.snowflake_python_model_empty_flag.a
+    
+    
+    
+    
+    as (select 1 as id, 'Alice' as customer_name
+    )
+model.snowflake_python_model_empty.b:
+- sequence: 0
+  type: execute
+  sql: |-
+    WITH b__dbt_sp AS PROCEDURE ()
+    
+    RETURNS STRING
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    
+    
+    
+    HANDLER = 'main'
+    EXECUTE AS CALLER
+    AS
+    $$
+    
+    
+    
+    
+    
+    # `dbt build --empty` should embed the bare relation
+    # name into the generated Python `refs` dict, not a run-filter-wrapped SQL
+    # expression (e.g. `(select * from ... limit 0)`).
+    def model(dbt, session):
+    dbt.config(materialized='table')
+    return dbt.ref('a')
+    
+    
+    # This part is user provided model code
+    # you will need to copy the next section to run the code
+    # COMMAND ----------
+    # this part is dbt logic for get ref work, do not modify
+    
+    def ref(*args, **kwargs):
+    refs = {"a": "development.snowflake_python_model_empty_flag.a"}
+    key = '.'.join(args)
+    version = kwargs.get("v") or kwargs.get("version")
+    if version:
+    key += f".v{version}"
+    dbt_load_df_function = kwargs.get("dbt_load_df_function")
+    return dbt_load_df_function(refs[key])
+    
+    
+    def source(*args, dbt_load_df_function):
+    sources = {}
+    key = '.'.join(args)
+    return dbt_load_df_function(sources[key])
+    
+    
+    config_dict = {}
+    meta_dict = {}
+    
+    
+    class config:
+    def __init__(self, *args, **kwargs):
+    pass
+    
+    @staticmethod
+    def get(key, default=None):
+    return config_dict.get(key, default)
+    
+    @staticmethod
+    def meta_get(key, default=None):
+    return meta_dict.get(key, default)
+    
+    class this:
+    """dbt.this() or dbt.this.identifier"""
+    database = "development"
+    schema = "snowflake_python_model_empty_flag"
+    identifier = "b"
+    
+    def __repr__(self):
+    return '(select * from development.snowflake_python_model_empty_flag.b where false limit 0)'
+    
+    
+    class dbtObj:
+    def __init__(self, load_df_function) -> None:
+    self.source = lambda *args: source(*args, dbt_load_df_function=load_df_function)
+    self.ref = lambda *args, **kwargs: ref(*args, **kwargs, dbt_load_df_function=load_df_function)
+    self.config = config
+    self.this = this()
+    self.is_incremental = False
+    
+    # COMMAND ----------
+    
+    
+    
+    
+    
+    def materialize(session, df, target_relation):
+    # make sure pandas exists
+    import importlib.util
+    package_name = 'pandas'
+    if importlib.util.find_spec(package_name):
+    import pandas
+    if isinstance(df, pandas.core.frame.DataFrame):
+    session.use_database(target_relation.database)
+    session.use_schema(target_relation.schema)
+    # session.write_pandas does not have overwrite function
+    df = session.createDataFrame(df)
+    
+    df.write.mode("overwrite").save_as_table('development.snowflake_python_model_empty_flag.b', table_type='transient')
+    
+    
+    def main(session):
+    dbt = dbtObj(session.table)
+    df = model(dbt, session)
+    materialize(session, df, dbt.this)
+    return "OK"
+    
+    
+    
+    $$
+    CALL b__dbt_sp()

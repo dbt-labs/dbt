@@ -37,6 +37,10 @@ pub enum LakeComputeCatalogAttachOutcome {
     /// mints no credential either, so nothing was attempted. Not a failure.
     NothingToCheck {
         pat_hygiene: Option<PatHygieneReport>,
+        /// Declared catalogs the implementation did not probe, named so the
+        /// caller can report them instead of reporting that nothing was declared.
+        /// A run that probed another catalog reports only what it attached.
+        unprobed_catalogs: Vec<String>,
     },
 }
 
@@ -46,12 +50,15 @@ pub enum LakeComputeCatalogAttachOutcome {
 /// that doesn't support this check simply doesn't register an implementation
 /// (see `lake_compute_catalog_attach_checker()` on the CLI hooks it's wired through).
 pub trait LakeComputeCatalogAttachChecker: Send + Sync {
-    /// `native_db_config` is the profile's active target, used to obtain a
-    /// short-lived credential for the declared catalogs; `lake_compute_db_config` is
-    /// the target asked to perform the attach.
+    /// `native_db_config` is the profile's active/default target, used to obtain a
+    /// short-lived Snowflake credential for the declared catalogs;
+    /// `databricks_db_config` is the active target's Databricks connection, when
+    /// one is declared, for Unity catalog reads; `lake_compute_db_config` is the
+    /// target asked to perform the attach.
     fn check_catalog_attach(
         &self,
         native_db_config: &DbConfig,
+        databricks_db_config: Option<&DbConfig>,
         lake_compute_db_config: &DbConfig,
         replay: Option<&ReplayMode>,
         token: CancellationToken,

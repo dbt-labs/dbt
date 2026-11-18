@@ -59,3 +59,21 @@ impl Span {
         }
     }
 }
+
+/// A span with the location of its start, in the text it was bound from.
+#[derive(Debug, Clone, PartialEq, Copy)]
+pub struct AbsoluteSpan {
+    pub location: CodeLocation,
+    pub start: u32,
+    pub stop: u32,
+}
+
+impl AbsoluteSpan {
+    pub fn with_offset(&self, offset: &Span) -> AbsoluteSpan {
+        AbsoluteSpan {
+            location: self.location.with_offset(&offset.start),
+            start: offset.start.index + self.start,
+            stop: offset.start.index + self.stop,
+        }
+    }
+}

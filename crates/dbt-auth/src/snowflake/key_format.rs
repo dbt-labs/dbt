@@ -45,6 +45,25 @@ enum PemHeaderAndFooterState {
     DoNotMatch,
 }
 
+enum LineEndingStyle {
+    /// `\r\n` — Windows.
+    Windows,
+    /// bare `\r` — classic (pre-OS X) Mac.
+    ClassicMac,
+    /// bare `\n` — Linux/Unix, and modern macOS.
+    Unix,
+}
+
+fn detect_line_ending_style(s: &str) -> LineEndingStyle {
+    if s.contains("\r\n") {
+        LineEndingStyle::Windows
+    } else if s.contains('\r') {
+        LineEndingStyle::ClassicMac
+    } else {
+        LineEndingStyle::Unix
+    }
+}
+
 #[inline]
 fn detect_pem_state(pem: &str) -> PemHeaderAndFooterState {
     match (pem.contains("-----BEGIN "), pem.contains("-----END ")) {
@@ -181,8 +200,14 @@ pub fn normalize_key(input: &str) -> Result<(String, SnowflakeKeypairStatus<'_>)
             if has_pkcs1_pem_pair(trimmed_input) {
                 return Err(AuthError::Config(PKCS1_UNSUPPORTED_ERROR.to_string()));
             }
-            has_single_valid_pem_pair(trimmed_input)
-                .then(|| (input.to_string(), SnowflakeKeypairStatus::Clean))
+            let unbommed = input.strip_prefix('\u{FEFF}').unwrap_or(input);
+            let sanitized = match detect_line_ending_style(unbommed) {
+                LineEndingStyle::Windows => unbommed.replace("\r\n", "\n"),
+                LineEndingStyle::ClassicMac => unbommed.replace('\r', "\n"),
+                LineEndingStyle::Unix => unbommed.to_string(),
+            };
+            has_single_valid_pem_pair(&sanitized)
+                .then_some((sanitized, SnowflakeKeypairStatus::Clean))
                 .ok_or_else(|| {
                     AuthError::config("malformed key: missing or mismatched BEGIN/END header pair")
                 })
@@ -325,6 +350,42 @@ mod tests {
 
         let norm = normalize_key(&pem_enc).unwrap().0;
         assert_eq!(norm, pem_enc, "encrypted PEM should pass through unchanged");
+    }
+
+    #[test]
+    fn pem_encrypted_crlf_normalizes() {
+        let rsa = gen_rsa();
+        let pem_unenc = to_pkcs8_unenc_pem(&rsa);
+        let pem_enc = pem_unenc
+            .replace(PEM_UNENCRYPTED_START, PEM_ENCRYPTED_START)
+            .replace(PEM_UNENCRYPTED_END, PEM_ENCRYPTED_END);
+        let pem_enc_crlf = pem_enc.replace('\n', "\r\n");
+
+        let norm = normalize_key(&pem_enc_crlf).unwrap().0;
+
+        assert!(!norm.contains('\r'), "normalized PEM must not contain CR");
+        assert_eq!(
+            norm, pem_enc,
+            "CRLF-terminated PEM should normalize to the equivalent LF-terminated PEM"
+        );
+    }
+
+    #[test]
+    fn pem_encrypted_bare_cr_normalizes() {
+        let rsa = gen_rsa();
+        let pem_unenc = to_pkcs8_unenc_pem(&rsa);
+        let pem_enc = pem_unenc
+            .replace(PEM_UNENCRYPTED_START, PEM_ENCRYPTED_START)
+            .replace(PEM_UNENCRYPTED_END, PEM_ENCRYPTED_END);
+        let pem_enc_cr = pem_enc.replace('\n', "\r");
+
+        let norm = normalize_key(&pem_enc_cr).unwrap().0;
+
+        assert!(!norm.contains('\r'), "normalized PEM must not contain CR");
+        assert_eq!(
+            norm, pem_enc,
+            "bare-CR-terminated PEM should normalize to the equivalent LF-terminated PEM, not merge lines"
+        );
     }
 
     #[test]

@@ -24,10 +24,12 @@ use crate::schemas::common::{Access, DbtQuoting, Hooks, hooks_equal, serialize_h
 use crate::schemas::project::configs::common::log_state_mod_diff;
 // Import comparison helpers from common
 use super::common::{
-    access_eq, array_of_strings_eq, docs_eq, grants_equal, meta_eq, omissible_option_eq,
-    same_warehouse_config, take_databricks_catalog_alias,
+    TYPED_ALIAS_KEYS, access_eq, array_of_strings_eq, docs_eq, grants_equal, meta_eq,
+    omissible_option_eq, same_warehouse_config, take_databricks_catalog_alias,
 };
-use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
+use crate::schemas::project::configs::common::{
+    LazyWarehouseSpecificNodeConfig, WarehouseSpecificNodeConfig,
+};
 use crate::schemas::project::configs::config_merge::{Packages, Tags};
 use crate::schemas::project::dbt_project::{
     ResolvableConfig, ResolvedConfig, TypedRecursiveConfig,
@@ -259,7 +261,8 @@ pub struct FunctionConfig {
     pub snowflake: Option<FunctionSnowflakeConfig>,
 
     // Warehouse-specific configurations
-    pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
+    #[schemars(with = "WarehouseSpecificNodeConfig")]
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
 }
 
 impl ResolvableConfig<FunctionConfig> for FunctionConfig {
@@ -273,6 +276,10 @@ impl ResolvableConfig<FunctionConfig> for FunctionConfig {
 
     fn get_enabled(&self) -> Option<bool> {
         self.enabled
+    }
+
+    fn get_adapter(&self) -> Option<AdapterType> {
+        self.adapter
     }
 
     fn disable(&mut self) {
@@ -299,13 +306,20 @@ impl ResolvableConfig<FunctionConfig> for FunctionConfig {
         self.default_to_fields(parent);
     }
 
-    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
-        if let Some(catalog) = take_databricks_catalog_alias(
-            default_adapter,
-            &mut self.__warehouse_specific_config__,
-            !self.database.is_omitted(),
-        ) {
+    fn typed_alias_keys() -> &'static [&'static str] {
+        TYPED_ALIAS_KEYS
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, alias_adapter: AdapterType) {
+        if let Some(warehouse_specific) = self.__warehouse_specific_config__.get_mut()
+            && let Some(catalog) = take_databricks_catalog_alias(
+                alias_adapter,
+                warehouse_specific,
+                !self.database.is_omitted(),
+            )
+        {
             self.database = Omissible::Present(Some(catalog));
+            self.__warehouse_specific_config__.free_if_default();
         }
         // BigQuery's `project`/`dataset` aliases are already routed to `database`/`schema` by
         // the pre-existing, ungated serde `alias`es on those fields (D1); nothing to do here.
@@ -337,7 +351,7 @@ impl From<ProjectFunctionConfig> for FunctionConfig {
             entry_point: config.entry_point,
             packages: config.packages,
             snowflake: config.snowflake,
-            __warehouse_specific_config__: WarehouseSpecificNodeConfig::default(),
+            __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig::default(),
         }
     }
 }
@@ -546,10 +560,18 @@ impl ConfigKeys for FunctionConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for FunctionConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Function;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::schemas::project::configs::config_merge::Packages;
+    use crate::schemas::project::configs::warehouse_config_test_support::{
+        assert_catalog_alias_frees_default_warehouse_config,
+        assert_warehouse_config_allocates_only_when_set,
+    };
     use crate::schemas::project::dbt_project::ResolvableConfig;
     use crate::schemas::serde::StringOrArrayOfStrings;
 
@@ -664,6 +686,27 @@ __additional_properties__: {}
         assert!(
             format!("{err}").contains("compute"),
             "error should name the offending value: {err}"
+        );
+    }
+
+    #[test]
+    fn test_function_warehouse_config_allocates_only_when_set() {
+        assert_warehouse_config_allocates_only_when_set::<FunctionConfig>(
+            "entry_point: main\n",
+            |config| &config.__warehouse_specific_config__,
+        );
+    }
+
+    #[test]
+    fn test_function_catalog_alias_frees_default_warehouse_config() {
+        assert_catalog_alias_frees_default_warehouse_config::<FunctionConfig>(
+            |config| &config.__warehouse_specific_config__,
+            |config| {
+                config
+                    .database
+                    .as_ref()
+                    .and_then(|database| database.as_deref())
+            },
         );
     }
 }

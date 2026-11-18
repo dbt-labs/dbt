@@ -1,4 +1,5 @@
 import { createElement } from 'react';
+import { LineageViewV2 } from 'dbt-docs-lib';
 import {
   Box,
   Camera,
@@ -59,12 +60,11 @@ import {
   type UserState,
 } from '../shared';
 import { ColumnLineageMini, useColumnLineage } from './ColumnLineageView';
-import { LineageViewV2 } from './LineageV2/LineageView';
 import { NoColumnMetadataFallback } from './NoColumnMetadataFallback';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 
-interface Props {
+interface NodeDetailProps {
   asset: Asset;
   onSelect(uniqueId: string): void;
   hasColumnLineage?: boolean;
@@ -202,7 +202,12 @@ function typeParamsToMetricView(asset: MetricAsset) {
   }
 }
 
-export function NodeDetail({ asset, onSelect, hasColumnLineage, userState }: Props) {
+export function NodeDetail({
+  asset,
+  onSelect,
+  hasColumnLineage,
+  userState,
+}: NodeDetailProps) {
   const resourceType = asset.resourceType as ResourceTypeExplorer;
   const materialization = getMaterialization(asset);
 

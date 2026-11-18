@@ -1,0 +1,29 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/_unit_tests.yml
+   Parsing models/array_unit_test.sql
+   Parsing models/stg_array_unit_test.sql
+   Parsing models/stg_struct_unit_test.sql
+   Parsing models/struct_unit_test.sql
+ Rendering models/stg_struct_unit_test.sql
+   Running models/stg_struct_unit_test.sql
+ Succeeded model adapters_bigquery_unit_test.stg_struct_unit_test (view) [1 of 6 in duration]
+ Rendering models/struct_unit_test.sql
+ Rendering models/_unit_tests.yml:4:11 (test_financials_aggregation)
+   Running ../scratch/target/run/test/models/test_financials_aggregation.sql
+    Passed unit_test adapters_bigquery_unit_test_dbt_test__audit.test_financials_aggregation [3 of 6 in duration]
+   Running models/struct_unit_test.sql
+ Succeeded model adapters_bigquery_unit_test.struct_unit_test (view) [2 of 6 in duration]
+ Rendering models/stg_array_unit_test.sql
+   Running models/stg_array_unit_test.sql
+ Succeeded model adapters_bigquery_unit_test.stg_array_unit_test (view) [4 of 6 in duration]
+ Rendering models/array_unit_test.sql
+ Rendering models/_unit_tests.yml:17:11 (test_array_operations)
+   Running ../scratch/target/run/test/models/test_array_operations.sql
+    Passed unit_test adapters_bigquery_unit_test_dbt_test__audit.test_array_operations [6 of 6 in duration]
+   Running models/array_unit_test.sql
+ Succeeded model adapters_bigquery_unit_test.array_unit_test (view) [5 of 6 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'bigquery' [duration]
+Processed: 4 models | 2 unit tests
+Summary: 6 total | 6 success

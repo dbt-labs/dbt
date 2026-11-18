@@ -1,0 +1,8 @@
+models:
+  - name: example
+    columns:
+      - name: my_numeric_column
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: number

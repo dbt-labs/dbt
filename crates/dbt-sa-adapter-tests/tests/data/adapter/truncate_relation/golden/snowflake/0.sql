@@ -1,0 +1,1 @@
+DROP SCHEMA IF EXISTS adapters_snowflake_truncate_relation CASCADE

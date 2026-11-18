@@ -4,7 +4,8 @@ use std::fmt;
 use clap::error::ErrorKind;
 use dbt_common::FsResult;
 use dbt_common::io_args::{EvalArgs, FsCommand, Phases, StaticAnalysisKind, SystemArgs};
-use strum_macros::Display;
+use dbt_common::telemetry_command::TelemetryCommand;
+use strum_macros::{Display, IntoStaticStr};
 
 use crate::{
     BuildArgs, CheckArgs, CleanArgs, CloneArgs, CommonArgs, CompileArgs, CompletionsArgs,
@@ -13,7 +14,7 @@ use crate::{
     SourceArgs, StateArgs, TestArgs,
 };
 
-#[derive(clap::Subcommand, Debug, Clone, Display)]
+#[derive(clap::Subcommand, Debug, Clone, Display, IntoStaticStr)]
 pub enum CoreCommand {
     /// Initialize a new dbt project
     Init(InitArgs),
@@ -191,6 +192,9 @@ pub trait AbstractExtensionCommand: Send + Sync + fmt::Debug + Any {
     /// The canonical name of the command as used on the command line.
     fn name(&self) -> &'static str;
 
+    /// Format anonymous telemetry from this command's typed arguments.
+    fn telemetry_command(&self) -> TelemetryCommand;
+
     // virtualized support for Clone, and Display
     fn clone_box(&self) -> Box<dyn AbstractExtensionCommand>;
     fn display_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
@@ -227,6 +231,13 @@ impl Command {
         match self {
             Command::Core(cmd) => cmd.name(),
             Command::Extension(cmd) => cmd.name(),
+        }
+    }
+
+    pub fn telemetry_command(&self) -> TelemetryCommand {
+        match self {
+            Self::Core(command) => TelemetryCommand::bare_static(command.into()),
+            Self::Extension(command) => command.telemetry_command(),
         }
     }
 }

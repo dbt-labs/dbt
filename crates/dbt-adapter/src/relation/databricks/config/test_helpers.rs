@@ -60,6 +60,7 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
     let base_attrs = NodeBaseAttributes {
         adapter: AdapterType::Snowflake,
         propagate: Vec::new(),
+        effective_propagation_target: None,
         unrendered_config: Default::default(),
         database: "test_db".to_string(),
         schema: "test_schema".to_string(),
@@ -100,7 +101,7 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
         depends_on: NodeDependsOn::default(),
     };
 
-    let wh_config = WarehouseSpecificNodeConfig {
+    let wh_config: LazyWarehouseSpecificNodeConfig = WarehouseSpecificNodeConfig {
         tblproperties: Some(TblProperties(
             cfg.tbl_properties
                 .into_iter()
@@ -136,9 +137,11 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
             )),
         }),
         ..Default::default()
-    };
+    }
+    .into();
 
-    let adapter_attr = AdapterAttr::from_config_and_dialect(&wh_config, AdapterType::Databricks);
+    let adapter_attr =
+        AdapterAttr::from_lazy_config_and_dialect(&wh_config, AdapterType::Databricks);
 
     DbtModel {
         deprecated_config: ModelConfig {

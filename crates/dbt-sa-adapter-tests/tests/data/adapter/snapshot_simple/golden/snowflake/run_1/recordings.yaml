@@ -1,0 +1,4 @@
+model.my_project.snapshot_columns:
+- sequence: 0
+  type: execute
+  sql: describe table development.adapters_snowflake_debug_snapshot_simple.base_snapshot

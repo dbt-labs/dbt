@@ -1,0 +1,23 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+snowflake
+development
+adapters_snowflake_expand_collated_columns
+source columns
+target columns
+after target columns
+ Rendering models/a.sql
+snowflake
+development
+adapters_snowflake_expand_collated_columns
+source columns
+  ID: character varying(20) collation=en-ci
+target columns
+  ID: character varying(10) collation=en-ci
+after target columns
+  ID: character varying(20) collation=en-ci
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

@@ -1,0 +1,8 @@
+   dbt-oss 
+   Loading profiles.yml
+debug:warning=static analysis for adapter: ClickHouse is disabled
+clickhouse
+relation
+`adapters_clickhouse_get_relation_no_hydration`.`a`
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'clickhouse' [duration]

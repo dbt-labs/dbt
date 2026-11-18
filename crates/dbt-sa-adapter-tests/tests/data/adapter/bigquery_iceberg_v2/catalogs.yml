@@ -1,0 +1,9 @@
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: "gs://dbt-ci-iceberg-test"
+        file_format: parquet
+        connection_id: "dbt-test-env.us.__default_cloudresource_connection__"

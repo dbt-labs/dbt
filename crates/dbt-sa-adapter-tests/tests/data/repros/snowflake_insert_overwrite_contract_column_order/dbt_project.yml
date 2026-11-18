@@ -1,0 +1,4 @@
+name: 'snowflake_insert_overwrite_contract_column_order'
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'

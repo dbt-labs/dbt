@@ -1,0 +1,20 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/c.sql
+bigquery
+relation before drop_schema
+None
+drop_schema result
+None
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/c.sql
+bigquery
+relation before drop_schema
+`dbt-test-env`.`adapters_bigquery_drop_schema`.`a`
+drop_schema result
+None
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

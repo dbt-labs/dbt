@@ -4,7 +4,7 @@
 //! path) extract the same fields from the same JSON payload keys. This module owns that
 //! extraction once; each consumer converts the resulting struct into its own output format.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
 // Arrow helpers shared by both ingest paths
@@ -66,9 +66,17 @@ fn vec_of_strings(v: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn depends_on_nodes(payload: &Value) -> Vec<String> {
+/// `depends_on` lives in `__base_attr__`; the top level is the legacy shape.
+fn depends_on_of(payload: &Value) -> Option<&Value> {
     payload
-        .get("depends_on")
+        .get("__base_attr__")
+        .and_then(|b| b.get("depends_on"))
+        .filter(|d| !d.is_null())
+        .or_else(|| payload.get("depends_on"))
+}
+
+fn depends_on_nodes(payload: &Value) -> Vec<String> {
+    depends_on_of(payload)
         .and_then(|d| d.get("nodes"))
         .and_then(|v| v.as_array())
         .map(|a| {
@@ -81,8 +89,7 @@ fn depends_on_nodes(payload: &Value) -> Vec<String> {
 }
 
 fn depends_on_macros(payload: &Value) -> Vec<String> {
-    payload
-        .get("depends_on")
+    depends_on_of(payload)
         .and_then(|d| d.get("macros"))
         .and_then(|v| v.as_array())
         .map(|a| {
@@ -94,10 +101,11 @@ fn depends_on_macros(payload: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// `fqn` lives in `__common_attr__`; `__base_attr__` is the earlier shape.
 fn fqn_from_base(payload: &Value) -> Vec<String> {
-    payload
-        .get("__base_attr__")
-        .and_then(|b| b.get("fqn"))
+    ["__common_attr__", "__base_attr__"]
+        .iter()
+        .find_map(|k| payload.get(*k).and_then(|b| b.get("fqn")))
         .and_then(|v| v.as_array())
         .map(|a| {
             a.iter()
@@ -198,18 +206,32 @@ impl ParsedMetric {
             original_file_path: str_field_default(&common, "original_file_path", ""),
             fqn: fqn_from_base(payload),
             type_params: attr.get("type_params").cloned(),
-            metric_filter: attr.get("filter").cloned(),
+            metric_filter: attr.get("filter").filter(|v| !v.is_null()).cloned(),
             time_granularity: str_field(&attr, "time_granularity"),
             input_metric_names,
             depends_on_nodes: depends_on_nodes(payload),
             depends_on_macros: depends_on_macros(payload),
             group_name: str_field(&attr, "group"),
             tags: tags.to_vec(),
-            meta: attr.get("meta").cloned(),
-            config: attr.get("config").cloned(),
+            meta: common
+                .get("meta")
+                .filter(|v| !v.is_null())
+                .or_else(|| payload.get("meta"))
+                .cloned(),
+            config: node_config(payload),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
         }
     }
+}
+
+/// Fusion serialises a node's resolved config as `config`, except for saved queries and
+/// semantic models, where it is `deprecated_config`.
+fn node_config(payload: &Value) -> Option<Value> {
+    payload
+        .get("config")
+        .filter(|v| !v.is_null())
+        .or_else(|| payload.get("deprecated_config").filter(|v| !v.is_null()))
+        .cloned()
 }
 
 pub struct SemanticEntity {
@@ -219,6 +241,7 @@ pub struct SemanticEntity {
     pub label: Option<String>,
     pub entity_role: Option<String>,
     pub expr: Option<String>,
+    pub config: Option<Value>,
 }
 
 pub struct SemanticMeasure {
@@ -231,6 +254,7 @@ pub struct SemanticMeasure {
     pub agg_time_dimension: Option<String>,
     pub agg_params: Option<Value>,
     pub non_additive_dimension: Option<Value>,
+    pub config: Option<Value>,
 }
 
 pub struct SemanticDimension {
@@ -242,10 +266,13 @@ pub struct SemanticDimension {
     pub is_partition: bool,
     pub time_granularity: Option<String>,
     pub validity_params: Option<Value>,
+    pub config: Option<Value>,
 }
 
 pub struct ParsedSemanticModel {
     pub name: Option<String>,
+    pub package_name: Option<String>,
+    pub original_file_path: Option<String>,
     pub label: Option<String>,
     pub description: Option<String>,
     pub model_ref: String,
@@ -257,6 +284,7 @@ pub struct ParsedSemanticModel {
     pub depends_on_macros: Vec<String>,
     pub group_name: Option<String>,
     pub created_at: Option<f64>,
+    pub config: Option<Value>,
     pub entities: Vec<SemanticEntity>,
     pub measures: Vec<SemanticMeasure>,
     pub dimensions: Vec<SemanticDimension>,
@@ -293,6 +321,7 @@ impl ParsedSemanticModel {
                             label: str_field(ent, "label"),
                             entity_role: str_field(ent, "role"),
                             expr: str_field(ent, "expr"),
+                            config: ent.get("config").filter(|v| !v.is_null()).cloned(),
                         })
                     })
                     .collect()
@@ -317,8 +346,12 @@ impl ParsedSemanticModel {
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false),
                             agg_time_dimension: str_field(meas, "agg_time_dimension"),
-                            agg_params: meas.get("agg_params").cloned(),
-                            non_additive_dimension: meas.get("non_additive_dimension").cloned(),
+                            agg_params: meas.get("agg_params").filter(|v| !v.is_null()).cloned(),
+                            non_additive_dimension: meas
+                                .get("non_additive_dimension")
+                                .filter(|v| !v.is_null())
+                                .cloned(),
+                            config: meas.get("config").filter(|v| !v.is_null()).cloned(),
                         })
                     })
                     .collect()
@@ -354,7 +387,12 @@ impl ParsedSemanticModel {
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false),
                             time_granularity,
-                            validity_params: dim.get("validity_params").cloned(),
+                            validity_params: dim
+                                .get("type_params")
+                                .and_then(|tp| tp.get("validity_params"))
+                                .filter(|v| !v.is_null())
+                                .cloned(),
+                            config: dim.get("config").filter(|v| !v.is_null()).cloned(),
                         })
                     })
                     .collect()
@@ -367,6 +405,8 @@ impl ParsedSemanticModel {
                 .or_else(|| payload.get("name"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            package_name: str_field(&common, "package_name"),
+            original_file_path: str_field(&common, "original_file_path"),
             label: str_field(&attr, "label"),
             description: str_field(&common, "description"),
             model_ref: str_field_default(&attr, "model", ""),
@@ -378,6 +418,7 @@ impl ParsedSemanticModel {
             depends_on_macros: depends_on_macros(payload),
             group_name: str_field(&attr, "group"),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
+            config: node_config(payload),
             entities,
             measures,
             dimensions,
@@ -400,6 +441,7 @@ pub struct ParsedSavedQuery {
     pub tags: Vec<String>,
     pub group_name: Option<String>,
     pub created_at: Option<f64>,
+    pub config: Option<Value>,
 }
 
 impl ParsedSavedQuery {
@@ -415,6 +457,8 @@ impl ParsedSavedQuery {
         let tags: Vec<String> = payload
             .get("config")
             .and_then(|c| c.get("tags"))
+            .or_else(|| payload.get("deprecated_config").and_then(|c| c.get("tags")))
+            .or_else(|| common.get("tags"))
             .or_else(|| payload.get("tags"))
             .and_then(|v| v.as_array())
             .map(|a| {
@@ -444,6 +488,7 @@ impl ParsedSavedQuery {
             tags,
             group_name: str_field(&attr, "group"),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
+            config: node_config(payload),
         }
     }
 }
@@ -464,6 +509,8 @@ pub struct ParsedExposure {
     pub depends_on_nodes: Vec<String>,
     pub depends_on_macros: Vec<String>,
     pub tags: Vec<String>,
+    pub meta: Option<Value>,
+    pub config: Option<Value>,
     pub created_at: Option<f64>,
 }
 
@@ -500,6 +547,12 @@ impl ParsedExposure {
             depends_on_nodes: depends_on_nodes(payload),
             depends_on_macros: depends_on_macros(payload),
             tags: tags.to_vec(),
+            meta: common
+                .get("meta")
+                .filter(|v| !v.is_null())
+                .or_else(|| payload.get("meta"))
+                .cloned(),
+            config: payload.get("config").filter(|v| !v.is_null()).cloned(),
             created_at: attr.get("created_at").and_then(|v| v.as_f64()),
         }
     }
@@ -507,6 +560,10 @@ impl ParsedExposure {
 
 pub struct ParsedGroup {
     pub name: String,
+    pub package_name: Option<String>,
+    pub original_file_path: Option<String>,
+    /// The group's `config`, which the manifest builds as `{"meta": <meta>}`.
+    pub config: Value,
     pub description: Option<String>,
     pub owner_name: Option<String>,
     pub owner_email: Option<String>,
@@ -531,6 +588,15 @@ impl ParsedGroup {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
+            package_name: str_field(&common, "package_name"),
+            original_file_path: str_field(&common, "original_file_path"),
+            config: json!({
+                "meta": common
+                    .get("meta")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            }),
             description: str_field(&common, "description"),
             owner_name,
             owner_email,
@@ -630,6 +696,7 @@ pub struct ParsedUnitTest {
     pub schema_name: String,
     pub depends_on_nodes: Vec<String>,
     pub depends_on_macros: Vec<String>,
+    pub config: Option<Value>,
 }
 
 impl ParsedUnitTest {
@@ -668,6 +735,7 @@ impl ParsedUnitTest {
             schema_name: str_field_default(&common, "schema", ""),
             depends_on_nodes: depends_on_nodes(payload),
             depends_on_macros: depends_on_macros(payload),
+            config: payload.get("config").filter(|v| !v.is_null()).cloned(),
         }
     }
 }

@@ -64,10 +64,11 @@ JOIN columns USING (table_database, table_schema, table_name)
 ORDER BY column_index
 {%- endmacro %}
 
+{# DIVERGENCE: `schemas` contains schema names, not (database, schema) tuples. #}
 {% macro databricks__get_catalog_schemas_where_clause_sql(catalog, schemas) -%}
 WHERE table_catalog = '{{ catalog|lower }}' AND (
-  {%- for relation in schemas -%}
-  table_schema = '{{ relation[1]|lower }}'{%- if not loop.last %} OR {% endif -%}
+  {%- for schema in schemas -%}
+  table_schema = '{{ schema|lower }}'{%- if not loop.last %} OR {% endif -%}
   {%- endfor -%})
 {%- endmacro %}
 

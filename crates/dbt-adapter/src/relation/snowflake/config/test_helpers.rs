@@ -5,7 +5,7 @@ use arrow_array::record_batch;
 use dbt_schemas::schemas::{
     AdapterAttr, CommonAttributes, DbtModel, NodeBaseAttributes,
     common::{ClusterConfig, DbtMaterialization},
-    project::{ModelConfig, WarehouseSpecificNodeConfig},
+    project::{LazyWarehouseSpecificNodeConfig, ModelConfig, WarehouseSpecificNodeConfig},
 };
 use dbt_yaml::Spanned;
 
@@ -122,6 +122,7 @@ pub(crate) fn make_local_config(cfg: TestDynamicTableConfig) -> DbtModel {
     let base_attrs = NodeBaseAttributes {
         adapter: AdapterType::Snowflake,
         propagate: Vec::new(),
+        effective_propagation_target: None,
         unrendered_config: Default::default(),
         database: "test_db".to_string(),
         schema: "test_schema".to_string(),
@@ -144,7 +145,7 @@ pub(crate) fn make_local_config(cfg: TestDynamicTableConfig) -> DbtModel {
         depends_on: Default::default(),
     };
 
-    let wh_config = WarehouseSpecificNodeConfig {
+    let wh_config: LazyWarehouseSpecificNodeConfig = WarehouseSpecificNodeConfig {
         cluster_by: cfg.cluster_by,
         immutable_where: cfg.immutable_where.map(|s| s.to_owned()),
         initialize: Some(cfg.initialize.to_owned()),
@@ -161,9 +162,11 @@ pub(crate) fn make_local_config(cfg: TestDynamicTableConfig) -> DbtModel {
         transient: cfg.transient,
         copy_grants: cfg.copy_grants,
         ..Default::default()
-    };
+    }
+    .into();
 
-    let adapter_attr = AdapterAttr::from_config_and_dialect(&wh_config, AdapterType::Snowflake);
+    let adapter_attr =
+        AdapterAttr::from_lazy_config_and_dialect(&wh_config, AdapterType::Snowflake);
 
     DbtModel {
         deprecated_config: ModelConfig {

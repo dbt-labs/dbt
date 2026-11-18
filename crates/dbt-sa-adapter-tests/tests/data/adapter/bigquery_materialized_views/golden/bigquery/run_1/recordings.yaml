@@ -1,0 +1,11 @@
+152fd181:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT 
+    option_name, option_value 
+    FROM 
+    `dbt-test-env`.`adapters_bigquery_materialized_views`.INFORMATION_SCHEMA.TABLE_OPTIONS 
+    WHERE
+    table_name = 'mat_view'
+    AND option_name IN ('enable_refresh', 'refresh_interval_minutes')

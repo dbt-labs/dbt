@@ -143,7 +143,7 @@ mod snowflake {
     use dbt_adapter::catalog_relation::CatalogRelation;
     use dbt_adapter::relation::{Relation, RelationObject};
     use dbt_schemas::dbt_types::RelationType;
-    use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+    use dbt_schemas::schemas::dbt_catalogs::CatalogType;
     use dbt_schemas::schemas::relations::base::{BaseRelation, TableFormat};
 
     use crate::macro_test_harness::default_mock_config;

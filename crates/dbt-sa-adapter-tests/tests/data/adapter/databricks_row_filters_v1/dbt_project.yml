@@ -1,0 +1,5 @@
+name: test
+profile: fusion_tests
+
+flags:
+  use_materialization_v2: false

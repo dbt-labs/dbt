@@ -1,0 +1,21 @@
+       dbt 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/a.sql
+   Parsing models/b.sql
+   Parsing models/c.sql
+   Parsing models/d.sql
+ Downloading "ci"."adapters_redshift_materialized_view_config_changeset"."source" (schema)
+ Rendering models/d.sql
+   Running models/d.sql
+ Succeeded [000.00s] model adapters_redshift_materialized_view_config_changeset.d (mat_view)
+ Rendering models/c.sql
+   Running models/c.sql
+ Succeeded [000.00s] model adapters_redshift_materialized_view_config_changeset.c (mat_view)
+ Rendering models/b.sql
+   Running models/b.sql
+ Succeeded [000.00s] model adapters_redshift_materialized_view_config_changeset.b (mat_view)
+ Rendering models/a.sql
+   Running models/a.sql
+ Succeeded [000.00s] model adapters_redshift_materialized_view_config_changeset.a (mat_view)
+  Finished 'run' target 'redshift'

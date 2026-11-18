@@ -4,12 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use dbt_schemas::schemas::{
-    packages::{DbtPackageEntry, LocalPackage},
-    project::DbtProjectNameOnly,
-};
-use normalize_path::NormalizePath;
-use sha1::Digest;
+use dbt_path::normalize;
+use dbt_schemas::schemas::{packages::LocalPackage, project::DbtProjectNameOnly};
 
 use dbt_common::{ErrorCode, FsResult, constants::DBT_PROJECT_YML, fs_err, tokiofs};
 
@@ -108,36 +104,6 @@ pub fn get_local_package_full_path(in_dir: &Path, local_package: &LocalPackage) 
     }
 }
 
-pub fn fusion_sha1_hash_packages(
-    packages: &[DbtPackageEntry],
-    use_v2_compatible_package_downloads: bool,
-) -> String {
-    let mut package_strs = packages
-        .iter()
-        .map(|p| serde_json::to_string(p).unwrap())
-        .collect::<Vec<String>>();
-    package_strs.sort();
-    // Add flag for installing v2-compatible downloads from Package Hub to hash
-    // so changing the flag will trigger a fresh deps install
-    // Only use true so existing package lock files don't need updates
-    if use_v2_compatible_package_downloads {
-        package_strs.push(format!(
-            "use_v2_compatible_package_downloads: {}",
-            use_v2_compatible_package_downloads
-        ));
-    }
-    format!(
-        "{:x}",
-        sha1::Sha1::digest(package_strs.join("\n").as_bytes())
-    )
-}
-
-// TODO: Implement the proper core sha1 hash
-#[allow(dead_code)]
-pub fn core_sha1_hash_packages(_packages: &[DbtPackageEntry]) -> String {
-    unimplemented!()
-}
-
 pub fn scrub_package_name_secret_env_vars(package_name: &str) -> Option<Cow<'_, str>> {
     let mut scrubbed = Cow::Borrowed(package_name);
     for (_, secret) in std::env::vars()
@@ -163,7 +129,7 @@ pub fn scrub_package_name_secret_env_vars(package_name: &str) -> Option<Cow<'_, 
 /// between "directory missing entirely" and "directory present but missing
 /// `dbt_project.yml`".
 fn missing_dbt_project_error(checkout_path: &Path, dir_exists: bool) -> Box<dbt_common::FsError> {
-    let normalized = checkout_path.normalize();
+    let normalized = normalize(checkout_path);
     if dir_exists {
         fs_err!(
             ErrorCode::IoError,
@@ -281,7 +247,7 @@ mod tests {
         // Build the expected path via `normalize()` so the comparison uses the
         // platform's path separator (`/repo/common` on Unix, `\repo\common` on
         // Windows) rather than hard-coded forward slashes.
-        let expected = checkout_path.normalize().display().to_string();
+        let expected = normalize(checkout_path).display().to_string();
         assert!(
             msg.contains(&expected),
             "expected normalized path in message, got: {msg}"

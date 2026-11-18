@@ -1,0 +1,5 @@
+name: 'bigquery_contract_alias_types_float'
+
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'

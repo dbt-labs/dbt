@@ -1,0 +1,7 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/mat_view.sql
+   Parsing models/orders.sql
+update_materialized_view(mat_view)
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'bigquery' [duration]

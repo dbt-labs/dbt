@@ -1,0 +1,1 @@
+[warning] [UnsupportedConstraintMaterialization (dbt1095)]: Constraint types are not supported for view materializations and will be ignored.  Set 'warn_unsupported: false' on this constraint to ignore this warning.

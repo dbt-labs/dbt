@@ -1,0 +1,83 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+ff09e3fa:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.snowflake_insert_overwrite_contract_column_order
+model.snowflake_insert_overwrite_contract_column_order.orders:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_INSERT_OVERWRITE_CONTRACT_COLUMN_ORDER" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    select * from (
+    
+    
+    select
+    1 as id,
+    2 as customer,
+    to_timestamp_ntz('2025-01-01 00:00:00') as ordered_at,
+    30 as subtotal
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 2
+  type: execute
+  sql: |-
+    select * from (
+    select
+    
+    
+    cast(null as integer)
+    as id, 
+    
+    cast(null as timestamp)
+    as ordered_at, 
+    
+    cast(null as integer)
+    as customer, 
+    
+    cast(null as number(38, 0))
+    as subtotal
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace transient  table development.snowflake_insert_overwrite_contract_column_order.orders
+    
+    (
+    id integer,
+    ordered_at timestamp,
+    customer integer,
+    subtotal number(38, 0)
+    
+    )
+    
+    
+    
+    
+    
+    
+    
+    as (
+    select id, ordered_at, customer, subtotal
+    from (
+    
+    
+    select
+    1 as id,
+    2 as customer,
+    to_timestamp_ntz('2025-01-01 00:00:00') as ordered_at,
+    30 as subtotal
+    ) as model_subq
+    )
+- sequence: 4
+  type: execute
+  sql: drop view if exists development.snowflake_insert_overwrite_contract_column_order.orders__dbt_tmp cascade

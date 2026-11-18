@@ -1,0 +1,6 @@
+fusion_tests:
+  outputs:
+    redshift:
+      type: redshift
+      datasharing: false
+  target: redshift

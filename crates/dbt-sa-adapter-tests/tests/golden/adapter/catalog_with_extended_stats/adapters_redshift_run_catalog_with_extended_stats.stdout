@@ -1,0 +1,19 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/catalog_table.sql
+   Parsing models/catalog_view.sql
+ Rendering models/catalog_table.sql
+   Running models/catalog_table.sql
+ Succeeded model adapters_redshift_run_catalog_with_extended_stats.catalog_table (table) [1 of 2 in duration]
+ Rendering models/catalog_view.sql
+   Running models/catalog_view.sql
+ Succeeded model adapters_redshift_run_catalog_with_extended_stats.catalog_view (view) [2 of 2 in duration]
+Fetching catalog from warehouse
+   Started fetching catalog (2 items)
+  Finished [duration] fetching catalog (2 items)
+Fetched full catalog.json results
+Successfully wrote catalog.json
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

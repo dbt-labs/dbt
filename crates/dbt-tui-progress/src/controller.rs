@@ -76,6 +76,17 @@ where
         }
     }
 
+    /// Creates a progress controller that tracks bars and spinners but never draws them.
+    ///
+    /// Useful for exercising interactive output paths where no terminal is attached.
+    pub fn new_hidden() -> Self {
+        let controller = Self::new();
+        controller
+            .controller
+            .set_draw_target(indicatif::ProgressDrawTarget::hidden());
+        controller
+    }
+
     /// Starts the background ticker thread for progress bar animations.
     ///
     /// The ticker thread periodically updates all active progress bars and
@@ -262,6 +273,16 @@ where
             if let Some(status) = status {
                 bar.inc_counter(status, 1);
             }
+        });
+    }
+
+    /// Removes a context item from a progress bar without advancing it.
+    ///
+    /// For context items that are not units of the bar's total, e.g. a named stage of a
+    /// phase shown alongside the items it is working through.
+    pub fn remove_bar_context(&self, id: &Id, item: &str) {
+        self.bars.read_sync(id, |_, bar| {
+            bar.delete(item);
         });
     }
 

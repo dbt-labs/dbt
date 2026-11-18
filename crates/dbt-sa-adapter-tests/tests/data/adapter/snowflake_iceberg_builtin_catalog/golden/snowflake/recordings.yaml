@@ -1,0 +1,125 @@
+69668c6e:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.icebergBuiltinTestSchema
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.builtin:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace iceberg table development.icebergBuiltinTestSchema.builtin
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = '_fusion_ci/yml/icebergBuiltinTestSchema/builtin'
+    
+    
+    
+    
+    
+    
+    
+    
+    change_tracking = True
+    
+    
+    
+    
+    
+    
+    as (
+    
+    select 'snorlax' as pokemon, 'rest' as move
+    )
+model.test.builtin_override_base_location_adapter:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace iceberg table development.icebergBuiltinTestSchema.builtin_override_base_location_adapter
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = '_fusion_ci/props/icebergBuiltinTestSchema/builtin_override_base_location_adapter/subpath_props'
+    
+    
+    
+    
+    
+    
+    
+    
+    change_tracking = True
+    
+    
+    
+    
+    
+    
+    as (
+    
+    select 'snorlax' as pokemon, 'rest' as move
+    )
+model.test.builtin_override_base_location_both:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace iceberg table development.icebergBuiltinTestSchema.builtin_override_base_location_both
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = '_fusion_ci/props/icebergBuiltinTestSchema/builtin_override_base_location_both/subpath_props'
+    
+    
+    
+    
+    
+    
+    
+    
+    change_tracking = True
+    
+    
+    
+    
+    
+    
+    as (
+    
+    select 'snorlax' as pokemon, 'rest' as move
+    )
+model.test.builtin_override_base_location_legacy:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ICEBERGBUILTINTESTSCHEMA" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace iceberg table development.icebergBuiltinTestSchema.builtin_override_base_location_legacy
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = '_fusion_ci/model/icebergBuiltinTestSchema/builtin_override_base_location_legacy/subpath_model'
+    
+    
+    
+    
+    
+    
+    
+    
+    change_tracking = True
+    
+    
+    
+    
+    
+    
+    as (
+    
+    select 'snorlax' as pokemon, 'rest' as move
+    )

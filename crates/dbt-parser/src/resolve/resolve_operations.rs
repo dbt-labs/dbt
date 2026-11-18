@@ -14,12 +14,13 @@ use dbt_jinja_utils::{
     phases::parse::{build_resolve_model_context, sql_resource::SqlResource},
     utils::render_sql,
 };
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::{
     schemas::{
         CommonAttributes, NodeBaseAttributes,
         common::{DbtChecksum, DbtQuoting},
         manifest::DbtOperation,
-        project::DbtProject,
+        project::{DbtProject, InlineConfigAliasing},
         ref_and_source::{DbtRef, DbtSourceWrapper},
     },
     state::DbtRuntimeConfig,
@@ -180,6 +181,8 @@ fn new_operation(
                 adapter_type,
                 database,
                 schema,
+                None,
+                InlineConfigAliasing::fixed(adapter_type),
                 &operation.__common_attr__.name,
                 vec![
                     package_runtime_config.inner.project_name.clone(),
@@ -196,6 +199,7 @@ fn new_operation(
                 &operation.__common_attr__.original_file_path,
                 &PathBuf::new(),
                 global_static_analysis,
+                Some(NodeType::Operation),
             ));
 
             // Set TARGET_PACKAGE_NAME for var lookups

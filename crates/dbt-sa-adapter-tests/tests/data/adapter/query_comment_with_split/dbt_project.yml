@@ -1,0 +1,7 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+query-comment:
+  comment: "{{ query_comment(node) }}"

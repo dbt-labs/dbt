@@ -4,6 +4,7 @@ package com.fivetran.query_cache;
 
 import "google/protobuf/duration.proto";
 import "query_cache_protobuf/query_cache/struct.proto";
+import "query_cache_protobuf/query_cache/services/selector_service.proto";
 
 service ClientTelemetry {
     rpc RegisterSessionStart(SessionStartRequest) returns (SessionStartResponse) { option deprecated = true; };
@@ -67,6 +68,7 @@ message ClientTelemetryEvent {
         // note: this is only called SessionEndRequest to match SessionStartRequest
         // future event payloads should be called FooEvent, not FooRequest
         SessionEndRequest session_end = 4;
+        ClientSelectorEvent client_selector_event = 5;
     }
     optional int64 event_order = 3;
 }
@@ -77,4 +79,15 @@ message SubmitTelemetryBatchRequest {
 
 message SubmitTelemetryBatchResponse {
     bool success = 1;
+}
+
+
+message ClientSelectorEvent {
+  string request_id = 1;
+  string project_id = 2;
+  string dbt_target = 3;
+  SelectorCriteria selector_criteria = 4;
+  int64 num_nodes = 6;
+  int64 processing_time_ms = 7;
+  int64 hash_calculation_time_ms = 8;
 }

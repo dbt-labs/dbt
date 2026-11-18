@@ -1,0 +1,12 @@
+name: 'hello_world'
+
+config-version: 2
+version: '0.1'
+
+profile: 'fusion_tests'
+
+model-paths: ["models"]
+target-path: "target"
+clean-targets:
+  - "target"
+  - "logs"

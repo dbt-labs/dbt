@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: foobar
+    description: My model description
+    columns:
+      - name: foo_key
+        description: Primary key
+      - name: foo_name
+        description: Name of foo

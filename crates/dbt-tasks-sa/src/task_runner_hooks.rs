@@ -7,14 +7,12 @@ use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
-use dbt_pretty_table::batches_to_json_rows;
-use dbt_pretty_table::make_column_names;
 use dbt_schema_store::DataStoreTrait;
 use dbt_schema_store::store::SchemaStore;
+use dbt_schemas::schemas::Preview;
 use dbt_schemas::schemas::ResolvedCloudConfig;
 use dbt_schemas::schemas::StateArtifacts;
 use dbt_schemas::state::ResolverState;
-use dbt_tasks_core::Preview;
 use dbt_tasks_core::RunTasksArgs;
 use dbt_tasks_core::ShowableResults;
 use dbt_tasks_core::StoreableResults;
@@ -88,19 +86,11 @@ impl TaskRunnerHooks for DefaultTaskRunnerHooks {
     }
 
     fn collect_preview(&self, ctx: &mut TaskRunnerCtx) -> Option<Result<Preview, String>> {
-        let results = {
-            let mut guard = ctx.inner.preview_results.lock();
-            guard.take().map(|(batches, schema)| {
-                let columns = make_column_names(schema.as_ref());
-                let rows = batches_to_json_rows(&batches);
-                (columns, rows)
-            })
-        };
-
+        let preview = ctx.inner.preview_results.lock().take();
         let error = ctx.inner.preview_error.lock().take();
-        match (results, error) {
+        match (preview, error) {
             (_, Some(e)) => Some(Err(e)),
-            (Some((columns, rows)), None) => Some(Ok(Preview { columns, rows })),
+            (Some(preview), None) => Some(Ok(preview)),
             (None, None) => None,
         }
     }

@@ -5,6 +5,8 @@ use dbt_sql_utils::{is_empty_or_comment_only, sql_split_statements};
 
 use crate::AdapterType;
 
+mod clickhouse;
+
 /// Trait for SQL statement splitting functionality
 pub trait StmtSplitter: Send + Sync + Debug {
     /// Split a SQL string into individual statements
@@ -68,13 +70,7 @@ impl StmtSplitter for DefaultStmtSplitter {
             Salesforce => Dialect::Postgresql,
             // `LakeCompute` defines no dialect of its own, so it falls back to DuckDB's
             DuckDB | LakeCompute => Dialect::Duckdb,
-            // ClickHouse string literals use backslash escapes (\', \\, \xNN),
-            // which the Trino fallback lexer cannot tokenize — everything from
-            // the escape on is then passed through unsplit. The Databricks
-            // (Hive-style) lexer shares ClickHouse's string and backtick lexis.
-            // Local to splitting on purpose: dialect_of() also feeds SQL
-            // analysis, where ClickHouse stays unsupported.
-            ClickHouse => Dialect::Databricks,
+            ClickHouse => return clickhouse::split_statements(sql),
             Trino => Dialect::Trino,
             _ => Dialect::Trino,
         };
@@ -92,8 +88,7 @@ impl StmtSplitter for DefaultStmtSplitter {
             Bigquery => by_dialect(Dialect::Bigquery),
             Databricks | Spark => by_dialect(Dialect::Databricks),
             Redshift => by_dialect(Dialect::Redshift),
-            // ClickHouse routes to Databricks for the same reason as split()
-            ClickHouse => by_dialect(Dialect::Databricks),
+            ClickHouse => clickhouse::is_empty_or_comment_only(sql),
             // fallback to the Trino lexer for unsupported lexer dialects
             _ => by_dialect(Dialect::Trino),
         }
@@ -241,9 +236,53 @@ mod tests {
         }
     }
 
+    /// A Databricks `metric_view`'s compiled DDL wraps its YAML spec in
+    /// `$$...$$`. A `;` inside a YAML block-literal comment must not split
+    /// the statement before the closing `$$`.
+    #[test]
+    fn test_split_databricks_dollar_quoted_strings() {
+        let sql = r#"
+    create or replace view `catalog`.`schema`.`mv_example`
+    with metrics
+    language yaml
+    as $$
+    version: 1.1
+
+    source: "`catalog`.`schema`.`fct_example`"
+
+    comment: |
+      Some description; more text after the semicolon.
+
+    fields:
+      - name: id
+        expr: enterprise_id
+    $$
+  "#;
+
+        let statements = split(sql, AdapterType::Databricks);
+
+        assert_eq!(
+            statements.len(),
+            1,
+            "Expected a single create-view statement, got {}: {:?}",
+            statements.len(),
+            statements
+        );
+        assert!(
+            statements[0]
+                .trim_start()
+                .to_lowercase()
+                .starts_with("create or replace view")
+        );
+        assert!(
+            statements[0].contains("Some description; more text after the semicolon."),
+            "Expected the full YAML body to survive unsplit, got: {}",
+            statements[0]
+        );
+    }
+
     #[test]
     fn test_split_clickhouse_backslash_escaped_strings() {
-        // the Trino fallback lexer cannot split these correctly
         assert_eq!(
             split(
                 r#"select 'don\'t; drop'; select '\x3F', 'a\\'; select 2"#,
@@ -256,6 +295,14 @@ mod tests {
             ]
         );
         assert!(!is_empty(r#"select 'don\'t'"#, AdapterType::ClickHouse));
+    }
+
+    #[test]
+    fn test_split_clickhouse_dollar_quoted_strings() {
+        assert_eq!(
+            split("select $tag$a;b$tag$; select 2", AdapterType::ClickHouse),
+            vec!["select $tag$a;b$tag$", " select 2"]
+        );
     }
 
     #[test]

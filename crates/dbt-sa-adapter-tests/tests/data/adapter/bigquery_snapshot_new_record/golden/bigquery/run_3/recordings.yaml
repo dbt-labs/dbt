@@ -1,0 +1,501 @@
+snapshot.bigquery_snapshot_new_record.snapshot_of_source:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    column_name,
+    data_type
+    FROM `dbt-test-env.adapters_bigquery_snapshot_new_record.INFORMATION_SCHEMA.COLUMNS`
+    WHERE table_schema = 'adapters_bigquery_snapshot_new_record' and table_name = 'snapshot_of_source'
+    ORDER BY ordinal_position
+- sequence: 1
+  type: execute
+  sql: |-
+    select * from (
+    select * from `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`source_data`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT
+    column_name,
+    data_type
+    FROM `dbt-test-env.adapters_bigquery_snapshot_new_record.INFORMATION_SCHEMA.COLUMNS`
+    WHERE table_schema = 'adapters_bigquery_snapshot_new_record' and table_name = 'snapshot_of_source'
+    ORDER BY ordinal_position
+- sequence: 3
+  type: execute
+  sql: |-
+    select * from (
+    select * from `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`source_data`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 4
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`snapshot_of_source__dbt_tmp`
+    
+    
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+    as (
+    
+    
+    
+    
+    with snapshot_query as (
+    
+    select * from `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`source_data`
+    
+    ),
+    
+    snapshotted_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    
+    from `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`snapshot_of_source`
+    where
+    
+    dbt_valid_to is null
+    
+    
+    ),
+    
+    insertions_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    ,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    
+    
+    coalesce(nullif(updated_at, updated_at), null)
+    as dbt_valid_to
+    ,
+    to_hex(md5(concat(coalesce(cast(id as string), ''), '|',coalesce(cast(updated_at as string), '')))) as dbt_scd_id
+    
+    from snapshot_query
+    ),
+    
+    updates_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    ,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    updated_at as dbt_valid_to
+    
+    from snapshot_query
+    ),
+    
+    deletes_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    
+    from snapshot_query
+    ),
+    
+    
+    insertions as (
+    
+    select
+    'insert' as dbt_change_type,
+    source_data.*,'False' as dbt_is_deleted
+    
+    from insertions_source_data as source_data
+    left outer join snapshotted_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where 
+    
+    snapshotted_data.dbt_unique_key is null
+    
+    
+    or (
+    
+    snapshotted_data.dbt_unique_key is not null
+    
+    and (
+    (snapshotted_data.dbt_valid_from < source_data.updated_at)or snapshotted_data.dbt_is_deleted = 'True' 
+    )
+    
+    )
+    
+    ),
+    
+    updates as (
+    
+    select
+    'update' as dbt_change_type,
+    source_data.*,
+    snapshotted_data.dbt_scd_id, snapshotted_data.dbt_is_deleted
+    
+    from updates_source_data as source_data
+    join snapshotted_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where (
+    (snapshotted_data.dbt_valid_from < source_data.updated_at)or snapshotted_data.dbt_is_deleted = 'True' 
+    )
+    )
+    ,
+    deletes as (
+    
+    select
+    'delete' as dbt_change_type,
+    source_data.*,
+    
+    current_timestamp()
+    as dbt_valid_from,
+    
+    current_timestamp()
+    as dbt_updated_at,
+    
+    current_timestamp()
+    as dbt_valid_to,
+    snapshotted_data.dbt_scd_id, snapshotted_data.dbt_is_deleted
+    from snapshotted_data
+    left join deletes_source_data as source_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where 
+    
+    source_data.dbt_unique_key is null
+    
+    
+    and not (
+    --avoid updating the record's valid_to if the latest entry is marked as deleted
+    snapshotted_data.dbt_is_deleted = 'True'
+    and
+    snapshotted_data.dbt_valid_to is null
+    )
+    )
+    
+    
+    ,
+    deletion_records as (
+    
+    select
+    'insert' as dbt_change_type,snapshotted_data.`id`,snapshotted_data.`first_name`,snapshotted_data.`contact`,snapshotted_data.`tags`,snapshotted_data.`updated_at`,snapshotted_data.dbt_unique_key as dbt_unique_key,
+    
+    current_timestamp()
+    as dbt_valid_from,
+    
+    current_timestamp()
+    as dbt_updated_at,
+    snapshotted_data.dbt_valid_to as dbt_valid_to,
+    to_hex(md5(concat(coalesce(cast(dbt_scd_id as string), ''), '|',coalesce(cast(
+    current_timestamp()
+    as string), '')))) as dbt_scd_id,
+    'True' as dbt_is_deleted
+    from snapshotted_data
+    left join deletes_source_data as source_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where 
+    
+    source_data.dbt_unique_key is null
+    
+    
+    and not (
+    --avoid inserting a new record if the latest one is marked as deleted
+    snapshotted_data.dbt_is_deleted = 'True'
+    and
+    snapshotted_data.dbt_valid_to is null
+    )
+    
+    )
+    
+    select * from insertions
+    union all
+    select * from updates
+    union all
+    select * from deletes
+    union all
+    select * from deletion_records
+    
+    );
+- sequence: 5
+  type: execute
+  sql: |-
+    select * from (
+    
+    
+    
+    
+    with snapshot_query as (
+    
+    select * from `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`source_data`
+    
+    ),
+    
+    snapshotted_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    
+    from `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`snapshot_of_source`
+    where
+    
+    dbt_valid_to is null
+    
+    
+    ),
+    
+    insertions_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    ,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    
+    
+    coalesce(nullif(updated_at, updated_at), null)
+    as dbt_valid_to
+    ,
+    to_hex(md5(concat(coalesce(cast(id as string), ''), '|',coalesce(cast(updated_at as string), '')))) as dbt_scd_id
+    
+    from snapshot_query
+    ),
+    
+    updates_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    ,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    updated_at as dbt_valid_to
+    
+    from snapshot_query
+    ),
+    
+    deletes_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    
+    from snapshot_query
+    ),
+    
+    
+    insertions as (
+    
+    select
+    'insert' as dbt_change_type,
+    source_data.*,'False' as dbt_is_deleted
+    
+    from insertions_source_data as source_data
+    left outer join snapshotted_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where 
+    
+    snapshotted_data.dbt_unique_key is null
+    
+    
+    or (
+    
+    snapshotted_data.dbt_unique_key is not null
+    
+    and (
+    (snapshotted_data.dbt_valid_from < source_data.updated_at)or snapshotted_data.dbt_is_deleted = 'True' 
+    )
+    
+    )
+    
+    ),
+    
+    updates as (
+    
+    select
+    'update' as dbt_change_type,
+    source_data.*,
+    snapshotted_data.dbt_scd_id, snapshotted_data.dbt_is_deleted
+    
+    from updates_source_data as source_data
+    join snapshotted_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where (
+    (snapshotted_data.dbt_valid_from < source_data.updated_at)or snapshotted_data.dbt_is_deleted = 'True' 
+    )
+    )
+    ,
+    deletes as (
+    
+    select
+    'delete' as dbt_change_type,
+    source_data.*,
+    
+    current_timestamp()
+    as dbt_valid_from,
+    
+    current_timestamp()
+    as dbt_updated_at,
+    
+    current_timestamp()
+    as dbt_valid_to,
+    snapshotted_data.dbt_scd_id, snapshotted_data.dbt_is_deleted
+    from snapshotted_data
+    left join deletes_source_data as source_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where 
+    
+    source_data.dbt_unique_key is null
+    
+    
+    and not (
+    --avoid updating the record's valid_to if the latest entry is marked as deleted
+    snapshotted_data.dbt_is_deleted = 'True'
+    and
+    snapshotted_data.dbt_valid_to is null
+    )
+    )
+    
+    
+    ,
+    deletion_records as (
+    
+    select
+    'insert' as dbt_change_type,snapshotted_data.`id`,snapshotted_data.`first_name`,snapshotted_data.`contact`,snapshotted_data.`tags`,snapshotted_data.`updated_at`,snapshotted_data.dbt_unique_key as dbt_unique_key,
+    
+    current_timestamp()
+    as dbt_valid_from,
+    
+    current_timestamp()
+    as dbt_updated_at,
+    snapshotted_data.dbt_valid_to as dbt_valid_to,
+    to_hex(md5(concat(coalesce(cast(dbt_scd_id as string), ''), '|',coalesce(cast(
+    current_timestamp()
+    as string), '')))) as dbt_scd_id,
+    'True' as dbt_is_deleted
+    from snapshotted_data
+    left join deletes_source_data as source_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where 
+    
+    source_data.dbt_unique_key is null
+    
+    
+    and not (
+    --avoid inserting a new record if the latest one is marked as deleted
+    snapshotted_data.dbt_is_deleted = 'True'
+    and
+    snapshotted_data.dbt_valid_to is null
+    )
+    
+    )
+    
+    select * from insertions
+    union all
+    select * from updates
+    union all
+    select * from deletes
+    union all
+    select * from deletion_records
+    
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 6
+  type: execute
+  sql: |-
+    select * from (
+    select 
+    current_timestamp()
+    as dbt_snapshot_time
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 7
+  type: execute
+  sql: |-
+    merge into `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`snapshot_of_source` as DBT_INTERNAL_DEST
+    using `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`snapshot_of_source__dbt_tmp` as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_SOURCE.dbt_scd_id = DBT_INTERNAL_DEST.dbt_scd_id
+    
+    when matched
+    
+    and DBT_INTERNAL_DEST.dbt_valid_to is null
+    
+    and DBT_INTERNAL_SOURCE.dbt_change_type in ('update', 'delete')
+    then update
+    set dbt_valid_to = DBT_INTERNAL_SOURCE.dbt_valid_to
+    
+    when not matched
+    and DBT_INTERNAL_SOURCE.dbt_change_type = 'insert'
+    then insert (`id`, `first_name`, `contact`, `tags`, `updated_at`, `dbt_updated_at`, `dbt_valid_from`, `dbt_valid_to`, `dbt_scd_id`, `dbt_is_deleted`)
+    values (`id`, `first_name`, `contact`, `tags`, `updated_at`, `dbt_updated_at`, `dbt_valid_from`, `dbt_valid_to`, `dbt_scd_id`, `dbt_is_deleted`)
+- sequence: 8
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`snapshot_of_source__dbt_tmp`
+snapshot.bigquery_snapshot_new_record.snapshot_of_source.get_table_schema.19e0df18:
+- sequence: 0
+  type: get_table_schema
+  table_name: 19e0df18
+- sequence: 1
+  type: get_table_schema
+  table_name: 19e0df18
+snapshot.bigquery_snapshot_new_record.snapshot_of_source.get_table_schema.f0ee228c:
+- sequence: 0
+  type: get_table_schema
+  table_name: f0ee228c
+- sequence: 1
+  type: get_table_schema
+  table_name: f0ee228c

@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery } from 'dbt-docs-lib';
 
 import { useBootstrapData } from '../lib/bootstrapContext';
 import type { NodeSummary } from '../types';

@@ -1,0 +1,9 @@
+---
+source: fs/sa/crates/dbt-adapter/src/metadata/bigquery/object_options.rs
+expression: opts
+---
+{
+    "table_format": "'iceberg'",
+    "file_format": "'parquet'",
+    "storage_uri": "'gs://my-bucket/_dbt/analytics/events'",
+}

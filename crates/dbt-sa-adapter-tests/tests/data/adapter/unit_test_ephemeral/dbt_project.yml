@@ -1,0 +1,10 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+models:
+  test:
+    macros_unit_tests:
+      +materialized: ephemeral
+      +schema: macros_unit_tests

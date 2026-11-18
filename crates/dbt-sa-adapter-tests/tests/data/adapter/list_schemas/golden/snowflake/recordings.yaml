@@ -1,0 +1,18 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+- sequence: 1
+  type: execute
+  sql: ' CREATE OR REPLACE SCHEMA adapters_snowflake_list_schemas_1'
+- sequence: 2
+  type: execute
+  sql: USE DATABASE development
+- sequence: 3
+  type: execute
+  sql: ' CREATE OR REPLACE SCHEMA adapters_snowflake_list_schemas_2'
+- sequence: 4
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000

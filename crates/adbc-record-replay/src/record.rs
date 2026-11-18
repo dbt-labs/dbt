@@ -1,5 +1,5 @@
 use adbc_core::error::{Error as AdbcError, Result as AdbcResult, Status as AdbcStatus};
-use adbc_core::options::{OptionStatement, OptionValue};
+use adbc_core::options::{OptionConnection, OptionStatement, OptionValue};
 use arrow::array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{ArrowError, Schema};
 use dbt_adbc::{Connection, Statement};
@@ -27,6 +27,7 @@ use crate::storage::sqlite::SqliteHandler;
 const RECORDED_STATEMENT_OPTIONS: &[&str] = &[
     dbt_adbc::lake_compute::LAST_WARNINGS,
     dbt_adbc::lake_compute::LAST_QUERY_ID,
+    dbt_adbc::clickhouse::QUERY_ID,
 ];
 
 /// Read [`RECORDED_STATEMENT_OPTIONS`] off `stmt`, keeping only the ones it
@@ -103,6 +104,10 @@ impl Connection for RecordConnection {
 
     fn rollback(&mut self) -> AdbcResult<()> {
         self.inner.rollback()
+    }
+
+    fn set_option(&mut self, key: OptionConnection, value: OptionValue) -> AdbcResult<()> {
+        self.inner.set_option(key, value)
     }
 
     fn get_objects<'a>(
@@ -583,8 +588,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "do not match")]
-    fn replay_execute_update_panics_on_sql_mismatch() {
+    fn replay_execute_update_errors_on_sql_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         SqliteHandler::new(dir.path())
             .write_execute(
@@ -604,6 +608,7 @@ mod tests {
         replayer
             .set_sql_query("SELECT * FROM x.non_existing_dest")
             .unwrap();
-        let _ = replayer.execute_update();
+        let err = replayer.execute_update().unwrap_err();
+        assert!(err.message.contains("do not match"), "{}", err.message);
     }
 }
