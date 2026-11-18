@@ -208,11 +208,14 @@ where table_schema ilike '{}'",
 
     let mut relations = Vec::with_capacity(batch.num_rows());
     for i in 0..batch.num_rows() {
+        let relation_type =
+            RelationType::from_adapter_type(AdapterType::Redshift, table_type.value(i))
+                .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
         relations.push(build_redshift_relation(
             database_name.value(i).to_string(),
             schema_name.value(i).to_string(),
             table_name.value(i).to_string(),
-            RelationType::from(table_type.value(i)),
+            relation_type,
             engine.quoting(),
         )?);
     }

@@ -324,6 +324,9 @@ WHERE table_catalog = {catalog}
         let is_shallow_clone = !databricks_table_types.is_null(i)
             && is_shallow_clone_type(databricks_table_types.value(i));
 
+        let relation_type =
+            RelationType::from_adapter_type(AdapterType::Databricks, table_type.as_ref())
+                .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
         let relation = Arc::new(
             Relation::new(
                 engine.adapter_type(),
@@ -331,10 +334,7 @@ WHERE table_catalog = {catalog}
                 schema.to_string(),
                 name.to_string(),
             )
-            .with_relation_type(RelationType::from_adapter_type(
-                AdapterType::Databricks,
-                table_type.as_ref(),
-            ))
+            .with_relation_type(relation_type)
             .with_quoting(engine.quoting())
             .with_is_delta(is_delta)
             .with_table_format(table_format)

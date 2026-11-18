@@ -321,7 +321,7 @@ fn resolve_manager(
             "this isn't an interactive terminal to ask which one to use"
         };
         return err!(
-            ErrorCode::Unexpected,
+            ErrorCode::MissingArgument,
             "{reason}, and {cause} -- {} was left unchanged. Re-run interactively (without \
              --yes) to pick one, pass --package-manager <name> to say which one non-\
              interactively, or edit and re-sync the manifest yourself.",

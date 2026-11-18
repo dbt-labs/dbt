@@ -191,6 +191,8 @@ pub enum ErrorCode {
     LakeComputeUnitTestOnDefaultAdapter = 1163,
     /// An inline `config(adapter=...)` changed a node's adapter after its parse render.
     InlineAdapterParseTargetMismatch = 1164,
+    /// Two `{% docs %}` blocks with the same name in a package.
+    DuplicateDocsBlock = 1165,
     /// A project function declares no return type (BigQuery infers it from
     /// the body), and analysis could not bind its body to infer one, so calls
     /// to it cannot be typed.

@@ -281,7 +281,7 @@ impl MaterializationResolver {
         }
 
         Err(fs_err!(
-            ErrorCode::Unexpected,
+            ErrorCode::InvalidConfig,
             "Materialization macro not found for materialization: {}, adapter: {}",
             materialization_name,
             dialect

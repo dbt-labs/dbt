@@ -77,7 +77,7 @@ fn process_docs_macro_file(
                 let part = &docs_macro[span.start_offset as usize..span.end_offset as usize];
                 if let Some(existing_doc) = docs_map.get(&unique_id) {
                     return err!(
-                        ErrorCode::Unexpected,
+                        ErrorCode::DuplicateDocsBlock,
                         "dbt found two docs with the same name: '{}' in files: '{}' and '{}'",
                         name,
                         docs_asset.path.display(),
@@ -806,7 +806,7 @@ mod tests {
                     "#,
                     ),
                 ],
-                expected_code: ErrorCode::Unexpected,
+                expected_code: ErrorCode::DuplicateDocsBlock,
                 expected_warning_paths: vec!["models/dup_second.md"],
             },
         ];

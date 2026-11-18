@@ -397,7 +397,8 @@ pub fn list_relations(
             "BASE TABLE" => RelationType::Table,
             "VIEW" => RelationType::View,
             "LOCAL TEMPORARY" => RelationType::Table,
-            other => RelationType::from_adapter_type(engine.adapter_type(), other),
+            other => RelationType::from_adapter_type(engine.adapter_type(), other)
+                .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?,
         };
 
         let relation = do_create_relation(

@@ -106,7 +106,8 @@ FROM
         let schema = table_schemas.value(i);
         let identifier = table_names.value(i);
         let relation_type =
-            RelationType::from_adapter_type(AdapterType::Bigquery, table_types.value(i));
+            RelationType::from_adapter_type(AdapterType::Bigquery, table_types.value(i))
+                .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
 
         result.push(Arc::new(
             Relation::new(
@@ -153,7 +154,8 @@ WHERE
         let schema = table_schemas.value(i);
         let identifier = table_names.value(i);
         let relation_type =
-            RelationType::from_adapter_type(AdapterType::Bigquery, table_types.value(i));
+            RelationType::from_adapter_type(AdapterType::Bigquery, table_types.value(i))
+                .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
 
         result.push(Arc::new(
             Relation::new(
@@ -278,7 +280,8 @@ fn list_relations_via_adbc(
     for j in 0..tables_struct.len() {
         let identifier = table_names.value(j);
         let relation_type =
-            RelationType::from_adapter_type(AdapterType::Bigquery, table_types.value(j));
+            RelationType::from_adapter_type(AdapterType::Bigquery, table_types.value(j))
+                .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
 
         result.push(Arc::new(
             Relation::new(
@@ -2616,7 +2619,7 @@ mod tests {
         let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
         let relation_type_name = uppercase(string_array.value(0).into());
         let relation_type =
-            RelationType::from_adapter_type(AdapterType::Bigquery, &relation_type_name);
+            RelationType::from_adapter_type(AdapterType::Bigquery, &relation_type_name).unwrap();
 
         assert_eq!(relation_type, RelationType::Function);
     }

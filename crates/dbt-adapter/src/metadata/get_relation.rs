@@ -115,7 +115,8 @@ pub(crate) fn relation_from_routines_batch(
     let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
     let relation_type_name = uppercase(string_array.value(0).into());
     let relation_type =
-        RelationType::from_adapter_type(adapter.adapter_type(), relation_type_name.as_ref());
+        RelationType::from_adapter_type(adapter.adapter_type(), relation_type_name.as_ref())
+            .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
 
     Ok(Some(
         Relation::new(
@@ -307,7 +308,8 @@ fn bigquery_get_relation_via_adbc(
         )
     })?;
 
-    let relation_type = RelationType::from_adapter_type(AdapterType::Bigquery, relation_type_name);
+    let relation_type = RelationType::from_adapter_type(AdapterType::Bigquery, relation_type_name)
+        .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
 
     let mut relation = Box::new(
         Relation::new(
@@ -388,7 +390,8 @@ fn bigquery_get_relation(
     let string_array = batch.column_values::<StringArray>("table_type")?;
 
     let relation_type_name = uppercase(string_array.value(0).into());
-    let relation_type = RelationType::from_adapter_type(AdapterType::Bigquery, &relation_type_name);
+    let relation_type = RelationType::from_adapter_type(AdapterType::Bigquery, &relation_type_name)
+        .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
 
     let mut relation = Box::new(
         Relation::new(
@@ -458,7 +461,8 @@ fn parse_describe_table_extended(
     }
 
     let relation_type = match type_str.as_deref() {
-        Some(t) => RelationType::from_adapter_type(adapter_type, t),
+        Some(t) => RelationType::from_adapter_type(adapter_type, t)
+            .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?,
         None => RelationType::Table,
     };
     let is_delta = provider_str.as_deref() == Some("delta");
@@ -584,10 +588,10 @@ fn databricks_get_relation(
         let json_metadata = DatabricksTableMetadata::from_record_batch(Arc::new(batch))?;
         let is_delta = json_metadata.provider.as_deref() == Some("delta");
         let table_format = table_format_from_provider(json_metadata.provider.as_deref());
-        let relation_type = Some(RelationType::from_adapter_type(
-            adapter.adapter_type(),
-            &json_metadata.type_,
-        ));
+        let relation_type = Some(
+            RelationType::from_adapter_type(adapter.adapter_type(), &json_metadata.type_)
+                .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?,
+        );
         (
             relation_type,
             is_delta,

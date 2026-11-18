@@ -580,7 +580,10 @@ fn build_relations_from_show_objects(
             // all supported dbt operations (SELECT *, DROP TABLE, etc.).
             Some(RelationType::Table)
         } else {
-            Some(RelationType::from(table_kind))
+            Some(
+                RelationType::from_adapter_type(AdapterType::Snowflake, table_kind)
+                    .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?,
+            )
         };
 
         let table_format = if try_canonicalize_bool_column_field(is_iceberg)? {

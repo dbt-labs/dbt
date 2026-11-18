@@ -331,7 +331,7 @@ pub fn resolve_yaml_depends_on<T: ResolvableConfig<T> + Serialize + 'static>(
             }
             _ => {
                 return err!(
-                    ErrorCode::Unexpected,
+                    ErrorCode::InvalidConfig,
                     "Invalid dependency input: {}",
                     dependency.as_str()
                 );

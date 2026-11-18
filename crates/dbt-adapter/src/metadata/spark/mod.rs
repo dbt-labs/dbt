@@ -24,7 +24,7 @@ use dbt_schemas::schemas::relations::base::BaseRelation;
 use crate::AdapterEngine;
 use crate::column::Column;
 use crate::connection::ConnectionGuard;
-use crate::errors::AdapterResult;
+use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use crate::metadata::CatalogAndSchema;
 use crate::relation::Relation;
 
@@ -77,6 +77,8 @@ fn relations_from_show_table_extended(
         // format (`delta` for regular lakehouse tables) and absent for views.
         let table_type = information_value(info, "Type").unwrap_or("MANAGED");
         let is_delta = information_value(info, "Provider") == Some("delta");
+        let relation_type = RelationType::from_adapter_type(adapter_type, table_type)
+            .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
 
         let relation = Arc::new(
             Relation::new(
@@ -85,7 +87,7 @@ fn relations_from_show_table_extended(
                 schema.to_string(),
                 names.value(i).to_string(),
             )
-            .with_relation_type(RelationType::from_adapter_type(adapter_type, table_type))
+            .with_relation_type(relation_type)
             .with_quoting(quoting)
             .with_is_delta(is_delta),
         ) as Arc<dyn BaseRelation>;

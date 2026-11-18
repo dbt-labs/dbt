@@ -172,6 +172,34 @@ impl RelationObject {
     }
 }
 
+/// Parse a relation type string from user Jinja.
+pub(crate) fn parse_relation_type(s: &str) -> Result<RelationType, minijinja::Error> {
+    RelationType::try_from(s).map_err(|_| {
+        minijinja::Error::new(
+            minijinja::ErrorKind::InvalidArgument,
+            format!("'{s}' is not a valid relation type"),
+        )
+    })
+}
+
+/// Parse an optional Jinja `type` argument; none/undefined means unset.
+pub(crate) fn parse_relation_type_value(
+    value: Option<Value>,
+) -> Result<Option<RelationType>, minijinja::Error> {
+    value
+        .filter(|v| !v.is_none() && !v.is_undefined())
+        .map(|v| {
+            let s = v.as_str().ok_or_else(|| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidArgument,
+                    "'type' must be a string",
+                )
+            })?;
+            parse_relation_type(s)
+        })
+        .transpose()
+}
+
 /// Always returns the unfiltered relation string (via [`BaseRelation::render_self_as_str`]),
 /// reference: https://github.com/dbt-labs/dbt-adapters/blob/616a8d3cb595605872c011070c240e7a2b825d79/dbt-adapters/src/dbt/adapters/base/relation.py#L268-L269
 fn render_without_filter(ro: &Arc<RelationObject>) -> Value {
@@ -251,7 +279,8 @@ impl Object for RelationObject {
                 iter.finish()?;
                 let relation_type = relation_type
                     .filter(|s| !s.is_empty())
-                    .map(RelationType::from);
+                    .map(parse_relation_type)
+                    .transpose()?;
                 self.derivative(suffix, relation_type, interpret_suffix_as_full_identifier)
                     .map(|r| Value::from_object(RelationObject::new(r)))
             }
@@ -280,13 +309,7 @@ impl Object for RelationObject {
                 let relation_type_val: Option<Value> =
                     args.consume_optional_only_from_kwargs("type");
                 let location: Option<String> = args.consume_optional_only_from_kwargs("location");
-                let relation_type = relation_type_val.and_then(|v| {
-                    if v.is_none() || v.is_undefined() {
-                        None
-                    } else {
-                        v.as_str().map(RelationType::from)
-                    }
-                });
+                let relation_type = parse_relation_type_value(relation_type_val)?;
                 self.incorporate(path, relation_type, location)
                     .map(|r| Value::from_object(self.with_relation(r)))
             }
@@ -1001,13 +1024,7 @@ pub trait StaticBaseRelation: fmt::Debug + Send + Sync {
             database,
             schema,
             identifier,
-            relation_type.and_then(|v: Value| {
-                if v.is_none() || v.is_undefined() {
-                    None
-                } else {
-                    Some(RelationType::from(v.as_str().unwrap_or_default()))
-                }
-            }),
+            parse_relation_type_value(relation_type)?,
             custom_quoting,
             temporary,
         )
@@ -1630,6 +1647,27 @@ mod tests {
             derived.relation_type(),
             Some(RelationType::MaterializedView)
         );
+    }
+
+    #[test]
+    fn api_relation_create_rejects_bogus_type() {
+        let obj = create_static_relation(AdapterType::Postgres, DEFAULT_RESOLVED_QUOTING).unwrap();
+
+        let env = minijinja::Environment::new();
+        let state = State::new_for_env(&env);
+
+        let err = obj
+            .call_method(
+                &state,
+                "create",
+                &[Value::from(minijinja::value::Kwargs::from_iter([(
+                    "type",
+                    Value::from("bogus"),
+                )]))],
+                &[],
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), minijinja::ErrorKind::InvalidArgument);
     }
 
     #[test]

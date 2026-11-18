@@ -6,6 +6,7 @@ use crate::relation::redshift::materialized_view_config::{
     DescribeMaterializedViewResults, RedshiftMaterializedViewConfig,
     RedshiftMaterializedViewConfigChangeset,
 };
+use crate::relation::relation_object::{parse_relation_type, parse_relation_type_value};
 use crate::relation::snowflake::config::relation_types::{dynamic_table, interactive_table};
 use crate::relation::snowflake::config::{
     DYNAMIC_TABLE_KEY, INTERACTIVE_TABLE_KEY, SnowflakeDescribeResults, components,
@@ -117,8 +118,13 @@ impl StaticBaseRelation for RelationStatic {
                     _ => TableFormat::Default,
                 };
 
+                let relation_type = relation_type
+                    .as_deref()
+                    .map(parse_relation_type)
+                    .transpose()?;
+
                 let relation = Relation::new(AdapterType::Snowflake, database, schema, identifier)
-                    .with_relation_type(relation_type.map(|s| RelationType::from(s.as_str())))
+                    .with_relation_type(relation_type)
                     .with_quoting(custom_quoting)
                     .with_table_format(table_format)
                     .validate()?;
@@ -147,13 +153,7 @@ impl StaticBaseRelation for RelationStatic {
                     });
 
                 let relation = Relation::new(AdapterType::ClickHouse, database, schema, identifier)
-                    .with_relation_type(relation_type.and_then(|v: Value| {
-                        if v.is_none() || v.is_undefined() {
-                            None
-                        } else {
-                            Some(RelationType::from(v.as_str().unwrap_or_default()))
-                        }
-                    }))
+                    .with_relation_type(parse_relation_type_value(relation_type)?)
                     .with_quoting(custom_quoting.unwrap_or(self.quoting))
                     .with_temporary(temporary.unwrap_or(false))
                     .with_can_exchange(can_exchange.unwrap_or(false))
@@ -184,13 +184,7 @@ impl StaticBaseRelation for RelationStatic {
                     });
 
                 Relation::new(self.adapter_type, database, schema, identifier)
-                    .with_relation_type(relation_type.and_then(|v: Value| {
-                        if v.is_none() || v.is_undefined() {
-                            None
-                        } else {
-                            Some(RelationType::from(v.as_str().unwrap_or_default()))
-                        }
-                    }))
+                    .with_relation_type(parse_relation_type_value(relation_type)?)
                     .with_quoting(custom_quoting.unwrap_or(self.quoting))
                     .with_temporary(temporary.unwrap_or(false))
                     .with_is_staging(is_staging.unwrap_or(false))

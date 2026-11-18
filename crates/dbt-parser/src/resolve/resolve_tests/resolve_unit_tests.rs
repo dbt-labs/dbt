@@ -255,7 +255,7 @@ pub async fn resolve_unit_tests(
                     continue;
                 } else {
                     return err!(
-                        ErrorCode::Unexpected,
+                        ErrorCode::InvalidConfig,
                         "Invalid given input: {}",
                         input.as_str()
                     );

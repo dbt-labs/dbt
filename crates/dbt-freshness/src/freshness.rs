@@ -499,7 +499,7 @@ async fn calculate_freshness_common(
     // check if table has one row and 2 columns, if not raise an error
     if batch.num_rows() != 1 || batch.num_columns() != 2 {
         return err!(
-            code => ErrorCode::Unexpected,
+            code => ErrorCode::FreshnessConfigInvalid,
             loc => node.get_node_path(NodePathKind::Definition, io_args.in_dir.as_path(), io_args.out_dir.as_path()).into_owned(),
             "{} '{}' freshness result table should have 1 row and 2 columns, but got {} rows and {} columns",
             node.kind_label(),
@@ -1079,7 +1079,7 @@ async fn run_freshness_with_spans(
                 .remove(&node.common().unique_id)
                 .unwrap_or_else(|| {
                     fs_err!(
-                        code => ErrorCode::Unexpected,
+                        code => ErrorCode::FreshnessMetadataWarning,
                         loc => node.common().name_span.start.clone(),
                         "Could not find freshness information for {kind} '{}'. Please verify that you have access to view metadata for this {kind} in the warehouse.",
                         node.common().unique_id
@@ -1217,7 +1217,7 @@ fn validate_and_extract_timestamp_column(
         DataType::Timestamp(_, Some(_)) => Ok(batch.column(column_index).clone()),
         _ => {
             err!(
-                code => ErrorCode::Unexpected,
+                code => ErrorCode::ColumnTypeMismatch,
                 loc => node.get_node_path(NodePathKind::Definition, io_args.in_dir.as_path(), io_args.out_dir.as_path()).into_owned(),
                 "{} '{}' {} should have a timestamp type, but got {} type",
                 node.kind_label(),
@@ -2300,5 +2300,29 @@ mod tests {
         node.__source_attr__.loaded_at_field = Some(String::new());
         node.__source_attr__.loaded_at_query = Some(String::new());
         assert!(!collects_freshness_during_build(&node));
+    }
+
+    #[test]
+    fn non_timestamp_column_is_column_type_mismatch() {
+        let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("loaded_at", DataType::Int64, false),
+        ]));
+        let batch = arrow::record_batch::RecordBatch::try_new(
+            schema,
+            vec![Arc::new(arrow::array::Int64Array::from(vec![1_i64]))],
+        )
+        .unwrap();
+
+        let node = metadata_source("my_source");
+        let err = validate_and_extract_timestamp_column(
+            &batch,
+            0,
+            &node,
+            "loaded_at",
+            &IoArgs::default(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ColumnTypeMismatch);
     }
 }
