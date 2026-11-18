@@ -5,7 +5,7 @@ use dbt_schemas::schemas::common::ResolvedQuoting;
 use minijinja::{
     Environment, Error as MinijinjaError, State, Template, UndefinedBehavior, Value,
     listener::RenderingEventListener,
-    value::{ValueMap, mutable_map::MutableMap},
+    value::{OverlayMap, ValueMap},
 };
 use serde::Serialize;
 use std::{
@@ -197,13 +197,11 @@ impl JinjaEnv {
         self.env.empty_state()
     }
 
-    /// Create a new state with a pre-interned string map.
-    pub fn new_state_with_context(&self, ctx: BTreeMap<String, Value>) -> State<'_, '_> {
-        self.env.new_state_with_context(MutableMap::from(
-            ctx.into_iter()
-                .map(|(k, v)| (Value::from(k), v))
-                .collect::<ValueMap>(),
-        ))
+    /// Create a new state whose context is an `OverlayMap`. A map becomes the
+    /// overlay's base as is, and an `OverlayMap` keeps its shared base, so
+    /// neither is copied.
+    pub fn new_state_with_context(&self, ctx: impl Into<OverlayMap>) -> State<'_, '_> {
+        self.env.new_state_with_context(ctx.into())
     }
 
     /// Render a template from a string.

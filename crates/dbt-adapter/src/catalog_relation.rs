@@ -719,7 +719,7 @@ impl CatalogRelation {
             AdapterType::Spark => DATABRICKS_ATTR,
             AdapterType::Snowflake => SNOWFLAKE_ATTR,
             // Lake compute model configs surface the same way DuckDB's do.
-            AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => DUCKDB_ATTR,
             _ => return None,
         };
         let model_config = if let Ok(adapter_attr) = model.get_attr(adapter_attr)
@@ -760,7 +760,7 @@ impl CatalogRelation {
             AdapterType::Databricks => DATABRICKS_ATTR,
             AdapterType::Snowflake => SNOWFLAKE_ATTR,
             // Lake compute model configs surface the same way DuckDB's do.
-            AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => DUCKDB_ATTR,
             _ => return None,
         };
         let model_config = if let Ok(adapter_attr) = model.get_attr(adapter_attr)
@@ -1175,7 +1175,7 @@ fn from_model_config_and_catalogs_default(
             }
         }
         // Lake compute behaves as DuckDB-backed for relation-building purposes.
-        AdapterType::DuckDB | AdapterType::LakeCompute => {
+        AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => {
             match model_catalog_name(model, adapter_type) {
                 None => return Ok(CatalogRelation::default_catalog_relation_duckdb()),
                 Some(catalog_name) => catalog_name,
@@ -2187,7 +2187,9 @@ mod default_relation_tests {
             AdapterType::Bigquery => "bigquery_attr".to_string(),
             AdapterType::Databricks => "databricks_attr".to_string(),
             AdapterType::Spark => "databricks_attr".to_string(),
-            AdapterType::DuckDB | AdapterType::LakeCompute => "duckdb_attr".to_string(),
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => {
+                "duckdb_attr".to_string()
+            }
             _ => panic!("Not yet supported"),
         }
     }

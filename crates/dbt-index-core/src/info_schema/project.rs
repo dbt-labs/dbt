@@ -8,13 +8,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::{Array, RecordBatch, StringArray, UInt32Array, new_null_array};
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_array::cast::AsArray;
+use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, UInt32Array, new_null_array};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 
 use crate::IndexError;
 use crate::parquet::schema_for;
 
-use super::spec::{Filter, Src, TableSpec};
+use super::spec::{ColSpec, Filter, Src, TableSpec};
 
 /// Resolve the source field for an output column, honouring join side order.
 fn source_field(spec: &TableSpec, src_name: &str) -> Option<Field> {
@@ -45,7 +46,20 @@ pub fn out_schema(spec: &TableSpec) -> Result<SchemaRef, IndexError> {
                         col.src
                     ))
                 })?;
-                Field::new(col.out, src.data_type().clone(), true)
+                let ty = match (col.first, src.data_type()) {
+                    (false, ty) => ty.clone(),
+                    (true, DataType::List(item)) => item.data_type().clone(),
+                    (true, ty) => {
+                        return Err(IndexError::Other(format!(
+                            "info schema: {} column '{}' reads the first element of \
+                             '{}', which is {ty}, not a list",
+                            spec.qualified_name(),
+                            col.out,
+                            col.src
+                        )));
+                    }
+                };
+                Field::new(col.out, ty, true)
             }
         };
         fields.push(field);
@@ -68,13 +82,40 @@ fn filter_mask(spec: &TableSpec, batch: &RecordBatch) -> Option<arrow_array::Boo
 }
 
 /// Take one output column out of an already-aligned source batch.
-fn column_from(batch: &RecordBatch, src_name: &str, out_field: &Field) -> arrow_array::ArrayRef {
+fn column_from(batch: &RecordBatch, src_name: &str, out_field: &Field) -> ArrayRef {
     match batch.schema().index_of(src_name) {
         Ok(i) => Arc::clone(batch.column(i)),
         // The source table exists but predates this column: emit nulls rather
         // than failing, so an older target directory stays readable.
         Err(_) => new_null_array(out_field.data_type(), batch.num_rows()),
     }
+}
+
+/// `col` as the output column wants it: unchanged, or the first element of
+/// each list, which is null for a null or empty list.
+fn finish(col: &ColSpec, array: ArrayRef) -> Result<ArrayRef, IndexError> {
+    if !col.first {
+        return Ok(array);
+    }
+    let Some(list) = array.as_list_opt::<i32>() else {
+        // A missing source column arrives as nulls of the output type.
+        if array.null_count() == array.len() {
+            return Ok(array);
+        }
+        return Err(IndexError::Other(format!(
+            "info schema: '{}' is {}, not a list",
+            col.src,
+            array.data_type()
+        )));
+    };
+    let offsets = list.value_offsets();
+    let first: UInt32Array = (0..list.len())
+        .map(|row| {
+            (list.is_valid(row) && offsets[row] < offsets[row + 1]).then(|| offsets[row] as u32)
+        })
+        .collect();
+    arrow_select::take::take(list.values().as_ref(), &first, None)
+        .map_err(|e| IndexError::Other(format!("info schema first element: {e}")))
 }
 
 /// Project `batches` of a single source table through `spec`.
@@ -93,15 +134,15 @@ pub fn project_table(
         if batch.num_rows() == 0 {
             continue;
         }
-        let cols: Vec<arrow_array::ArrayRef> = spec
+        let cols = spec
             .cols
             .iter()
             .zip(out.fields())
             .map(|(col, field)| match col.ty {
-                Some(_) => new_null_array(field.data_type(), batch.num_rows()),
-                None => column_from(&batch, col.src, field),
+                Some(_) => Ok(new_null_array(field.data_type(), batch.num_rows())),
+                None => finish(col, column_from(&batch, col.src, field)),
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         result.push(
             RecordBatch::try_new(Arc::clone(out), cols)
                 .map_err(|e| IndexError::Other(format!("info schema batch: {e}")))?,
@@ -203,7 +244,7 @@ pub fn project_join(
     // Take column by column rather than as a batch: an unmatched left row
     // yields a null, which a source column declared non-nullable would reject
     // if the taken columns were reassembled against the source schema.
-    let mut right_taken: HashMap<String, arrow_array::ArrayRef> = HashMap::new();
+    let mut right_taken: HashMap<String, ArrayRef> = HashMap::new();
     if right.num_rows() > 0 {
         for (i, field) in right.schema().fields().iter().enumerate() {
             let taken = arrow_select::take::take(right.column(i).as_ref(), &take_idx, None)
@@ -212,24 +253,26 @@ pub fn project_join(
         }
     }
 
-    let cols: Vec<arrow_array::ArrayRef> = spec
+    let cols = spec
         .cols
         .iter()
         .zip(out.fields())
         .map(|(col, field)| {
             if col.ty.is_some() {
-                return new_null_array(field.data_type(), left.num_rows());
+                return Ok(new_null_array(field.data_type(), left.num_rows()));
             }
             // Left side wins; fall through to the right side.
-            if left.schema().index_of(col.src).is_ok() {
-                return column_from(&left, col.src, field);
-            }
-            match right_taken.get(col.src) {
-                Some(arr) => Arc::clone(arr),
-                None => new_null_array(field.data_type(), left.num_rows()),
-            }
+            let array = if left.schema().index_of(col.src).is_ok() {
+                column_from(&left, col.src, field)
+            } else {
+                match right_taken.get(col.src) {
+                    Some(arr) => Arc::clone(arr),
+                    None => new_null_array(field.data_type(), left.num_rows()),
+                }
+            };
+            finish(col, array)
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(vec![RecordBatch::try_new(Arc::clone(out), cols).map_err(
         |e| IndexError::Other(format!("info schema join batch: {e}")),

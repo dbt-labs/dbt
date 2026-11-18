@@ -689,12 +689,16 @@ mod from_record_batch_tests {
             ("SNOWFLAKE_QUERY_ID", "snowflake-id"),
             ("BIGQUERY:query_id", "bigquery-id"),
             ("DATABRICKS_QUERY_ID", "databricks-id"),
+            ("LAKE_COMPUTE_QUERY_ID", "lake-compute-id"),
+            ("CLICKHOUSE_QUERY_ID", "clickhouse-id"),
         ];
         let batch = select_batch(1, &metadata);
         for (adapter_type, expected) in [
             (AdapterType::Snowflake, Some("snowflake-id")),
             (AdapterType::Bigquery, Some("bigquery-id")),
             (AdapterType::Databricks, Some("databricks-id")),
+            (AdapterType::LakeCompute, Some("lake-compute-id")),
+            (AdapterType::ClickHouse, Some("clickhouse-id")),
             (AdapterType::Postgres, None),
         ] {
             let response = AdapterResponse::from_record_batch(&batch, adapter_type);

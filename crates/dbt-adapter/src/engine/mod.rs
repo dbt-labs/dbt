@@ -9,6 +9,7 @@ use dbt_adbc::*;
 use dbt_common::AdapterResult;
 use dbt_common::cancellation::CancellationToken;
 
+pub use dbt_adapter_engine::Options;
 pub use dbt_adapter_engine::noop_connection::NoopConnection;
 pub use dbt_adapter_engine::query_comment;
 pub use dbt_adapter_engine::retry;
@@ -18,7 +19,6 @@ pub use dbt_adapter_engine::sidecar_client::sidecar_relation_name;
 
 mod adapter_engine;
 pub use adapter_engine::AdapterEngine;
-pub use adapter_engine::Options;
 
 mod adbc;
 pub use adbc::AdbcEngine;

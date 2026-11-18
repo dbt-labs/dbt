@@ -81,6 +81,8 @@ pub const QUERY_PREFETCH_CONCURRENCY: &str = "adbc.bigquery.sql.query.prefetch_c
 
 pub const QUERY_LINK_FAILED_JOB: &str = "adbc.bigquery.sql.query.link_failed_job";
 
+pub const ERROR_DETAIL_JOB_ERROR_REASON: &str = "adbc.bigquery.job.error_reason";
+
 // When true, GetObjects at depth Tables lists tables with tables.list only (table
 // name and type) instead of issuing one tables.get per table. Constraints are not
 // returned. Depths that include columns are unaffected.
@@ -107,7 +109,7 @@ pub const GET_DATASET_LOCATION: &str = "bigquery.dataset.get_location";
 
 pub const DATAPROC_REGION: &str = "adbc.bigquery.dataproc.compute_region";
 pub const DATAPROC_PROJECT: &str = "adbc.bigquery.dataproc.project";
-pub const DATAPROC_POOLING_TIMEOUT: &str = "adbc.bigquery.dataproc.pooling_timeout";
+pub const DATAPROC_POOLING_TIMEOUT: &str = "adbc.bigquery.dataproc.pooling_timeout"; // i64
 pub const CREATE_BATCH_REQ_PARENT: &str = "adbc.bigquery.create_batch.parent";
 pub const CREATE_BATCH_REQ_BATCH_YML: &str = "adbc.bigquery.create_batch.batch_yml";
 pub const CREATE_BATCH_REQ_BATCH_ID: &str = "adbc.bigquery.create_batch.batch_id";

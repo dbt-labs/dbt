@@ -111,7 +111,7 @@ impl AdapterConfig {
     }
 
     /// Whether this config indicates that authentication should be handled by
-    /// dbt Cloud credentials (via the flock/remote driver) instead of
+    /// dbt Cloud credentials (via the bridge/remote driver) instead of
     /// adapter-specific auth.
     pub fn use_dbt_cloud_credentials(&self) -> bool {
         self.get("use_dbt_cloud_credentials")

@@ -307,7 +307,7 @@ fn submit_cluster_job(
         ),
         (
             DATAPROC_POOLING_TIMEOUT.to_string(),
-            OptionValue::String(params.timeout.to_string()),
+            OptionValue::Int(params.timeout),
         ),
         (
             DATAPROC_SUBMIT_JOB_REQ_CLUSTER_NAME.to_string(),
@@ -374,7 +374,7 @@ fn submit_serverless_job(
         ),
         (
             DATAPROC_POOLING_TIMEOUT.to_string(),
-            OptionValue::String(params.timeout.to_string()),
+            OptionValue::Int(params.timeout),
         ),
     ];
 
@@ -496,7 +496,7 @@ fn submit_bigframes_job(
         ),
         (
             DATAPROC_POOLING_TIMEOUT.to_string(),
-            OptionValue::String(params.timeout.to_string()),
+            OptionValue::Int(params.timeout),
         ),
     ];
 

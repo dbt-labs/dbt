@@ -69,7 +69,7 @@ impl StmtSplitter for DefaultStmtSplitter {
             // falls back to Postgresql at the moment
             Salesforce => Dialect::Postgresql,
             // `LakeCompute` defines no dialect of its own, so it falls back to DuckDB's
-            DuckDB | LakeCompute => Dialect::Duckdb,
+            DuckDB | LakeCompute | MotherDuck => Dialect::Duckdb,
             ClickHouse => return clickhouse::split_statements(sql),
             Trino => Dialect::Trino,
             _ => Dialect::Trino,

@@ -22,5 +22,6 @@ mod utils;
 
 mod main_impl;
 pub use main_impl::{
-    init_env_before_parse, prepare_cli_or_exit, print_trimmed_error, run_cli, run_cli_with_code,
+    DBT_RUNTIME_SHUTDOWN_TIMEOUT, TOKIO_SHUTDOWN_TIMEOUT, hard_exit, init_env_before_parse,
+    prepare_cli_or_exit, print_trimmed_error, run_cli, run_cli_with_code,
 };

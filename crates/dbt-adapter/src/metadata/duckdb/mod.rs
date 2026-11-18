@@ -332,7 +332,7 @@ fn list_relations_sql(quoting: ResolvedQuoting, db_schema: &CatalogAndSchema) ->
         // is needed here (unlike the schema predicate).
         format!(
             " AND lower(table_catalog) = lower('{}')",
-            dbt_adapter_sql::ident::escape_string_literal(
+            dbt_adapter_sql::literal::escape_string_literal(
                 &db_schema.resolved_catalog,
                 AdapterType::DuckDB
             ),
@@ -343,7 +343,7 @@ fn list_relations_sql(quoting: ResolvedQuoting, db_schema: &CatalogAndSchema) ->
         "SELECT table_catalog, table_schema, table_name, table_type \
          FROM information_schema.tables \
          WHERE table_schema = '{}'{}",
-        dbt_adapter_sql::ident::escape_string_literal(&query_schema, AdapterType::DuckDB),
+        dbt_adapter_sql::literal::escape_string_literal(&query_schema, AdapterType::DuckDB),
         catalog_predicate,
     )
 }
@@ -397,7 +397,8 @@ pub fn list_relations(
             "BASE TABLE" => RelationType::Table,
             "VIEW" => RelationType::View,
             "LOCAL TEMPORARY" => RelationType::Table,
-            other => RelationType::from_adapter_type(engine.adapter_type(), other),
+            other => RelationType::from_adapter_type(engine.adapter_type(), other)
+                .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?,
         };
 
         let relation = do_create_relation(
@@ -552,7 +553,9 @@ pub(crate) fn classify_attach_entry(item: &dbt_yaml::Value) -> Option<(String, &
 /// and the probe would never run.
 pub(crate) fn skips_schema_wide_listing(adapter_type: AdapterType, resolved_catalog: &str) -> bool {
     match adapter_type {
-        AdapterType::DuckDB => is_duckdb_external_iceberg_catalog_database(resolved_catalog),
+        AdapterType::DuckDB | AdapterType::MotherDuck => {
+            is_duckdb_external_iceberg_catalog_database(resolved_catalog)
+        }
         AdapterType::LakeCompute => true,
         _ => false,
     }

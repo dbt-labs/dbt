@@ -188,6 +188,9 @@ pub struct ResolverStateRow {
     pub pkg_manifest_path_configs_json: String,
     #[serde(default)]
     pub pkg_lock_json: String,
+    /// The root project's resolved `quoting`, as JSON. Empty for state written before it was recorded.
+    #[serde(default)]
+    pub quoting_json: String,
     pub any_uses_graph: i32,
 }
 
@@ -323,6 +326,7 @@ fn resolver_state_fields() -> Vec<FieldRef> {
         str_field("pkg_kinds_json"),
         str_field("pkg_manifest_path_configs_json"),
         str_field("pkg_lock_json"),
+        str_field("quoting_json"),
         i32_field("any_uses_graph"),
     ]
 }
@@ -887,6 +891,8 @@ pub struct SaveArgs<'a> {
     pub operations_json: &'a str,
     /// [`pkg_lock_json`] of `package-lock.yml`.
     pub pkg_lock_json: &'a str,
+    /// The root project's resolved `quoting`, as JSON.
+    pub quoting_json: &'a str,
     pub packages: &'a [PackageSnapshot],
     pub nodes: &'a Nodes,
     pub disabled_nodes: &'a Nodes,
@@ -929,6 +935,7 @@ impl<'a> SaveArgs<'a> {
             nodes_with_access_errors_json: "[]",
             operations_json: "{\"on_run_start\":[],\"on_run_end\":[]}",
             pkg_lock_json: "{}",
+            quoting_json: "",
             selectors_json: "",
             git_sha: "",
             git_branch: "",
@@ -972,7 +979,8 @@ fn push_column_rows(
                 serde_json::to_string(&col.meta).ok()
             },
             tags: col.tags.clone(),
-            granularity: None,
+            granularity: col.granularity.as_ref().map(|g| g.to_string()),
+            quote: col.quote,
             ingested_at,
         });
     }
@@ -1262,6 +1270,7 @@ pub fn save(args: &SaveArgs<'_>) -> Result<(), String> {
             pkg_kinds_json,
             pkg_manifest_path_configs_json,
             pkg_lock_json: args.pkg_lock_json.to_string(),
+            quoting_json: args.quoting_json.to_string(),
             any_uses_graph: any_uses_graph as i32,
         }],
     );

@@ -446,8 +446,9 @@ pub fn build_relation_clauses(
         let (input_schema, database, input_table) = get_input_schema_database_and_table(relation)?;
         let adapter_type = relation.adapter_type();
         let input_schema =
-            dbt_adapter_sql::ident::escape_string_literal(&input_schema, adapter_type);
-        let input_table = dbt_adapter_sql::ident::escape_string_literal(&input_table, adapter_type);
+            dbt_adapter_sql::literal::escape_string_literal(&input_schema, adapter_type);
+        let input_table =
+            dbt_adapter_sql::literal::escape_string_literal(&input_table, adapter_type);
 
         where_clauses_by_database
             .entry(database.as_ref().to_owned())

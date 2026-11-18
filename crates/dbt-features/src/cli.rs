@@ -34,7 +34,6 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schema_store::{CanonicalFqn, DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::{Nodes, StateArtifacts};
 use dbt_schemas::state::{DbtState, ResolverState};
-use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::{PreTaskRunData, RunTaskResults};
 
 use crate::feature_stack::FeatureStack;
@@ -381,7 +380,6 @@ pub trait CliExtensionHooks: Send + Sync {
         arg: &EvalArgs,
         resolved_state: &ResolverState,
         jinja_env: &Arc<JinjaEnv>,
-        task_runner_ctx: Option<&TaskRunnerCtx>,
         schema_store: &Arc<dyn SchemaStoreTrait>,
         data_store: &Arc<dyn DataStoreTrait>,
         map_compiled_sql: &HashMap<&str, Option<&str>>,
@@ -587,7 +585,6 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
         _arg: &EvalArgs,
         _resolved_state: &ResolverState,
         _jinja_env: &Arc<JinjaEnv>,
-        _task_runner_ctx: Option<&TaskRunnerCtx>,
         _schema_store: &Arc<dyn SchemaStoreTrait>,
         _data_store: &Arc<dyn DataStoreTrait>,
         _map_compiled_sql: &HashMap<&str, Option<&str>>,

@@ -4,7 +4,6 @@ import { Route, Routes, useLocation, useNavigate, useParams } from 'react-router
 import { Search as SearchIcon, Share2 } from 'lucide-react';
 
 import { AnalysisFilterView } from './components/AnalysisFilterView';
-import { FullLineagePageV2 } from './components/LineageV2/FullLineagePage';
 import { LocatePane, type LocatePaneMode } from './components/LocatePane';
 import { MacroFilterView } from './components/MacroFilterView';
 import { ModelFilterView } from './components/ModelFilterView';
@@ -38,6 +37,7 @@ import {
   useTelemetryInitialized,
 } from './lib/telemetry';
 import { type View, viewFromPath } from './lib/viewFromPath';
+import Lineage from './pages/Lineage';
 import NotFoundPage from './pages/NotFoundPage';
 import Overview from './pages/Overview';
 import ResourceDetails from './pages/ResourceDetails';
@@ -385,7 +385,7 @@ export default function App() {
   if (isLineageRoute) {
     return (
       <Routes>
-        <Route path={ROUTES.lineage} element={<FullLineagePageV2 />} />
+        <Route path={ROUTES.lineage} element={<Lineage />} />
       </Routes>
     );
   }

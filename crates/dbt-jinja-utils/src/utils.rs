@@ -16,6 +16,7 @@ use minijinja::{
     value::{Rest, Value as MinijinjaValue, ValueKind},
 };
 use regex::Regex;
+use serde::Serialize;
 use sqlparser::dialect::GenericDialect;
 use sqlparser::keywords::Keyword;
 use sqlparser::tokenizer::{Location, Token, Tokenizer};
@@ -423,7 +424,7 @@ fn extract_local_ephemeral_cte_names(sql: &str) -> HashSet<&str> {
 pub fn render_sql(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listener_factory: &dyn RenderingEventListenerFactory,
     filename: &Path,
 ) -> FsResult<String> {
@@ -457,7 +458,7 @@ pub fn render_sql(
 pub fn render_sql_with_listeners(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listeners: &[Rc<dyn RenderingEventListener>],
     tokenizer_listeners: &[Rc<dyn minijinja::listener::TokenizerEventListener>],
     filename: &Path,
@@ -825,22 +826,24 @@ pub fn dependency_package_name_from_ctx<'a>(
 
 /// Add common context vars for tasks
 pub fn add_task_context(
-    base_context: &mut BTreeMap<String, Value>,
+    base_context: &mut impl Extend<(String, Value)>,
     common: &CommonAttributes,
     thread_id: &i32,
 ) {
-    base_context.insert(
-        TARGET_PACKAGE_NAME.to_string(),
-        MinijinjaValue::from(common.package_name.clone()),
-    );
-    base_context.insert(
-        TARGET_UNIQUE_ID.to_string(),
-        MinijinjaValue::from(common.unique_id.clone()),
-    );
-    base_context.insert(
-        THREAD_ID.to_string(),
-        MinijinjaValue::from(format!("Thread-{}", thread_id)),
-    );
+    base_context.extend([
+        (
+            TARGET_PACKAGE_NAME.to_string(),
+            MinijinjaValue::from(common.package_name.clone()),
+        ),
+        (
+            TARGET_UNIQUE_ID.to_string(),
+            MinijinjaValue::from(common.unique_id.clone()),
+        ),
+        (
+            THREAD_ID.to_string(),
+            MinijinjaValue::from(format!("Thread-{}", thread_id)),
+        ),
+    ]);
 }
 
 #[cfg(test)]

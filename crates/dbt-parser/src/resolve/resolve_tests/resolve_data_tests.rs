@@ -36,7 +36,7 @@ use dbt_jinja_utils::jinja_arg_format::format_value_for_jinja;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::DbtTestAttr;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
@@ -374,10 +374,10 @@ pub async fn resolve_data_tests(
     test_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     collected_generic_tests: &[GenericTestAsset],
@@ -484,7 +484,7 @@ pub async fn resolve_data_tests(
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -529,7 +529,6 @@ pub async fn resolve_data_tests(
         adapter,
         alias_adapter,
         rendered_sql: _,
-        macro_spans: _macro_spans,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -766,8 +765,7 @@ pub async fn resolve_data_tests(
             },
             __base_attr__: NodeBaseAttributes {
                 adapter: selected_adapter,
-                // A data test never runs on lake compute (see `inherited_adapter` above), so
-                // it has nothing to publish: no `+propagate` config exists for this node type.
+                // Data tests inherit their attached node's adapter but have no propagation config.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
                 database: node_database.to_owned(),
@@ -849,7 +847,7 @@ pub async fn resolve_data_tests(
                     state: test_config.state.clone(),
                 }
             },
-            __adapter_attr__: AdapterAttr::from_config_and_dialect(
+            __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(
                 &test_config.__warehouse_specific_config__,
                 selected_adapter,
             ),

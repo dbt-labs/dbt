@@ -1,68 +1,68 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useCallback, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
 
+import { useNavigation } from '../../context/NavigationProvider';
 import { useLineageData } from '../../hooks/useLineageData';
-import { paths } from '../../routes';
-import { LineageEmptyState } from '../../shared';
+import { LineageEmptyState, type TabType } from '../../shared';
+import { isProjectLineageRoot } from '../../utils/projectLineage';
 import { Spinner } from '../ui/Spinner';
 import { UNSUPPORTED_SURFACE_MESSAGE } from '../ui/UnsupportedSurfaceMessage';
 import { Button } from './../ui/Button';
 import { BaseDag } from './BaseDag';
 import { DagNodePanel } from './DagNodePanel';
 
-export default function FullLineagePage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const rootUniqueId = searchParams.get('uniqueId') ?? '';
-  const panelId = searchParams.get('panel');
-  const navigate = useNavigate();
-  const { data, error, isSupported } = useLineageData(rootUniqueId, 1);
+/**
+ * Controlled: the host keeps this state wherever it likes (the docs app keeps it in
+ * the URL, so a view with a node selected is shareable) and passes it back in.
+ */
+export interface FullLineagePageProps {
+  /** Resource the graph is rooted on, or `PROJECT_LINEAGE_ROOT` for the whole
+   *  project. Empty renders the empty state. */
+  rootUniqueId: string;
+  /** Resource whose detail panel is open, or null for none. */
+  panelId: string | null;
+  /** The detail panel's tab; see `DagNodePanel`. */
+  tab: string | null;
+  onRootChange: (uniqueId: string) => void;
+  onPanelChange: (uniqueId: string | null) => void;
+  onTabChange: (tab: TabType) => void;
+}
 
-  const updateParams = useCallback(
-    (mut: (p: URLSearchParams) => void) => {
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          mut(next);
-          return next;
-        },
-        { replace: true },
-      );
-    },
-    [setSearchParams],
-  );
+export default function FullLineagePage({
+  rootUniqueId,
+  panelId,
+  tab,
+  onRootChange,
+  onPanelChange,
+  onTabChange,
+}: FullLineagePageProps) {
+  const { navigate, paths } = useNavigation();
+  const { data, error, isSupported } = useLineageData(rootUniqueId, 1);
 
   // Lives here, not in DagNodePanel, because the canvas's own width (below)
   // has to react to it too.
   const [panelCollapsed, setPanelCollapsed] = useState(false);
 
   const closePanel = useCallback(() => {
-    updateParams((p) => p.delete('panel'));
+    onPanelChange(null);
     setPanelCollapsed(false);
-  }, [updateParams]);
+  }, [onPanelChange]);
 
   const onClose = useCallback(() => {
-    navigate(paths.details(rootUniqueId));
-  }, [navigate, rootUniqueId]);
-
-  // Groups pill click -> that resource becomes the new root. BaseDag resets
-  // hops to 1+/+1 on its own whenever rootUniqueId changes.
-  const onRecenter = useCallback(
-    (uniqueId: string) => {
-      updateParams((p) => p.set('uniqueId', uniqueId));
-    },
-    [updateParams],
-  );
+    navigate(
+      isProjectLineageRoot(rootUniqueId) ? paths.home() : paths.details(rootUniqueId),
+    );
+  }, [navigate, paths, rootUniqueId]);
 
   // Canvas node click -> reveal its detail drawer. Un-collapses too, so
   // clicking a node while the rail is showing brings back the full panel
   // rather than silently swapping which node the collapsed rail points at.
   const onNodeClick = useCallback(
     (uniqueId: string) => {
-      updateParams((p) => p.set('panel', uniqueId));
+      onPanelChange(uniqueId);
       setPanelCollapsed(false);
     },
-    [updateParams],
+    [onPanelChange],
   );
 
   // Breadcrumb stops at project (package) — current resource lives in the
@@ -70,8 +70,12 @@ export default function FullLineagePage() {
   // `<resource>.<package>.<...path>.<name>`.
   const rootProject = useMemo(() => {
     if (!rootUniqueId) return null;
-    return rootUniqueId.split('.')[1] ?? null;
-  }, [rootUniqueId]);
+    // The whole-project root is a stand-in, so read the package off a real node.
+    const id = isProjectLineageRoot(rootUniqueId)
+      ? data?.nodes[0]?.uniqueId
+      : rootUniqueId;
+    return id?.split('.')[1] ?? null;
+  }, [rootUniqueId, data]);
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-bgMain">
@@ -101,8 +105,7 @@ export default function FullLineagePage() {
               <br />
               <a
                 className="inline-block underline"
-                href={
-                  'https://docs.getdbt.com/reference/node-selection/syntax'}
+                href={'https://docs.getdbt.com/reference/node-selection/syntax'}
                 target="_blank"
                 rel="noreferrer"
               >
@@ -124,7 +127,10 @@ export default function FullLineagePage() {
           >
             <BaseDag
               rootUniqueId={rootUniqueId}
-              onRecenter={onRecenter}
+              projectName={rootProject}
+              // Groups pill click -> that resource becomes the new root. BaseDag
+              // resets hops to 1+/+1 on its own whenever rootUniqueId changes.
+              onRecenter={onRootChange}
               onNodeClick={onNodeClick}
               topBarLeft={
                 <>
@@ -152,6 +158,8 @@ export default function FullLineagePage() {
           </div>
           <DagNodePanel
             uniqueId={panelId}
+            tab={tab}
+            onTabChange={onTabChange}
             onClose={closePanel}
             collapsed={panelCollapsed}
             onToggleCollapse={() => setPanelCollapsed((v) => !v)}

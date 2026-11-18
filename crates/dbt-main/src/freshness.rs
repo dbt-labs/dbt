@@ -2,14 +2,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use dbt_adapter::Adapter;
-use dbt_common::FsResult;
+use dbt_common::constants::default_metadata_dir;
 use dbt_common::io_args::{EvalArgs, Phases};
 use dbt_common::io_utils::checkpoint_maybe_exit;
+use dbt_common::tracing::dbt_emit::emit_warn_log_message;
+use dbt_common::{ErrorCode, FsResult};
 use dbt_dag::schedule::Schedule;
 use dbt_freshness::freshness::{
     FreshnessTimestamps, build_freshness_artifact, build_sources_artifact, emit_freshness_stats,
-    freshness_results_to_context, run_freshness, should_write_sources_json, write_freshness_json,
-    write_freshness_results_parquet, write_sources_json,
+    freshness_results_to_context, run_freshness_with_errors, should_write_sources_json,
+    write_freshness_json, write_freshness_results_parquet, write_sources_json,
 };
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schemas::schemas::DbtCommandExecutionArtifacts;
@@ -39,10 +41,11 @@ pub async fn run_freshness_command(
     resolved_state: &ResolverState,
     schedule: &Schedule<String>,
     adapter: Arc<Adapter>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Arc<BTreeMap<String, Value>>,
     artifacts_sink: &mut DbtCommandExecutionArtifacts,
     sources_only: bool,
 ) -> FsResult<Option<Box<dyn PreTaskRunData>>> {
+    let base_context = Value::from_dyn_object(Arc::clone(base_context));
     let empty_results: Vec<()> = vec![];
     for operation in resolved_state.operations.on_run_start.iter() {
         run_operation_on_run(
@@ -52,13 +55,13 @@ pub async fn run_freshness_command(
             &None,
             None,
             jinja_env,
-            base_context,
+            &base_context,
             Value::from_serialize(&empty_results),
         )
         .await?;
     }
 
-    let results = run_freshness(
+    let freshness_run = run_freshness_with_errors(
         &arg.io,
         schedule,
         resolved_state,
@@ -71,6 +74,7 @@ pub async fn run_freshness_command(
         &arg.exclude_resource_types,
     )
     .await?;
+    let results = freshness_run.results;
     emit_freshness_stats(&arg.io, &results);
 
     // `dbt source freshness` always writes `sources.json`, even with an empty
@@ -99,7 +103,19 @@ pub async fn run_freshness_command(
         write_freshness_json(&arg.io.out_dir, &arg.io.in_dir, &freshness_artifact)?;
     }
     if arg.write_metadata {
-        write_freshness_results_parquet(&arg.io, resolved_state, &results);
+        write_freshness_results_parquet(&arg.io, resolved_state, &results, &freshness_run.errors);
+        // The information schema was written before these results existed.
+        if arg.generate_info_schema
+            && let Err(err) = dbt_index_core::refresh_freshness(
+                &default_metadata_dir(&arg.io.out_dir),
+                &arg.info_schema_dir(),
+            )
+        {
+            emit_warn_log_message(
+                ErrorCode::InfoSchemaWriteFailed,
+                format!("dbt: generate-info-schema: refreshing dbt_rt.freshness: {err}"),
+            );
+        }
     }
 
     let freshness_context_results = freshness_results_to_context(resolved_state, &results);
@@ -111,7 +127,7 @@ pub async fn run_freshness_command(
             &None,
             None,
             jinja_env,
-            base_context,
+            &base_context,
             Value::from_serialize(&freshness_context_results),
         )
         .await?;

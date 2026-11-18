@@ -1,4 +1,4 @@
-import type { ResourceType } from './domain/asset';
+import type { ResourceType } from 'dbt-docs-lib/domain';
 
 /**
  * Arguments identifying a single asset across any backend. `environmentId` is

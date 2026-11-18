@@ -6,9 +6,10 @@ import { Link } from './Link';
 /**
  * One component for both kinds of link, switched by `isInternal`:
  *
- * - `isInternal` renders a react-router `<Link>`, so navigation stays client-side and
- *   `to` may be an object with `pathname`/`search`/`hash`. It needs a router above it
- *   (the app is hash-routed; these stories run inside a `MemoryRouter`).
+ * - `isInternal` renders the host app's link, supplied through `NavigationProvider`, so
+ *   navigation stays client-side and `to` may be an object with
+ *   `pathname`/`search`/`hash`. In the docs app that is react-router's `<Link>`; these
+ *   stories supply a plain anchor that logs the navigation instead.
  * - Otherwise it renders a plain `<a>`, and an object `to` is flattened to its
  *   `pathname` — so build external URLs as strings.
  *
@@ -39,7 +40,7 @@ export const Internal: Story = {
   },
 };
 
-/** A route object, which is where the router form earns its keep — search params
+/** A route object, which is where the internal form earns its keep — search params
  *  without hand-assembling the string. */
 export const InternalWithRouteObject: Story = {
   args: {

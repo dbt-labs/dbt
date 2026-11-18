@@ -11,7 +11,8 @@ use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
 use dbt_adapter_engine::cow::uppercase;
 use dbt_adapter_engine::databricks::query_tags::QueryTags;
-use dbt_adapter_sql::ident::{Ident, quote_identifier};
+use dbt_adapter_sql::ident::databricks::Ident;
+use dbt_adapter_sql::join_dotted;
 use dbt_adbc::QueryCtx;
 use dbt_agate::AgateTable;
 use dbt_common::ErrorCode;
@@ -43,7 +44,8 @@ use crate::metadata::databricks::describe_json::{
 use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
 use crate::metadata::databricks::version::EngineVersion;
 use crate::metadata::freshness_overrides::{
-    FreshnessTask, FreshnessTaskResult, apply_freshness_task_result, run_override_query,
+    FreshnessTask, FreshnessTaskResult, apply_freshness_task_result, partition_override_relations,
+    run_override_query,
 };
 use crate::metadata::get_relation::table_format_from_provider;
 use crate::metadata::*;
@@ -62,6 +64,7 @@ use dbt_adapter_engine::record_batch::RecordBatchExt;
 pub mod dbr_capabilities;
 pub mod describe_json;
 pub mod describe_table;
+mod refresh_wait;
 pub mod schemas;
 pub(crate) mod version;
 
@@ -93,8 +96,38 @@ pub(crate) fn describe_fallback_error(
     )
 }
 
+/// `DESCRIBE TABLE EXTENDED` of a relation, as JSON where the runtime supports it. The flag is
+/// `true` when the plain output was used. `None` when the relation does not exist.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn describe_relation_batch(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &mut ConnectionGuard<'_>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<(RecordBatch, bool)>> {
+    match describe_relation(
+        adapter, state, ctx, conn, database, schema, identifier, token,
+    ) {
+        Ok(described) => Ok(Some(described)),
+        Err(e) if is_relation_missing(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether a describe error means there is nothing to describe: the relation, or its catalog or
+/// schema, is missing.
+fn is_relation_missing(e: &AdapterError) -> bool {
+    e.to_string().contains("cannot be found")
+        || e.to_string().contains("TABLE_OR_VIEW_NOT_FOUND")
+        || is_databricks_relation_not_found(e)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn describe_relation(
     adapter: &AdapterImpl,
     state: &State,
     ctx: &QueryCtx,
@@ -108,9 +141,9 @@ pub(crate) fn describe_relation_batch(
 
     // This function is called when relation lookup needs full metadata.
     // See https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/impl.py#L418
-    let query_catalog = databricks_query_identifier(database, adapter.quoting().database);
-    let query_schema = databricks_query_identifier(schema, adapter.quoting().schema);
-    let query_identifier = databricks_query_identifier(identifier, adapter.quoting().identifier);
+    let query_catalog = Ident::from_string(database, adapter.quoting().database);
+    let query_schema = Ident::from_string(schema, adapter.quoting().schema);
+    let query_identifier = Ident::from_string(identifier, adapter.quoting().identifier);
 
     // Known system tables and older runtimes cannot use JSON describe. Spark
     // has no Databricks runtime version to check.
@@ -186,21 +219,33 @@ pub(crate) fn databricks_metadata_value(value: &str) -> String {
     databricks_string_value(&value.to_lowercase())
 }
 
-fn databricks_metadata_identifier(value: &str) -> String {
-    quote_identifier(&value.to_lowercase(), AdapterType::Databricks)
-}
-
-pub(crate) fn databricks_query_identifier(value: &str, quote: bool) -> String {
-    if quote {
-        quote_identifier(value, AdapterType::Databricks)
-    } else {
-        Ident::new(value, AdapterType::Databricks)
-            .display(AdapterType::Databricks)
-            .to_string()
-    }
+/// Whether a Databricks error means the relation does not exist: a `NotFound`
+/// with SQLSTATE 42P01 (TABLE_OR_VIEW_NOT_FOUND), or that error class in the message.
+///
+/// `NotFound` alone is not enough, since the driver also reports it for other
+/// missing objects (SQLSTATE 42704, 42883), so this fails closed.
+pub(crate) fn is_databricks_relation_not_found(e: &AdapterError) -> bool {
+    // https://docs.databricks.com/aws/en/error-messages/table-or-view-not-found-error-class
+    (e.kind() == AdapterErrorKind::NotFound && e.sqlstate() == "42P01")
+        || e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]")
 }
 
 // Reference: https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/include/databricks/macros/adapters/metadata.sql
+
+/// Whether `list_relations` for `db_schema` must use the hive_metastore path
+/// (`SHOW TABLE EXTENDED`) instead of `system.information_schema.tables`.
+///
+/// `system.information_schema` is Unity Catalog-only; hive_metastore schemas
+/// are invisible to it. An empty catalog (the dbt-databricks default) is
+/// treated as hive_metastore, matching
+/// `Relation::is_hive_metastore` (`database is none || database == "hive_metastore"`).
+fn uses_hive_metastore_listing(db_schema: &CatalogAndSchema) -> bool {
+    db_schema.resolved_catalog.is_empty()
+        || db_schema
+            .resolved_catalog
+            .eq_ignore_ascii_case(crate::relation::databricks::DEFAULT_DATABRICKS_DATABASE)
+}
+
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     state: Option<&State>,
@@ -209,6 +254,22 @@ pub fn list_relations(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    // `system.information_schema.tables` only covers Unity Catalog catalogs; the
+    // hive_metastore catalog is invisible to it. An unbranched query reports a
+    // hive_metastore schema as empty, the relation cache records the schema as
+    // captured-and-empty, and materializations that ask for an existing relation
+    // (e.g. seeds) then take the "no existing table" branch and emit a bare
+    // `create table` into an existing table -> TABLE_OR_VIEW_ALREADY_EXISTS.
+    // https://github.com/dbt-labs/dbt/issues/16874
+    //
+    // Match upstream dbt-databricks `get_relations_without_caching`, which
+    // routes hive_metastore to `_get_hive_relations` (SHOW TABLES / SHOW VIEWS).
+    // `SHOW TABLE EXTENDED` works on hive_metastore.
+    // https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/adapters/databricks/impl.py#L575-L580
+    if uses_hive_metastore_listing(db_schema) {
+        return spark::list_relations(engine, ctx, conn, db_schema, token);
+    }
+
     let catalog = databricks_metadata_value(&db_schema.resolved_catalog);
     let schema = databricks_metadata_value(&db_schema.resolved_schema);
     let sql = format!("
@@ -263,6 +324,9 @@ WHERE table_catalog = {catalog}
         let is_shallow_clone = !databricks_table_types.is_null(i)
             && is_shallow_clone_type(databricks_table_types.value(i));
 
+        let relation_type =
+            RelationType::from_adapter_type(AdapterType::Databricks, table_type.as_ref())
+                .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
         let relation = Arc::new(
             Relation::new(
                 engine.adapter_type(),
@@ -270,10 +334,7 @@ WHERE table_catalog = {catalog}
                 schema.to_string(),
                 name.to_string(),
             )
-            .with_relation_type(RelationType::from_adapter_type(
-                AdapterType::Databricks,
-                table_type.as_ref(),
-            ))
+            .with_relation_type(relation_type)
             .with_quoting(engine.quoting())
             .with_is_delta(is_delta)
             .with_table_format(table_format)
@@ -287,21 +348,20 @@ WHERE table_catalog = {catalog}
 
 fn get_relation_with_quote_policy(
     relation: &Arc<dyn BaseRelation>,
-) -> AdapterResult<(String, String, String)> {
+) -> AdapterResult<(Ident, Ident, Ident)> {
     let database = relation.database_as_str()?;
     let schema = relation.schema_as_str()?;
     let identifier = relation.identifier_as_str()?;
 
-    let quoted_database = if database.is_empty() {
-        String::new()
+    let database = if database.is_empty() {
+        Ident::plain("")
     } else {
-        databricks_query_identifier(&database, relation.quote_policy().database)
+        Ident::from_string(database, relation.quote_policy().database)
     };
-    let quoted_schema = databricks_query_identifier(&schema, relation.quote_policy().schema);
-    let quoted_identifier =
-        databricks_query_identifier(&identifier, relation.quote_policy().identifier);
+    let schema = Ident::from_string(&schema, relation.quote_policy().schema);
+    let identifier = Ident::from_string(&identifier, relation.quote_policy().identifier);
 
-    Ok((quoted_database, quoted_schema, quoted_identifier))
+    Ok((database, schema, identifier))
 }
 
 pub(crate) fn databricks_relation_sql_name(
@@ -319,7 +379,7 @@ pub(crate) fn databricks_relation_sql_name(
     if include.identifier {
         parts.push(identifier);
     }
-    Ok(parts.join("."))
+    Ok(join_dotted(parts.iter()))
 }
 
 fn databricks_safely_quoted_relation(
@@ -680,10 +740,8 @@ impl DatabricksMetadataAdapter {
             RelationType::MaterializedView => {
                 metadata.insert(
                     DatabricksRelationMetadataKey::DescribeExtended,
-                    self.describe_extended(
-                        &database,
-                        &schema,
-                        &identifier,
+                    self.describe_extended_after_refresh(
+                        &**base_relation,
                         state,
                         &mut *conn,
                         token.clone(),
@@ -800,10 +858,8 @@ impl DatabricksMetadataAdapter {
             RelationType::StreamingTable => {
                 metadata.insert(
                     DatabricksRelationMetadataKey::DescribeExtended,
-                    self.describe_extended(
-                        &database,
-                        &schema,
-                        &identifier,
+                    self.describe_extended_after_refresh(
+                        &**base_relation,
                         state,
                         &mut *conn,
                         token.clone(),
@@ -991,11 +1047,6 @@ impl DatabricksMetadataAdapter {
             }
         };
 
-        // https://github.com/databricks/dbt-databricks/blob/13686739eb59566c7a90ee3c357d12fe52ec02ea/dbt/adapters/databricks/impl.py#L908
-        // TODO: Implement polling for DLT pipeline status
-        // we don't have the dbx client here
-        // we might need to query internal delta system tables or expose something via ADBC
-
         Ok((relation_type, metadata))
     }
 
@@ -1022,6 +1073,47 @@ impl DatabricksMetadataAdapter {
         )
     }
 
+    /// `describe extended` of a materialized view / streaming table, re-run until its refresh is
+    /// no longer running. Same first query as [`Self::describe_extended`].
+    fn describe_extended_after_refresh(
+        &self,
+        relation: &dyn BaseRelation,
+        state: &State,
+        conn: &mut ConnectionGuard<'_>,
+        token: CancellationToken,
+    ) -> AdapterResult<AgateTable> {
+        let (database, schema, identifier) = (
+            relation.database_as_str()?,
+            relation.schema_as_str()?,
+            relation.identifier_as_str()?,
+        );
+        let first =
+            self.describe_extended(&database, &schema, &identifier, state, conn, token.clone())?;
+        let replay = self.adapter.engine().is_replay() || crate::time_machine::is_replaying();
+        let strategy: &dyn refresh_wait::WaitStrategy = if replay {
+            &refresh_wait::Replay
+        } else {
+            &refresh_wait::Live::DEFAULT
+        };
+        refresh_wait::wait_for_refresh_to_finish(
+            first,
+            &relation.render_self_as_str(),
+            &token,
+            &refresh_wait::RefreshWait::DEFAULT,
+            strategy,
+            || {
+                self.describe_extended(
+                    &database,
+                    &schema,
+                    &identifier,
+                    state,
+                    &mut *conn,
+                    token.clone(),
+                )
+            },
+        )
+    }
+
     // https://github.com/dbt-labs/dbt-adapters/blob/6f2aae13e39c5df1c93e5d514678914142d71768/dbt-spark/src/dbt/include/spark/macros/adapters.sql#L314
     fn describe_extended(
         &self,
@@ -1035,9 +1127,9 @@ impl DatabricksMetadataAdapter {
         // match Mantle casing
         let sql = format!(
             "describe extended {}.{}.{};",
-            quote_identifier(database, AdapterType::Databricks),
-            quote_identifier(schema, AdapterType::Databricks),
-            quote_identifier(identifier, AdapterType::Databricks)
+            Ident::from_unquoted(database),
+            Ident::from_unquoted(schema),
+            Ident::from_unquoted(identifier)
         );
         let (_, result) =
             self.execute_sql_with_context(&sql, state, "Describe table extended", conn, token)?;
@@ -1094,7 +1186,7 @@ impl DatabricksMetadataAdapter {
         conn: &mut ConnectionGuard<'_>,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let database_identifier = databricks_metadata_identifier(database);
+        let database_identifier = Ident::from_unquoted(database.to_lowercase());
         let database = databricks_metadata_value(database);
         let schema = databricks_metadata_value(schema);
         let identifier = databricks_metadata_value(identifier);
@@ -1126,7 +1218,7 @@ impl DatabricksMetadataAdapter {
         conn: &mut ConnectionGuard<'_>,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let database_identifier = databricks_metadata_identifier(database);
+        let database_identifier = Ident::from_unquoted(database.to_lowercase());
         let database = databricks_metadata_value(database);
         let schema = databricks_metadata_value(schema);
         let identifier = databricks_metadata_value(identifier);
@@ -1189,7 +1281,7 @@ impl DatabricksMetadataAdapter {
         conn: &mut ConnectionGuard<'_>,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let database_identifier = databricks_metadata_identifier(database);
+        let database_identifier = Ident::from_unquoted(database.to_lowercase());
         let database = databricks_metadata_value(database);
         let schema = databricks_metadata_value(schema);
         let identifier = databricks_metadata_value(identifier);
@@ -1220,7 +1312,7 @@ impl DatabricksMetadataAdapter {
         conn: &mut ConnectionGuard<'_>,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let database_identifier = databricks_metadata_identifier(database);
+        let database_identifier = Ident::from_unquoted(database.to_lowercase());
         let database = databricks_metadata_value(database);
         let schema = databricks_metadata_value(schema);
         let identifier = databricks_metadata_value(identifier);
@@ -1972,35 +2064,12 @@ fn epoch_ms_from_history_batch(batch: &Arc<RecordBatch>) -> Option<i64> {
     }
 }
 
-/// Partition `relations` into bulk (no override) and per-override buckets.
-///
-type OverrideTargets = Vec<(Arc<dyn BaseRelation>, FreshnessOverride)>;
-
-/// Relations whose `semantic_fqn` appears in `overrides` are paired with their
-/// override and collected into the second return value; all others go into the
-/// first (bulk) return value.
-fn partition_override_relations(
-    relations: &[Arc<dyn BaseRelation>],
-    overrides: &BTreeMap<String, FreshnessOverride>,
-) -> (Vec<Arc<dyn BaseRelation>>, OverrideTargets) {
-    let mut bulk = Vec::new();
-    let mut targets = Vec::new();
-    for relation in relations {
-        if let Some(ovr) = overrides.get(&relation.semantic_fqn()) {
-            targets.push((Arc::clone(relation), ovr.clone()));
-        } else {
-            bulk.push(Arc::clone(relation));
-        }
-    }
-    (bulk, targets)
-}
-
 fn databricks_information_schema_freshness_sql(
     database: &str,
     schema: &str,
     table: &str,
 ) -> String {
-    let database = quote_identifier(database, AdapterType::Databricks);
+    let database = Ident::from_unquoted(database);
     let schema = databricks_string_value(schema);
     let table = databricks_string_value(table);
     format!(
@@ -2250,7 +2319,7 @@ mod tests {
             "decode(unhex('64625C273B2073656C65637420313B202D2D'), 'UTF-8')"
         );
         assert_eq!(
-            databricks_metadata_identifier(r"DB\`; SELECT 1; --"),
+            Ident::from_unquoted(r"DB\`; SELECT 1; --".to_lowercase()).to_string(),
             r"`db\``; select 1; --`"
         );
     }
@@ -2364,15 +2433,6 @@ mod tests {
         assert_eq!(
             DefaultStmtSplitter.split(&sql, AdapterType::Databricks),
             vec![sql.as_str()]
-        );
-    }
-
-    #[test]
-    fn databricks_query_identifier_quotes_unsafe_unquoted_values() {
-        assert_eq!(databricks_query_identifier("safe_name", false), "safe_name");
-        assert_eq!(
-            databricks_query_identifier("table`; SELECT 1; --", false),
-            "`table``; SELECT 1; --`"
         );
     }
 
@@ -2521,9 +2581,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "test_db");
-        assert_eq!(schema, "test_schema");
-        assert_eq!(identifier, "test_table");
+        assert_eq!(database.to_string(), "test_db");
+        assert_eq!(schema.to_string(), "test_schema");
+        assert_eq!(identifier.to_string(), "test_table");
     }
 
     #[test]
@@ -2533,9 +2593,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "test_db");
-        assert_eq!(schema, "test_schema");
-        assert_eq!(identifier, "`test_table`");
+        assert_eq!(database.to_string(), "test_db");
+        assert_eq!(schema.to_string(), "test_schema");
+        assert_eq!(identifier.to_string(), "`test_table`");
     }
 
     #[test]
@@ -2545,9 +2605,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`test_db`");
-        assert_eq!(schema, "`test_schema`");
-        assert_eq!(identifier, "`test_table`");
+        assert_eq!(database.to_string(), "`test_db`");
+        assert_eq!(schema.to_string(), "`test_schema`");
+        assert_eq!(identifier.to_string(), "`test_table`");
     }
 
     #[test]
@@ -2556,9 +2616,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "");
-        assert_eq!(schema, "`test_schema`");
-        assert_eq!(identifier, "`test_table`");
+        assert_eq!(database.to_string(), "");
+        assert_eq!(schema.to_string(), "`test_schema`");
+        assert_eq!(identifier.to_string(), "`test_table`");
     }
 
     #[test]
@@ -2568,9 +2628,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`test_db`");
-        assert_eq!(schema, "test_schema");
-        assert_eq!(identifier, "`test_table`");
+        assert_eq!(database.to_string(), "`test_db`");
+        assert_eq!(schema.to_string(), "test_schema");
+        assert_eq!(identifier.to_string(), "`test_table`");
     }
 
     #[test]
@@ -2580,9 +2640,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`test-db`");
-        assert_eq!(schema, "`test-schema`");
-        assert_eq!(identifier, "`test-table`");
+        assert_eq!(database.to_string(), "`test-db`");
+        assert_eq!(schema.to_string(), "`test-schema`");
+        assert_eq!(identifier.to_string(), "`test-table`");
     }
 
     #[test]
@@ -2591,9 +2651,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`order`");
-        assert_eq!(schema, "`select`");
-        assert_eq!(identifier, "`table`");
+        assert_eq!(database.to_string(), "`order`");
+        assert_eq!(schema.to_string(), "`select`");
+        assert_eq!(identifier.to_string(), "`table`");
     }
 
     #[test]
@@ -2603,9 +2663,9 @@ mod tests {
 
         let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
 
-        assert_eq!(database, "`test_db`");
-        assert_eq!(schema, "`test_schema`");
-        assert_eq!(identifier, "test_table");
+        assert_eq!(database.to_string(), "`test_db`");
+        assert_eq!(schema.to_string(), "`test_schema`");
+        assert_eq!(identifier.to_string(), "test_table");
     }
 
     #[test]
@@ -2884,76 +2944,111 @@ mod tests {
         assert!(epoch_ms_from_history_batch(&batch).is_none());
     }
 
-    // ── partition_override_relations ─────────────────────────────────────────
+    // ── uses_hive_metastore_listing ────────────────────────────────────────
 
-    fn make_relation(fqn: &str) -> Arc<dyn BaseRelation> {
-        // Build a relation whose semantic_fqn() matches `fqn` by using the three
-        // parts as database / schema / identifier with no quoting.
-        let parts: Vec<&str> = fqn.splitn(3, '.').collect();
-        let (db, schema, id) = match parts.as_slice() {
-            [db, sc, id] => (*db, *sc, *id),
-            _ => panic!("fqn must be db.schema.identifier, got: {fqn}"),
-        };
-        create_test_relation(db, schema, id, false, false, false)
+    fn catalog_and_schema(catalog: &str, schema: &str) -> CatalogAndSchema {
+        CatalogAndSchema {
+            rendered_catalog: catalog.to_string(),
+            rendered_schema: schema.to_string(),
+            resolved_catalog: catalog.to_string(),
+            resolved_schema: schema.to_string(),
+        }
+    }
+
+    /// Regression coverage for https://github.com/dbt-labs/dbt/issues/16874:
+    /// `list_relations` must route hive_metastore (and the default empty
+    /// catalog) to `SHOW TABLE EXTENDED` rather than the Unity Catalog-only
+    /// `system.information_schema.tables` query.
+    #[test]
+    fn uses_hive_metastore_listing_routes_default_and_hive_catalogs() {
+        assert!(uses_hive_metastore_listing(&catalog_and_schema("", "s")));
+        assert!(uses_hive_metastore_listing(&catalog_and_schema(
+            "hive_metastore",
+            "s"
+        )));
+        // Case-insensitive, matching `Relation::is_hive_metastore`.
+        assert!(uses_hive_metastore_listing(&catalog_and_schema(
+            "HIVE_METASTORE",
+            "s"
+        )));
+        assert!(uses_hive_metastore_listing(&catalog_and_schema(
+            "Hive_Metastore",
+            "s"
+        )));
     }
 
     #[test]
-    fn partition_routes_all_to_bulk_when_no_overrides() {
-        let relations: Vec<Arc<dyn BaseRelation>> =
-            vec![make_relation("db.sc.a"), make_relation("db.sc.b")];
-        let overrides = BTreeMap::new();
-        let (bulk, targets) = partition_override_relations(&relations, &overrides);
-        assert_eq!(bulk.len(), 2);
-        assert!(targets.is_empty());
+    fn relation_not_found_requires_sqlstate_with_typed_kind() {
+        assert!(is_databricks_relation_not_found(
+            &AdapterError::new_with_sqlstate_and_vendor_code(
+                AdapterErrorKind::NotFound,
+                "no text".to_string(),
+                *b"42P01",
+                None
+            )
+        ));
+        // missing catalog or schema: NotFound with another SQLSTATE
+        assert!(!is_databricks_relation_not_found(
+            &AdapterError::new_with_sqlstate_and_vendor_code(
+                AdapterErrorKind::NotFound,
+                "The schema `s` cannot be found.".to_string(),
+                *b"42704",
+                None
+            )
+        ));
+        assert!(!is_databricks_relation_not_found(&AdapterError::new(
+            AdapterErrorKind::NotFound,
+            "no sqlstate"
+        )));
     }
 
     #[test]
-    fn partition_routes_override_relation_to_override_bucket() {
-        let r = make_relation("db.sc.src");
-        let fqn = r.semantic_fqn();
-        let relations = vec![r];
-        let mut overrides = BTreeMap::new();
-        overrides.insert(
-            fqn.clone(),
-            FreshnessOverride::Field {
-                field: "updated_at".into(),
-                filter: None,
-            },
-        );
-        let (bulk, targets) = partition_override_relations(&relations, &overrides);
-        assert!(bulk.is_empty());
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].0.semantic_fqn(), fqn);
-        assert!(
-            matches!(&targets[0].1, FreshnessOverride::Field { field, .. } if field == "updated_at")
-        );
+    fn describing_a_missing_relation_catalog_or_schema_is_not_an_error() {
+        assert!(is_relation_missing(&AdapterError::new(
+            AdapterErrorKind::NotFound,
+            "The schema `s` cannot be found."
+        )));
+        assert!(is_relation_missing(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[TABLE_OR_VIEW_NOT_FOUND] The table or view `t` cannot be found."
+        )));
+        assert!(!is_relation_missing(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[PARSE_SYNTAX_ERROR] bad"
+        )));
     }
 
     #[test]
-    fn partition_mixed_relations_correctly_sorted() {
-        let r_bulk1 = make_relation("db.sc.bulk1");
-        let r_ovr = make_relation("db.sc.ovr");
-        let r_bulk2 = make_relation("db.sc.bulk2");
-        let fqn_ovr = r_ovr.semantic_fqn();
+    fn uses_hive_metastore_listing_leaves_unity_catalogs_on_information_schema() {
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "main", "s"
+        )));
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "e2e", "s"
+        )));
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "system", "s"
+        )));
+        // Whitespace or near-misses must not be silently treated as hive_metastore.
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "hive_metastore ",
+            "s"
+        )));
+        assert!(!uses_hive_metastore_listing(&catalog_and_schema(
+            "hive_metastore2",
+            "s"
+        )));
+    }
 
-        let relations = vec![
-            Arc::clone(&r_bulk1),
-            Arc::clone(&r_ovr),
-            Arc::clone(&r_bulk2),
-        ];
-        let mut overrides = BTreeMap::new();
-        overrides.insert(
-            fqn_ovr.clone(),
-            FreshnessOverride::Query("SELECT max(ts) FROM {{ this }}".into()),
-        );
-
-        let (bulk, targets) = partition_override_relations(&relations, &overrides);
-
-        assert_eq!(bulk.len(), 2);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].0.semantic_fqn(), fqn_ovr);
-        // bulk order is preserved
-        assert_eq!(bulk[0].semantic_fqn(), r_bulk1.semantic_fqn());
-        assert_eq!(bulk[1].semantic_fqn(), r_bulk2.semantic_fqn());
+    #[test]
+    fn relation_not_found_keeps_legacy_text_match() {
+        assert!(is_databricks_relation_not_found(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[TABLE_OR_VIEW_NOT_FOUND] The table or view `t` cannot be found."
+        )));
+        assert!(!is_databricks_relation_not_found(&AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[PARSE_SYNTAX_ERROR] bad"
+        )));
     }
 }

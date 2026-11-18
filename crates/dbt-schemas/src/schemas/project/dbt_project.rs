@@ -52,6 +52,10 @@ pub struct ProjectDbtCloudConfig {
     pub defer_env_id: Option<StringOrInteger>,
     #[serde(rename = "state-org-id")]
     pub state_org_id: Option<StringOrInteger>,
+    /// Opt in to resolving `private:` packages with the user's own dbt platform credentials
+    /// when running locally.
+    #[serde(rename = "git-credentials")]
+    pub git_credentials: Option<bool>,
 
     // unsure if any of these other keys are actually used or expected
     pub account_id: Option<StringOrInteger>,
@@ -270,6 +274,14 @@ impl Default for DbtProject {
 }
 
 impl DbtProject {
+    /// Deserializes a `dbt_project.yml` value with no Jinja rendering.
+    ///
+    /// Non-generic on purpose: crates that call this share one compiled copy
+    /// of `DbtProject`'s deserializer instead of each instantiating their own.
+    pub fn from_yml_value(value: dbt_yaml::Value) -> Result<Self, dbt_yaml::Error> {
+        value.into_typed(|_, _, _| {}, |_| Ok(None))
+    }
+
     pub fn get_project_id(&self) -> String {
         /*
         Returns the hash of the project name. Can be used for telemetry.

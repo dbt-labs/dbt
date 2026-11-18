@@ -49,11 +49,9 @@ use dbt_frontend_common::span::ReclassifySpan;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schemas::schemas::Preview;
 use dbt_schemas::schemas::common::DbtMaterialization;
-use dbt_schemas::schemas::{CommonAttributes, ContextRunResult};
+use dbt_schemas::schemas::{CommonAttributes, ContextRunResult, Nodes};
 use dbt_schemas::state::ResolverState;
 use dbt_schemas::stats::Stats;
-
-use self::context::TaskRunnerCtx;
 
 /// Per-node data returned by pre-run hooks.
 pub trait PreTaskRunData: Send + Sync {
@@ -137,27 +135,15 @@ impl TaskRunnerStats {
     /// against relations the real dbt-core run never reported.
     pub fn collect_as_results(
         &self,
+        nodes: &Nodes,
         adapter_responses: &HashMap<String, AdapterResponse>,
     ) -> Vec<ContextRunResult> {
         self.run
             .stats
             .iter()
-            .filter(|stat| !self.is_ephemeral_node(&stat.unique_id))
-            .map(|stat| generate_run_results(stat, &self.run, adapter_responses))
+            .filter(|stat| !is_ephemeral_node(nodes, &stat.unique_id))
+            .map(|stat| generate_run_results(stat, &self.run, nodes, adapter_responses))
             .collect()
-    }
-
-    fn is_ephemeral_node(&self, unique_id: &str) -> bool {
-        self.run
-            .nodes
-            .as_ref()
-            .and_then(|nodes| nodes.get_node(unique_id))
-            .is_some_and(|node| {
-                matches!(
-                    node.materialized(),
-                    DbtMaterialization::Ephemeral | DbtMaterialization::Inline
-                )
-            })
     }
 
     /// Build a set of (database, schema) tuples from successfully executed relational nodes only.
@@ -187,6 +173,15 @@ impl TaskRunnerStats {
     }
 }
 
+fn is_ephemeral_node(nodes: &Nodes, unique_id: &str) -> bool {
+    nodes.get_node(unique_id).is_some_and(|node| {
+        matches!(
+            node.materialized(),
+            DbtMaterialization::Ephemeral | DbtMaterialization::Inline
+        )
+    })
+}
+
 pub struct RunTaskResults {
     pub stats: TaskRunnerStats,
     pub adapter_responses: HashMap<String, AdapterResponse>,
@@ -194,6 +189,5 @@ pub struct RunTaskResults {
     pub showables: Vec<Box<dyn ShowableResults>>,
     pub jinja_env: Arc<JinjaEnv>,
     pub resolved_state: Arc<ResolverState>,
-    pub task_runner_ctx: Option<TaskRunnerCtx>,
     pub preview: Option<Result<Preview, String>>,
 }

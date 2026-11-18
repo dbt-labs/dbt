@@ -792,7 +792,10 @@ impl DbtLoadedProject {
             !introspect_enabled || matches!(execute, Execute::Sidecar | Execute::Service);
         let offline = connection_mode == AdapterConnectionMode::Offline;
         let use_local_mock_adapter = offline || (executes_locally && !is_mantle_replay);
-        let adapter = if matches!(adapter_type, AdapterType::DuckDB | AdapterType::LakeCompute) {
+        let adapter = if matches!(
+            adapter_type,
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck
+        ) {
             adapter_factory
                 .create_adapter(
                     adapter_type,

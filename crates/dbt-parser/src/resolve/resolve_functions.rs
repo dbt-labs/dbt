@@ -10,7 +10,7 @@ use dbt_common::static_analysis::{
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_jinja_utils::{jinja_environment::JinjaEnv, node_resolver::NodeResolver};
 use dbt_schemas::schemas::common::{Access, DbtMaterialization, DbtQuoting};
@@ -28,10 +28,9 @@ use dbt_schemas::{
         },
         ref_and_source::{DbtRef, DbtSourceWrapper},
     },
-    state::{DbtPackage, DbtRuntimeConfig, NodeResolverTracker},
+    state::{DbtPackage, DbtRuntimeConfig, ModelStatus, NodeResolverTracker},
 };
 use indexmap::IndexMap;
-use minijinja::MacroSpans;
 
 use crate::dbt_project_config::{ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::{RenderCtx, RenderCtxInner};
@@ -75,22 +74,24 @@ pub async fn resolve_functions(
     function_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     package_name: &str,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     node_resolver: &mut NodeResolver,
     token: &CancellationToken,
 ) -> FsResult<(
     HashMap<String, Arc<DbtFunction>>,
-    HashMap<String, (String, MacroSpans)>,
+    HashMap<String, Arc<DbtFunction>>,
+    HashMap<String, String>,
 )> {
     let mut functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
+    let mut disabled_functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
+    let mut function_bodies: HashMap<String, String> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
     let config_resolver = ProjectConfigResolver::per_adapter(
@@ -116,7 +117,7 @@ pub async fn resolve_functions(
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: false,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -232,7 +233,6 @@ pub async fn resolve_functions(
         alias_adapter,
         raw_code,
         rendered_sql,
-        macro_spans,
         properties: maybe_properties,
         status,
         patch_path,
@@ -365,8 +365,6 @@ pub async fn resolve_functions(
             nodes_with_ref_location: vec![],
         };
 
-        rendering_results.insert(unique_id.clone(), (rendered_sql.clone(), macro_spans));
-
         let (node_database, node_schema) = node_starting_database_and_schema(
             Some(parse_adapter_scopes),
             selected_adapter,
@@ -498,6 +496,8 @@ pub async fn resolve_functions(
                 snowflake: model_config.snowflake.clone(),
                 pre_hook: model_config.pre_hook.clone(),
                 post_hook: model_config.post_hook.clone(),
+                docs: model_config.docs.clone(),
+                grants: model_config.grants.clone(),
                 ..Default::default()
             },
             __other__: BTreeMap::new(),
@@ -529,7 +529,17 @@ pub async fn resolve_functions(
             }
         }
 
-        functions.insert(unique_id, Arc::new(function));
+        match status {
+            ModelStatus::Enabled | ModelStatus::ParsingFailed => {
+                function_bodies.insert(unique_id.clone(), rendered_sql);
+                functions.insert(unique_id, Arc::new(function));
+            }
+            // A disabled function must not be part of the node set: it would otherwise still be
+            // rendered, compiled and run, and fail on references to other disabled nodes.
+            ModelStatus::Disabled => {
+                disabled_functions.insert(unique_id, Arc::new(function));
+            }
+        }
     }
 
     // Post-loop: absorb overloads into root functions
@@ -542,6 +552,7 @@ pub async fn resolve_functions(
         let mut merged_sources: Vec<DbtSourceWrapper> = Vec::new();
         let root_name = functions
             .get(&root_uid)
+            .or_else(|| disabled_functions.get(&root_uid))
             .map(|f| f.__common_attr__.name.clone())
             .unwrap_or_default();
 
@@ -611,7 +622,12 @@ pub async fn resolve_functions(
         // Add absorbed overloads to the root function, along with the deps their
         // SQL pulls in. Those edges must live on the root so the DAG is complete;
         // resolve_dependencies dedups against the root's own refs/sources later.
-        let root_func = functions.get_mut(&root_uid).unwrap();
+        // The root may be disabled; its overloads are still absorbed so the disabled node
+        // lands in the manifest complete.
+        let root_func = functions
+            .get_mut(&root_uid)
+            .or_else(|| disabled_functions.get_mut(&root_uid))
+            .expect("overload root must exist");
         let root_mut = Arc::make_mut(root_func);
         root_mut.__function_attr__.overloads = absorbed;
         root_mut.__base_attr__.refs.extend(merged_refs);
@@ -628,5 +644,5 @@ pub async fn resolve_functions(
         }
     }
 
-    Ok((functions, rendering_results))
+    Ok((functions, disabled_functions, function_bodies))
 }

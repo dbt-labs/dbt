@@ -7,24 +7,32 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
-use dbt_adapter::adapter::AdapterStore;
+use dbt_adapter::adapter::{AdapterStore, quote_component};
+use dbt_adapter::relation::{RelationObject, create_relation};
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::FsCommand;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
-use dbt_common::tracing::dbt_metrics::{FusionMetricKey, InvocationMetricKey};
-use dbt_common::tracing::metrics::increment_metric;
 use dbt_common::{ErrorCode, FsResult};
 use dbt_dag::schedule::Schedule;
 use dbt_flags::{FlagDef, Stage};
+use dbt_jinja_utils::DocMacro;
+use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::listener::DefaultRenderingEventListenerFactory;
+use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
+use dbt_jinja_utils::utils::render_sql;
+use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::schemas::profiles::TargetContext;
+use dbt_schemas::schemas::relations::base::{BaseRelation, ComponentName};
 use dbt_schemas::schemas::{
     DbtExperimentalNode, ExperimentalData, InternalDbtNodeAttributes, Nodes,
 };
@@ -32,6 +40,11 @@ use dbt_tasks_core::RunTasksArgs;
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation};
 use dbt_telemetry::NodeType;
+use minijinja::State;
+use minijinja::Value as MinijinjaValue;
+use minijinja::arg_utils::ArgParser;
+use minijinja::listener::RenderingEventListener;
+use minijinja::value::{Object, OverlayMap};
 
 pub use dbt_parser::experimental::{
     ExperimentalDiagnostics, ExperimentalEntry, ExperimentalError, ExperimentalFile,
@@ -42,11 +55,12 @@ pub use dbt_parser::experimental::{
 ///
 /// An experimental node runs only when it is selected directly, and only in its Run phase: it has
 /// nothing to render or analyze.
+#[async_trait]
 pub trait ExperimentalNode: ResolveExperimental {
     /// Prepares to run this experimental's selected nodes. Called once per invocation, after nodes
     /// are selected and before the task graph is built, so an error stops the invocation before any
     /// node runs. `None` runs none of them.
-    fn start(
+    async fn start(
         &self,
         args: &ExperimentalRunArgs<'_>,
     ) -> Result<Option<Arc<dyn ExperimentalRun>>, ExperimentalError>;
@@ -67,6 +81,9 @@ pub struct ExperimentalRunArgs<'a> {
     pub target_dir: &'a Path,
     /// This experimental's selected nodes, in schedule order.
     pub selected: &'a [ExperimentalNodeRef],
+    /// The options of the extension command that runs only this experimental's nodes, by name.
+    /// Empty for any other command.
+    pub command_options: &'a BTreeMap<String, Vec<String>>,
 }
 
 /// One invocation's run of an experimental's selected nodes.
@@ -148,6 +165,18 @@ pub enum ExperimentalOutcome {
 pub struct ExperimentalRunCtx {
     experimental_type: &'static str,
     adapter_store: Arc<AdapterStore>,
+    jinja: Option<NodeJinja>,
+    /// The target's database and schema, as `target.database` and `target.schema` render.
+    database: String,
+    schema: String,
+}
+
+/// What [`ExperimentalRunCtx::render`] renders with: the node's compile context.
+#[derive(Clone)]
+struct NodeJinja {
+    env: Arc<JinjaEnv>,
+    context: OverlayMap,
+    path: PathBuf,
 }
 
 impl ExperimentalRunCtx {
@@ -167,6 +196,123 @@ impl ExperimentalRunCtx {
             .adapter_type
             .unwrap_or_else(|| self.adapter_store.default_adapter_type());
         self.query_on(adapter_type, sql).await
+    }
+
+    /// The target's adapter type.
+    pub fn adapter_type(&self) -> AdapterType {
+        self.adapter_store.default_adapter_type()
+    }
+
+    /// The relation `identifier` in the target's database and schema, quoted for the target's
+    /// adapter. For an experimental that writes rows of its own during a run; it must drop them.
+    pub fn target_relation(&self, identifier: &str) -> Result<TargetRelation, ExperimentalError> {
+        if self.schema.is_empty() {
+            return Err(ExperimentalError::new(
+                "the target has no schema to write the experimental's rows in",
+            ));
+        }
+        let adapter = self
+            .adapter_store
+            .get(self.adapter_store.default_adapter_type())
+            .map_err(|e| ExperimentalError::new(e.to_string()))?;
+        let (adapter_type, quoting) = (adapter.adapter_type(), adapter.engine().quoting());
+        let quote =
+            |name: &str, component| quote_component(adapter_type, &quoting, name, component);
+        let rendered = format!(
+            "{}.{}",
+            quote(&self.schema, ComponentName::Schema),
+            quote(identifier, ComponentName::Identifier)
+        );
+        let rendered = if self.database.is_empty() {
+            rendered
+        } else {
+            format!(
+                "{}.{rendered}",
+                quote(&self.database, ComponentName::Database)
+            )
+        };
+        let relation = create_relation(
+            adapter_type,
+            self.database.clone(),
+            self.schema.clone(),
+            Some(identifier.to_string()),
+            Some(RelationType::Table),
+            quoting,
+        )
+        .map_err(|e| ExperimentalError::new(e.to_string()))?;
+        Ok(TargetRelation {
+            rendered,
+            relation: Arc::from(relation),
+        })
+    }
+
+    /// Renders `template` as dbt renders a model's SQL: project and package macros, `var()`,
+    /// `env_var()`, `target`, and `ref()`/`source()` to the relations of the node's dependencies.
+    /// `doc()` renders a doc block, and `metric()` the name of a metric the node depends on.
+    /// `this`, when given, is that relation, as a model's `this` is: a relation object that
+    /// renders as its name, so a generic test's macro can take it as its `model`.
+    pub async fn render(
+        &self,
+        template: &str,
+        this: Option<&TargetRelation>,
+    ) -> Result<String, ExperimentalError> {
+        self.render_with(template, this, None).await
+    }
+
+    /// Renders a data test's SQL as [`Self::render`] does, with `this` the relation it tests, and
+    /// keeps what its `config()` calls set, as dbt keeps a test macro's `config(fail_calc=...)`.
+    pub async fn render_data_test(
+        &self,
+        template: &str,
+        this: &TargetRelation,
+    ) -> Result<RenderedDataTest, ExperimentalError> {
+        let config = Arc::new(RecordingConfig::default());
+        let sql = self
+            .render_with(template, Some(this), Some(Arc::clone(&config)))
+            .await?;
+        let config = std::mem::take(&mut *config.set.lock().unwrap());
+        Ok(RenderedDataTest { sql, config })
+    }
+
+    async fn render_with(
+        &self,
+        template: &str,
+        this: Option<&TargetRelation>,
+        config: Option<Arc<RecordingConfig>>,
+    ) -> Result<String, ExperimentalError> {
+        let jinja = self
+            .jinja
+            .clone()
+            .ok_or_else(|| ExperimentalError::new("templates can't be rendered here"))?;
+        let mut context = jinja.context;
+        if let Some(this) = this {
+            context.insert(
+                "this".to_string(),
+                RelationObject::new(Arc::clone(&this.relation)).into_value(),
+            );
+        }
+        if let Some(config) = config {
+            *config.node.lock().unwrap() = context.get("config");
+            context.insert(
+                "config".to_string(),
+                MinijinjaValue::from_dyn_object(config),
+            );
+        }
+        let template = template.to_string();
+        // Macros may query the warehouse, so rendering happens on the blocking pool, where
+        // connections are made.
+        dbt_runtime::spawn_blocking(move || {
+            render_sql(
+                &template,
+                &jinja.env,
+                &context,
+                &DefaultRenderingEventListenerFactory::default(),
+                &jinja.path,
+            )
+        })
+        .await
+        .map_err(|e| ExperimentalError::new(format!("rendering did not finish: {e}")))?
+        .map_err(|e| ExperimentalError::new(e.pretty()))
     }
 
     /// Runs blocking work (file or network IO) off the async pool. Not for the warehouse: use
@@ -209,6 +355,118 @@ impl ExperimentalRunCtx {
     }
 }
 
+/// A data test's SQL, rendered, and what its `config()` calls set.
+#[derive(Debug, Clone)]
+pub struct RenderedDataTest {
+    pub sql: String,
+    /// Each key a `config()` call set, with the last value it set, such as `fail_calc`.
+    pub config: BTreeMap<String, MinijinjaValue>,
+}
+
+/// `config` for a data test's SQL: each call's keywords are kept, and `config.get` and attributes
+/// read them before the node's own config.
+#[derive(Debug, Default)]
+struct RecordingConfig {
+    /// The node's `config`, which everything else goes to.
+    node: Mutex<Option<MinijinjaValue>>,
+    set: Mutex<BTreeMap<String, MinijinjaValue>>,
+}
+
+impl RecordingConfig {
+    fn node(&self) -> Option<MinijinjaValue> {
+        self.node.lock().unwrap().clone()
+    }
+}
+
+impl Object for RecordingConfig {
+    fn call(
+        self: &Arc<Self>,
+        _state: &State<'_, '_>,
+        args: &[MinijinjaValue],
+        _listeners: &[Rc<dyn RenderingEventListener>],
+    ) -> Result<MinijinjaValue, minijinja::Error> {
+        let mut args = ArgParser::new(args, None);
+        let mut set = args.drain_kwargs();
+        // `config({...})`, as dbt also takes it.
+        if let Some(mapping) = args.next_positional::<MinijinjaValue>().ok()
+            && let Some(pairs) = mapping
+                .as_object()
+                .and_then(|object| object.try_iter_pairs())
+        {
+            for (key, value) in pairs {
+                if let Some(key) = key.as_str() {
+                    set.insert(key.to_string(), value);
+                }
+            }
+        }
+        self.set.lock().unwrap().extend(set);
+        Ok(MinijinjaValue::from(""))
+    }
+
+    fn get_value(self: &Arc<Self>, key: &MinijinjaValue) -> Option<MinijinjaValue> {
+        let set = key
+            .as_str()
+            .and_then(|key| self.set.lock().unwrap().get(key).cloned());
+        set.or_else(|| {
+            self.node()?
+                .get_item(key)
+                .ok()
+                .filter(|value| !value.is_undefined())
+        })
+    }
+
+    fn call_method(
+        self: &Arc<Self>,
+        state: &State<'_, '_>,
+        name: &str,
+        args: &[MinijinjaValue],
+        listeners: &[Rc<dyn RenderingEventListener>],
+    ) -> Result<MinijinjaValue, minijinja::Error> {
+        if name == "get"
+            && let Some(key) = args.first().and_then(MinijinjaValue::as_str)
+            && let Some(value) = self.set.lock().unwrap().get(key)
+        {
+            return Ok(value.clone());
+        }
+        match self.node() {
+            Some(node) => node.call_method(state, name, args, listeners),
+            None => Err(minijinja::Error::new(
+                minijinja::ErrorKind::UnknownMethod,
+                format!("config has no method {name}"),
+            )),
+        }
+    }
+}
+
+/// A relation in the target's database and schema, from [`ExperimentalRunCtx::target_relation`].
+#[derive(Clone)]
+pub struct TargetRelation {
+    /// Quoted for the target's adapter.
+    rendered: String,
+    relation: Arc<dyn BaseRelation>,
+}
+
+impl TargetRelation {
+    /// The relation's name, quoted for the target's adapter, for SQL.
+    pub fn as_str(&self) -> &str {
+        &self.rendered
+    }
+}
+
+impl std::fmt::Display for TargetRelation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.rendered)
+    }
+}
+
+impl std::fmt::Debug for TargetRelation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("TargetRelation")
+            .field(&self.rendered)
+            .finish()
+    }
+}
+
 /// The task the core runs for one selected experimental node.
 pub struct ExperimentalTask {
     experimental_type: &'static str,
@@ -221,17 +479,29 @@ impl ExperimentalTask {
     async fn run(&self, ctx: &TaskRunnerCtx) -> FsResult<NodeStatus> {
         let start = SystemTime::now();
         let unique_id = self.node_ref.unique_id.clone();
+        let jinja = match node_jinja(ctx, &self.node) {
+            Ok(jinja) => Some(jinja),
+            Err(error) => {
+                emit_warn_log_from_fs_error(*error);
+                None
+            }
+        };
+        let (database, schema) = target_namespace(ctx);
         let run_ctx = ExperimentalRunCtx {
             experimental_type: self.experimental_type,
             adapter_store: Arc::clone(ctx.adapter_store()),
+            jinja,
+            database,
+            schema,
         };
         let (status, failures, message) = match self.run.run(&self.node_ref, &run_ctx).await {
             Ok(ExperimentalOutcome::Pass) => (NodeStatus::Succeeded, Some(0), None),
             Ok(ExperimentalOutcome::Fail { failures, message }) => {
-                // A failed experimental node counts as an error, as a failed test does.
-                increment_metric(
-                    FusionMetricKey::InvocationMetric(InvocationMetricKey::TotalErrors),
-                    1,
+                // A failed experimental node is reported, and counts, as an error, as a failed
+                // test does.
+                emit_error_log_from_fs_error(
+                    *ExperimentalError::new(format!("'{}' failed: {message}", self.node_ref.name))
+                        .into_fs_error(self.experimental_type, ErrorCode::ExperimentalError),
                 );
                 (NodeStatus::Errored, Some(failures.max(1)), Some(message))
             }
@@ -257,6 +527,91 @@ impl ExperimentalTask {
         );
         Ok(status)
     }
+}
+
+/// The target's database and schema, as `target.database` and `target.schema` render: with the
+/// adapter's defaults (DuckDB's `main`) where the profile leaves them out.
+fn target_namespace(ctx: &TaskRunnerCtx) -> (String, String) {
+    let profile = ctx.dbt_profile();
+    let target = TargetContext::try_from(profile.default_db_config().clone())
+        .ok()
+        .and_then(|target| dbt_yaml::to_value(&target).ok());
+    let get = |key: &str, fallback: &str| {
+        target
+            .as_ref()
+            .and_then(|target| target.get(key))
+            .and_then(|value| value.as_str().map(str::to_string))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| fallback.to_string())
+    };
+    (
+        get("database", &profile.database),
+        get("schema", &profile.schema),
+    )
+}
+
+/// The node's compile context, as a model's SQL is compiled with, plus `doc()` and `metric()`,
+/// which no compile context has.
+fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<DbtExperimentalNode>) -> FsResult<NodeJinja> {
+    let base = ctx.run_base_context(node.as_ref())?;
+    let (mut context, _) = ctx.build_compile_node_context(
+        Arc::clone(node),
+        &base,
+        DependencyValidationConfig::new_validated(),
+    )?;
+    let state = ctx.resolver_state();
+    let package = node.__common_attr__.package_name.clone();
+    let root = state.root_project_name.clone();
+
+    // Docs from the root project first, then the node's package, as core searches them.
+    let docs = state
+        .macros
+        .docs_macros
+        .values()
+        .map(|doc| {
+            (
+                (doc.package_name.clone(), doc.name.clone()),
+                doc.block_contents.clone(),
+            )
+        })
+        .collect();
+    let mut search_order = vec![root.clone()];
+    if package != root {
+        search_order.push(package);
+    }
+    context.insert(
+        "doc".to_string(),
+        MinijinjaValue::from_object(DocMacro::new_strict_with_search_order(search_order, docs)),
+    );
+
+    // At run time core's `metric()` is a reference that renders as the metric's name. Only
+    // metrics the node depends on resolve.
+    let metrics: BTreeSet<String> = node
+        .__base_attr__
+        .depends_on
+        .nodes
+        .iter()
+        .filter_map(|id| state.nodes.metrics.get(id))
+        .map(|metric| metric.__common_attr__.name.clone())
+        .collect();
+    context.insert(
+        "metric".to_string(),
+        MinijinjaValue::from_function(move |name: String| {
+            if metrics.contains(&name) {
+                Ok(MinijinjaValue::from_safe_string(name))
+            } else {
+                Err(minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    format!("metric('{name}') isn't a metric this node depends on"),
+                ))
+            }
+        }),
+    );
+    Ok(NodeJinja {
+        env: Arc::clone(&ctx.env),
+        context,
+        path: PathBuf::from(node.__common_attr__.original_file_path.to_string()),
+    })
 }
 
 impl Task for ExperimentalTask {
@@ -325,7 +680,7 @@ impl Experimentals {
         for experimental in &experimentals {
             let experimental_type = experimental.experimental_type();
             check_flag(experimental_type, experimental.flag());
-            for key in std::iter::once(experimental_type)
+            for key in std::iter::once(experimental.key())
                 .chain(experimental.definition_keys().iter().copied())
             {
                 assert!(
@@ -346,6 +701,20 @@ impl Experimentals {
 
     pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn ExperimentalNode>> {
         self.experimentals.iter()
+    }
+
+    /// Every feature flag this binary knows: dbt's own, and the flags that turn on its
+    /// experimentals, which aren't in `dbt_flags::ALL`.
+    pub fn known_flags(&self) -> Vec<&'static FlagDef> {
+        dbt_flags::ALL
+            .iter()
+            .copied()
+            .chain(
+                self.experimentals
+                    .iter()
+                    .map(|experimental| experimental.flag()),
+            )
+            .collect()
     }
 
     /// The experimental that owns `command`, if one does.
@@ -438,7 +807,7 @@ impl ExperimentalRuns {
     ///
     /// Experimental nodes only run, so a command whose graph has no Run phase starts no
     /// experimental. An experimental's own command runs only that experimental's nodes.
-    pub fn start(
+    pub async fn start(
         experimentals: &Experimentals,
         arg: &RunTasksArgs,
         nodes: &Nodes,
@@ -475,8 +844,9 @@ impl ExperimentalRuns {
                 project_dir: &arg.io.in_dir,
                 target_dir: &arg.io.out_dir,
                 selected: &selected,
+                command_options: &arg.command_options,
             };
-            match experimental.start(&args) {
+            match experimental.start(&args).await {
                 Ok(Some(run)) => {
                     started.runs.insert(experimental_type, run);
                 }
@@ -589,8 +959,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ExperimentalNode for WithKeys {
-        fn start(
+        async fn start(
             &self,
             _args: &ExperimentalRunArgs<'_>,
         ) -> Result<Option<Arc<dyn ExperimentalRun>>, ExperimentalError> {
@@ -598,8 +969,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ExperimentalNode for TestExperimental {
-        fn start(
+        async fn start(
             &self,
             _args: &ExperimentalRunArgs<'_>,
         ) -> Result<Option<Arc<dyn ExperimentalRun>>, ExperimentalError> {
@@ -646,8 +1018,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ExperimentalNode for CountingExperimental {
-        fn start(
+        async fn start(
             &self,
             _args: &ExperimentalRunArgs<'_>,
         ) -> Result<Option<Arc<dyn ExperimentalRun>>, ExperimentalError> {
@@ -699,7 +1072,13 @@ mod tests {
             command: FsCommand::Build,
             ..Default::default()
         };
-        let runs = ExperimentalRuns::start(&experimentals, &arg, &nodes, &schedule, true);
+        let runs = futures::executor::block_on(ExperimentalRuns::start(
+            &experimentals,
+            &arg,
+            &nodes,
+            &schedule,
+            true,
+        ));
         (runs, finishes)
     }
 
@@ -774,8 +1153,14 @@ mod tests {
             command,
             ..Default::default()
         };
-        let runs =
-            ExperimentalRuns::start(&experimentals, &arg, &nodes, &schedule, runs_nodes).unwrap();
+        let runs = futures::executor::block_on(ExperimentalRuns::start(
+            &experimentals,
+            &arg,
+            &nodes,
+            &schedule,
+            runs_nodes,
+        ))
+        .unwrap();
         ["widget", "gadget", "gizmo"]
             .into_iter()
             .filter(|experimental_type| runs.is_running(experimental_type))
@@ -815,7 +1200,14 @@ mod tests {
             command: FsCommand::Build,
             ..Default::default()
         };
-        let runs = ExperimentalRuns::start(&experimentals, &arg, &nodes, &schedule, true).unwrap();
+        let runs = futures::executor::block_on(ExperimentalRuns::start(
+            &experimentals,
+            &arg,
+            &nodes,
+            &schedule,
+            true,
+        ))
+        .unwrap();
         assert!(
             runs.task(&nodes.experimentals["widget.p.n"], &nodes)
                 .is_some()
@@ -880,6 +1272,25 @@ mod tests {
             vec![Arc::new(TestExperimental(WIDGET, &ON_BY_DEFAULT))],
             &[WIDGET],
         );
+    }
+
+    /// An experimental's flag is a known feature flag, so `--feature` turns it on without an
+    /// "Unknown feature flag" warning.
+    #[test]
+    fn experimental_flags_are_known() {
+        let snapshot = dbt_flags::FlagSnapshot::builder()
+            .cli(["test_experimentals"])
+            .build();
+        let without = Experimentals::new(vec![], &[WIDGET]);
+        assert_eq!(
+            snapshot.warnings(&without.known_flags()),
+            ["Unknown feature flag 'test_experimentals' in --feature; it has no effect"]
+        );
+        let with = Experimentals::new(
+            vec![Arc::new(TestExperimental(WIDGET, &TEST_FLAG))],
+            &[WIDGET],
+        );
+        assert!(snapshot.warnings(&with.known_flags()).is_empty());
     }
 
     #[test]

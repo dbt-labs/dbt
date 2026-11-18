@@ -11,6 +11,8 @@ module.exports = {
     './index.html',
     // Covers both the app and the shared component/data layer under src/shared/.
     './src/**/*.{js,ts,jsx,tsx,css}',
+    // dbt-docs-lib ships no CSS, so its classes exist only if this build generates them.
+    '../dbt-docs-lib/lib/**/*.{js,ts,jsx,tsx,css}',
     ...sourdoughConfig.content,
   ],
   theme: {

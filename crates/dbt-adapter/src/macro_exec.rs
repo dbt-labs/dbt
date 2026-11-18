@@ -79,3 +79,23 @@ pub fn execute_macro_with_package(
         AdapterError::new(AdapterErrorKind::UnexpectedResult, err.to_string())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minijinja::Environment;
+
+    #[test]
+    fn execute_macro_preserves_adapter_error_kind() {
+        let mut env = Environment::new();
+        env.add_function("boom", || -> Result<Value, minijinja::Error> {
+            Err(AdapterError::new(AdapterErrorKind::NotFound, "gone").into())
+        });
+        env.add_template("pkg.m", "{% macro m() %}{{ boom() }}{% endmacro %}")
+            .unwrap();
+        let tmpl = env.get_template("pkg.m").unwrap();
+        let state = tmpl.eval_to_state((), &[]).unwrap();
+        let err = execute_macro_with_package(&state, &[], "m", "pkg").unwrap_err();
+        assert_eq!(err.kind(), AdapterErrorKind::NotFound);
+    }
+}

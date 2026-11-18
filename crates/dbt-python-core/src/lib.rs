@@ -406,6 +406,7 @@ where
     let dbt_rt = dbt_runtime::builder::Builder::new()
         .max_blocking_threads(48)
         .thread_stack_size(8 * 1024 * 1024)
+        .on_thread_stop(dbt_adapter::connection::close_thread_local_connection)
         .build();
 
     // Big stack for the recursive parser/compiler; blocking-thread headroom for adapters.
@@ -455,6 +456,12 @@ where
         // Engine task panicked; surface it instead of an opaque JoinError.
         Err(join_err) => (2, None, Some(format!("dbt engine panicked: {join_err}"))),
     };
+
+    // No hard exit on timeout: this is the user's interpreter. Threads still
+    // running stay detached, and anything they emit later reaches whichever
+    // invocation's layers are installed at the time.
+    tokio_rt.shutdown_timeout(dbt_main::TOKIO_SHUTDOWN_TIMEOUT);
+    let _ = dbt_rt.shutdown_timeout(dbt_main::DBT_RUNTIME_SHUTDOWN_TIMEOUT);
 
     // Torn down explicitly so failures are reported rather than dropped, and before
     // `_invocation` unlocks so the next invocation cannot install its layers first.

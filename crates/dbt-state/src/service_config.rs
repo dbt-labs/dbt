@@ -214,7 +214,7 @@ impl RunCacheServiceConfig {
         let ignore_external_modifications =
             match config_value(&mut get_env, "IGNORE_EXTERNAL_MODIFICATIONS") {
                 Some(value) => parse_bool("ignore_external_modifications", &value)?,
-                None => false,
+                None => true,
             };
 
         Ok(Self {
@@ -305,7 +305,7 @@ impl RunCacheServiceConfig {
             metadata_cache_ttl_seconds: DEFAULT_METADATA_CACHE_TTL_SECONDS,
             run_hooks_on_no_op: false,
             compare_unrendered_code: false,
-            ignore_external_modifications: false,
+            ignore_external_modifications: true,
             snowflake_get_view_ddl_override: None,
             snowflake_metadata_warehouse: None,
         }
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(config.metadata_cache_ttl_seconds, 0);
         assert!(!config.run_hooks_on_no_op);
         assert!(!config.compare_unrendered_code);
-        assert!(!config.ignore_external_modifications);
+        assert!(config.ignore_external_modifications);
         assert_eq!(config.snowflake_get_view_ddl_override, None);
         assert_eq!(config.snowflake_metadata_warehouse, None);
     }

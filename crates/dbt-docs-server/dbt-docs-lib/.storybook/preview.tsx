@@ -1,13 +1,18 @@
 import { useState, type ReactNode } from 'react';
 // import { HelmetProvider } from 'react-helmet-async';
-import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { withThemeByClassName } from '@storybook/addon-themes';
 import type { Decorator, Preview } from '@storybook/react-vite';
+import { action } from 'storybook/actions';
 
 // import { BootstrapProvider } from '../src/lib/bootstrapContext';
 import type { MetadataDataSource } from '../lib/data-sources/MetadataDataSource';
 import { MetadataDataProvider } from '../lib/context/MetadataDataProvider';
+import {
+  type LinkTo,
+  type Navigation,
+  NavigationProvider,
+} from '../lib/context/NavigationProvider';
 import { type BootstrapData, storyBootstrapData } from '../lib/shared/testing/storyFixtures';
 import { storyDataSource } from '../lib/shared/testing/storySources';
 import { ReactFlow, ReactFlowProvider } from '@xyflow/react';
@@ -16,6 +21,40 @@ import { ReactFlow, ReactFlowProvider } from '@xyflow/react';
 // then `app.css`. Components here are styled almost entirely by CSS custom properties
 // from that chain, so importing anything less renders them colorless.
 import '../lib/index.css';
+
+const hrefOf = (to: LinkTo) =>
+  typeof to === 'string' ? to : `${to.pathname ?? ''}${to.search ?? ''}${to.hash ?? ''}`;
+
+/**
+ * Stands in for the host app's router, which this package does not have: links render
+ * as plain anchors carrying the href the app would build, and navigation is logged to
+ * the Actions panel instead of performed.
+ */
+const storyNavigation: Navigation = {
+  // Stand-ins: with no app behind them, a path only has to read well in the panel.
+  paths: {
+    home: () => '/',
+    details: (uniqueId) => `/details/${uniqueId}/`,
+    lineage: (uniqueId) => `/lineage/?uniqueId=${uniqueId}`,
+  },
+  navigate: action('navigate'),
+  href: hrefOf,
+  Link: ({ to, target, rel, className, children, onClick }) => (
+    <a
+      href={hrefOf(to)}
+      target={target}
+      rel={rel}
+      className={className}
+      onClick={(event) => {
+        onClick?.(event);
+        event.preventDefault();
+        storyNavigation.navigate(hrefOf(to));
+      }}
+    >
+      {children}
+    </a>
+  ),
+};
 
 /**
  * Per-story overrides for the provider stack.
@@ -27,9 +66,6 @@ import '../lib/index.css';
 export interface DocsStoryParameters {
   /** Backing data source. Defaults to the fully-populated `storyDataSource()`. */
   source?: MetadataDataSource;
-  /** Initial `MemoryRouter` history. Use when a component reads route params or
-   *  search params (e.g. `ModelFilterView` reads `?modeling_layer=`). */
-  initialEntries?: string[];
   /** The first-paint node read, for components calling `useAllNodes`. Defaults to
    *  the resolved story fixture — the context's own default never settles. */
   bootstrap?: BootstrapData | Promise<BootstrapData>;
@@ -38,7 +74,6 @@ export interface DocsStoryParameters {
 function Providers({
   children,
   source,
-  initialEntries,
   bootstrap,
 }: DocsStoryParameters & { children: ReactNode }) {
   // One client per story mount. Created in state rather than in the render body so a
@@ -66,9 +101,9 @@ function Providers({
           {/* <LinkPrefixProvider prefix="#/">
             <BootstrapProvider value={read}> */}
               <ReactFlowProvider>
-                <MemoryRouter initialEntries={initialEntries ?? ['/']}>
+                <NavigationProvider navigation={storyNavigation}>
                   {children}
-                </MemoryRouter>
+                </NavigationProvider>
               </ReactFlowProvider>
             {/* </BootstrapProvider>
           </LinkPrefixProvider> */}
@@ -79,10 +114,9 @@ function Providers({
 
 /** Mounts every story under the same provider stack `main.tsx` builds. */
 const withProviders: Decorator = (Story, context) => {
-  const { source, initialEntries, bootstrap } = (context.parameters.docsApp ??
-    {}) as DocsStoryParameters;
+  const { source, bootstrap } = (context.parameters.docsApp ?? {}) as DocsStoryParameters;
   return (
-    <Providers source={source} initialEntries={initialEntries} bootstrap={bootstrap}>
+    <Providers source={source} bootstrap={bootstrap}>
       <Story />
     </Providers>
   );

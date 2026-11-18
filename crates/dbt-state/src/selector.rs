@@ -8,6 +8,8 @@ use crate::service_client::{RunCacheServiceError, SharedRunCacheServiceClient};
 use crate::service_config::RunCacheServiceConfigError;
 use crate::telemetry::SharedEventOrder;
 use dbt_common::path::DbtPath;
+use dbt_common::tracing::dbt_emit::emit_debug_log_message;
+use dbt_common::tracing::spawn_traced;
 use dbt_schemas::schemas::{Nodes, macros::DbtMacro};
 use dbt_schemas::state::DbtRuntimeConfig;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -170,9 +172,13 @@ fn emit_state_selector_telemetry(
         events: vec![event],
     };
     let client = args.client.clone();
-    tokio::spawn(async move {
+    // Fire-and-forget: the command can finish before this completes. Spawn it in the current
+    // span so that whatever it emits after the invocation ends, including the gRPC stack's own
+    // events, which run in the caller's span, is suppressed when the invocation span is force
+    // closed instead of being logged outside any span.
+    spawn_traced(async move {
         if let Err(e) = client.submit_telemetry_batch(request).await {
-            tracing::debug!("Failed to submit state selector telemetry: {e}");
+            emit_debug_log_message(format!("Failed to submit state selector telemetry: {e}"));
         }
     });
 }

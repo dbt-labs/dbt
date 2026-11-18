@@ -58,10 +58,11 @@ impl TelemetryMiddleware for TelemetryWarnErrorOptionsMiddleware {
             },
         );
 
-        // Silencing stays intact; only the upgrade is withheld.
-        if self.skip_fusion_only_upgrades
-            && decision == WarnErrorDecision::UpgradeToError
-            && is_fusion_only_warning(code)
+        // Silencing stays intact; only the upgrade is withheld. A shared code can't be
+        // upgraded at all: one option would apply to every behavior that shares it.
+        if decision == WarnErrorDecision::UpgradeToError
+            && (code == ErrorCode::FutureIncompatibility
+                || self.skip_fusion_only_upgrades && is_fusion_only_warning(code))
         {
             decision = WarnErrorDecision::Retain
         };

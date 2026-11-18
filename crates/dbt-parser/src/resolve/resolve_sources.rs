@@ -734,7 +734,7 @@ fn merge_table_into_schema_config(
     )
     .map_err(|msg| {
         dbt_common::fs_err!(
-            ErrorCode::Unexpected,
+            ErrorCode::FreshnessConfigInvalid,
             "{} on source `{}.{}`",
             msg,
             source_name,

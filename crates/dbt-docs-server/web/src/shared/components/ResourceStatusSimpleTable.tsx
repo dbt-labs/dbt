@@ -1,6 +1,6 @@
+import type { FreshnessStatusValue, TestStatusValue } from 'dbt-docs-lib/domain';
+
 import type { ResourceTypeExplorer } from '../../lib/resourceType';
-import type { FreshnessStatusValue } from '../typings/domain/status';
-import type { TestStatusValue } from '../typings/domain/status';
 import { NodeStatusIconBadge } from './NodeStatusIconBadge';
 import { ResourceChip } from './ResourceChip';
 

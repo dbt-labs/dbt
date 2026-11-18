@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use dbt_adapter::sql_types::TypeOpsFactory;
 use dbt_common::{
     ErrorCode, FsResult,
-    artifact_io::write_artifact_to_file,
+    artifact_io::{ArtifactSerialization, write_artifact_to_file},
     constants::DBT_CATALOG_JSON,
     io_args::{EvalArgs, FsCommand},
     tracing::dbt_emit::{
@@ -200,7 +200,7 @@ async fn write_metadata_impl(
         && let Some(catalog) = catalog_data
     {
         match write_artifact_to_file(
-            catalog,
+            ArtifactSerialization::WithYamlFlattening(catalog),
             ArtifactType::Catalog,
             &arg.io.out_dir,
             DBT_CATALOG_JSON,
