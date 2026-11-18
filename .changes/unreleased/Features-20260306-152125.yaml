@@ -1,0 +1,6 @@
+kind: Features
+body: Add tags support for metrics via config.tags in YAML or +tags in dbt_project.yml
+time: 2026-03-06T15:21:25.806855+09:00
+custom:
+    Author: dtaniwaki
+    Issue: "12607"
