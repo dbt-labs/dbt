@@ -35,7 +35,7 @@ from dbt.events.types import (
     MainTrackingUserState,
     ResourceReport,
 )
-from dbt.exceptions import DbtProjectError, FailFastError
+from dbt.exceptions import DbtProjectError, DbtRuntimeError, FailFastError
 from dbt.flags import get_flag_dict, get_flags, set_flags
 from dbt.mp_context import get_mp_context
 from dbt.parser.manifest import parse_manifest
@@ -76,6 +76,19 @@ def _cross_propagate_engine_env_vars(env_dict: Dict[str, str]) -> None:
                 env_dict[env_var.old_name] = env_dict[env_var.name]
 
 
+def _setup_event_logger_or_exit(flags: Flags, callbacks) -> None:
+    """Set up logging, reporting setup failures (e.g. an unwritable log directory) cleanly.
+
+    This lives outside preflight so the error is shown for every command, regardless of
+    whether postflight wraps preflight.
+    """
+    try:
+        setup_event_logger(flags=flags, callbacks=callbacks)
+    except DbtRuntimeError as e:
+        fire_event(MainEncounteredError(exc=str(e)))
+        raise ExceptionExit(e)
+
+
 def preflight(func):
     def wrapper(*args, **kwargs):
         ctx = args[0]
@@ -109,7 +122,7 @@ def preflight(func):
 
         # Logging
         callbacks = ctx.obj.get("callbacks", [])
-        setup_event_logger(flags=flags, callbacks=callbacks)
+        _setup_event_logger_or_exit(flags, callbacks)
         get_event_manager().allow_deferral = flags.enable_grouped_warn_error_parser_logs
 
         # Tracking
