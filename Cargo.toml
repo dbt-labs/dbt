@@ -154,7 +154,6 @@ sqlparser = { git = "https://github.com/sdf-labs/datafusion-sqlparser-rs", rev =
 # sqlparser = { path = "../datafusion-sqlparser-rs" }
 
 # All arrow dependencies (run `cargo tree --prefix none | grep ^arrow | cut -d ' ' -f1 | sort -u` to get this list)
-arrow-flight = { git = "https://github.com/sdf-labs/arrow-rs", rev = "4419807fa617c6f4d9c7ab5d86c9ae94c4b9b854" } # @ sdf/58.4.0
 arrow = { git = "https://github.com/sdf-labs/arrow-rs", rev = "4419807fa617c6f4d9c7ab5d86c9ae94c4b9b854" } # @ sdf/58.4.0
 arrow-arith = { git = "https://github.com/sdf-labs/arrow-rs", rev = "4419807fa617c6f4d9c7ab5d86c9ae94c4b9b854" } # @ sdf/58.4.0
 arrow-array = { git = "https://github.com/sdf-labs/arrow-rs", rev = "4419807fa617c6f4d9c7ab5d86c9ae94c4b9b854" } # @ sdf/58.4.0
@@ -405,7 +404,6 @@ arrow-buffer = { version = "=58.4.0" }
 arrow-cast = { version = "=58.4.0" }
 arrow-csv = { version = "=58.4.0" }
 arrow-data = { version = "=58.4.0" }
-arrow-flight = { version = "=58.4.0" }
 arrow-ipc = { version = "=58.4.0" }
 arrow-json = { version = "=58.4.0" }
 arrow-schema = { version = "=58.4.0", features = ["serde"] }
