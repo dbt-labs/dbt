@@ -430,6 +430,17 @@ class MetricArgsError(CompilationError):
         return msg
 
 
+class DimensionArgsError(CompilationError):
+    def __init__(self, node, args) -> None:
+        self.node = node
+        self.args = args
+        super().__init__(msg=self.get_message())
+
+    def get_message(self) -> str:
+        msg = f"dimension() takes exactly one string argument, got {tuple(self.args)!r}"
+        return msg
+
+
 class RefBadContextError(CompilationError):
     def __init__(self, node, args) -> None:
         self.node = node
