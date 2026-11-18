@@ -1,0 +1,8 @@
+kind: Fixes
+body: Fix an in-model (v2) simple metric defined in an installed package depending
+  on its semantic model under the root project namespace instead of the metric's
+  own package
+time: 2026-11-06T06:30:00.000000+08:00
+custom:
+    Author: xh123637
+    Issue: "16142"

@@ -5,11 +5,13 @@ from unittest.mock import MagicMock, patch
 import jinja2
 import msgpack
 import pytest
+from metricflow_semantic_interfaces.type_enums import AggregationType, MetricType
 from pytest_mock import MockerFixture
 
 from dbt.adapters.postgres import PostgresAdapter
+from dbt.artifacts.resources import Metric, MetricAggregationParams, MetricTypeParams
 from dbt.artifacts.resources.base import FileHash
-from dbt.artifacts.resources.types import FunctionLanguage, FunctionType
+from dbt.artifacts.resources.types import FunctionLanguage, FunctionType, NodeType
 from dbt.artifacts.resources.v1.semantic_model import NodeRelation
 from dbt.config import RuntimeConfig
 from dbt.contracts.graph.manifest import Manifest, ManifestStateCheck
@@ -22,6 +24,7 @@ from dbt.parser.manifest import (
     ManifestLoader,
     _check_function_language_support,
     _maybe_show_long_parsing_hint,
+    _process_metric_node,
     _warn_for_unused_resource_config_paths,
     extended_mashumaro_encoder,
     extended_msgpack_encoder,
@@ -607,3 +610,41 @@ class TestLongParsingHint:
         self._set_v2_parser(False)
         _maybe_show_long_parsing_hint(None)
         self.mock_show_hint.assert_not_called()
+
+
+class TestProcessMetricNodeSemanticModelNamespace:
+    """Regression tests for #16142: an in-model (v2) simple metric defined in an
+    installed package must depend on the semantic model in the metric's own
+    package, not in the root project namespace."""
+
+    def _make_v2_simple_metric(self, package_name: str) -> Metric:
+        return Metric(
+            name="active_ads",
+            resource_type=NodeType.Metric,
+            type=MetricType.SIMPLE,
+            type_params=MetricTypeParams(
+                metric_aggregation_params=MetricAggregationParams(
+                    semantic_model="ad_report",
+                    agg=AggregationType.COUNT_DISTINCT,
+                )
+            ),
+            fqn=[package_name, "metrics", "active_ads"],
+            unique_id=f"metric.{package_name}.active_ads",
+            package_name=package_name,
+            path="models/ad_report.yml",
+            original_file_path="models/ad_report.yml",
+            description="",
+            meta={},
+            tags=[],
+            label="active_ads",
+        )
+
+    def test_v2_simple_metric_depends_on_own_package_semantic_model(self):
+        metric = self._make_v2_simple_metric("ad_reporting")
+        _process_metric_node(manifest=MagicMock(), current_project="root_project", metric=metric)
+        assert metric.depends_on.nodes == ["semantic_model.ad_reporting.ad_report"]
+
+    def test_v2_simple_metric_in_root_project_unchanged(self):
+        metric = self._make_v2_simple_metric("root_project")
+        _process_metric_node(manifest=MagicMock(), current_project="root_project", metric=metric)
+        assert metric.depends_on.nodes == ["semantic_model.root_project.ad_report"]
