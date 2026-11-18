@@ -108,6 +108,7 @@ drivers = [
   "snowflake-0.21.0.dev+dbt0.21.21",
   "snowflake-0.21.0.dev+dbt0.21.23",
   "snowflake-0.21.0.dev+dbt0.21.24",
+  "snowflake-0.21.0.dev+dbt0.21.25",
   "redshift-0.18.0+dbt0.18.2",
   "redshift-0.18.0+dbt0.18.3",
   "redshift-0.18.0+dbt0.18.4",
