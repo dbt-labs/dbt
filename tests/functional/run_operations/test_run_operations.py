@@ -22,6 +22,7 @@ from tests.functional.run_operations.fixtures import (
     private_model_sql,
     ref_private_model_macro_sql,
     sad_macros_sql,
+    transaction_probe_macros_sql,
 )
 
 
@@ -287,3 +288,47 @@ class TestRunOperationRefPrivateModel:
         run_dbt(["run"])
         results = run_dbt(["run-operation", "ref_private_model"])
         assert results.results[0].status == RunStatus.Success
+
+
+class BaseRunOperationKeepsWrites:
+    """A run-operation that succeeds keeps its writes (dbt-labs/dbt#16434)."""
+
+    @pytest.fixture(scope="class")
+    def macros(self):
+        return {"transaction_probe_macros.sql": transaction_probe_macros_sql}
+
+    @pytest.fixture(scope="class", autouse=True)
+    def probe_table(self, project):
+        project.run_sql(f"create table {project.test_schema}.txn_probe (tag varchar(50))")
+
+    def probe_tags(self, project):
+        rows = project.run_sql(
+            f"select tag from {project.test_schema}.txn_probe order by tag", fetch="all"
+        )
+        return [row[0] for row in rows]
+
+
+class TestRunOperationStatementWriteIsKept(BaseRunOperationKeepsWrites):
+    def test_statement_write_is_kept(self, project):
+        run_dbt(["run-operation", "probe_insert", "--args", "{tag: stmt}"])
+        assert self.probe_tags(project) == ["stmt"]
+
+
+class TestRunOperationRunQueryWriteIsKept(BaseRunOperationKeepsWrites):
+    def test_run_query_write_is_kept(self, project):
+        run_dbt(["run-operation", "probe_insert_run_query", "--args", "{tag: rq}"])
+        assert self.probe_tags(project) == ["rq"]
+
+
+class TestRunOperationWithoutWritesSucceeds(BaseRunOperationKeepsWrites):
+    def test_log_only_macro_succeeds(self, project):
+        results = run_dbt(["run-operation", "log_only"])
+        assert results.results[0].status == RunStatus.Success
+        assert self.probe_tags(project) == []
+
+
+class TestRunOperationSqlWriteIsKept(BaseRunOperationKeepsWrites):
+    def test_sql_write_is_kept(self, project):
+        schema = project.test_schema
+        run_dbt(["run-operation", "--sql", f"insert into {schema}.txn_probe values ('sql')"])
+        assert self.probe_tags(project) == ["sql"]

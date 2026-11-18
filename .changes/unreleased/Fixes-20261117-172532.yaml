@@ -1,0 +1,6 @@
+kind: Fixes
+body: Commit the open transaction when `run-operation` succeeds, so writes through `statement()` or `--sql` are no longer rolled back on adapters with real transactions
+time: 2026-11-17T17:25:32.905345+05:30
+custom:
+    Author: itsnamangoyal
+    Issue: "16434"
