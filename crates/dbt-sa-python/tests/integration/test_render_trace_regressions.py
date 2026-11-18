@@ -273,7 +273,7 @@ def test_review_regression_artifact(case, tmp_project, invoke):
     model.write_text(source, encoding="utf-8", newline="")
     normal = invoke(project, "compile", "--select", "probe", "--target-path", "normal")
     assert normal.success, normal.exception
-    assert not list((project / "normal").rglob("*.render_trace.json"))
+    assert not (project / "normal/render_traces.parquet").exists()
     traced = invoke(
         project,
         "compile",
@@ -289,9 +289,24 @@ def test_review_regression_artifact(case, tmp_project, invoke):
     assert (project / "normal" / f"{relative}.sql").read_bytes() == (
         project / "traced" / f"{relative}.sql"
     ).read_bytes()
-    trace = json.loads((project / "traced" / f"{relative}.render_trace.json").read_bytes())
+    preview = invoke(
+        project,
+        "show",
+        "--inline",
+        (
+            "select to_json(t) as trace_json "
+            "from read_parquet('traced/render_traces.parquet') t "
+            "where unique_id = 'model.render_trace.probe'"
+        ),
+        "--limit",
+        "1",
+    )
+    assert preview.success, preview.exception
+    body = b"".join(preview.preview)
+    start = body.index(b'{"protocol_version":')
+    trace, _ = json.JSONDecoder().raw_decode(body[start:].decode("utf-8", errors="ignore"))
     manifest = json.loads((project / "traced/manifest.json").read_bytes())
-    assert trace["protocol_version"] == 1
+    assert trace["protocol_version"] == 2
     assert trace["render_stage"] == "jinja_before_ephemeral_injection"
     assert trace["unique_id"] == "model.render_trace.probe"
     assert trace["invocation_id"] == manifest["metadata"]["invocation_id"]
@@ -305,11 +320,12 @@ def assert_provenance(trace):
     """Check UTF-8 ranges, exact literals, balanced source scopes and output coverage."""
     source = trace["source"].encode("utf-8")
     rendered = trace["rendered"].encode("utf-8")
-    for event in trace["events"]:
+    event_rows = events(trace)
+    for event in event_rows:
         assert_event_ranges(event, source, rendered)
-    assert_layout(trace["events"], source)
+    assert_layout(event_rows, source)
     covered = bytearray(len(rendered))
-    for event in trace["events"]:
+    for event in event_rows:
         if event["kind"] in {"literal", "templated", "macro"}:
             start, end = event["rendered_start"], event["rendered_end"]
             covered[start:end] = b"\x01" * (end - start)
@@ -349,13 +365,19 @@ def assert_layout(events, source):
 
 def assert_expected_events(trace, checks):
     """Pin the event multiplicities and writable literals involved in each bug."""
-    counts = Counter(event["kind"] for event in trace["events"])
+    event_rows = events(trace)
+    counts = Counter(event["kind"] for event in event_rows)
     source = trace["source"].encode("utf-8")
     literals = b"".join(
         source[event["source_start"] : event["source_end"]]
-        for event in trace["events"]
+        for event in event_rows
         if event["kind"] == "literal"
     ).decode("utf-8")
     expected = {kind: count for kind, count in checks.items() if kind != "literals"}
     assert {kind: counts[kind] for kind in expected} == expected
     assert literals == checks.get("literals", literals)
+
+
+def events(trace):
+    """Return execution-order rows from the nested Parquet list."""
+    return trace["events"]

@@ -4,3 +4,6 @@ config-version: 2
 profile: render_trace
 model-paths: [models]
 macro-paths: [macros]
+vars:
+  render_trace_columns: [account_id, event_type]
+  include_audit_columns: true

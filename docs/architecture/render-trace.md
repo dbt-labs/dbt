@@ -15,24 +15,27 @@ behavior flag and is not read from a project's `flags:` block.
 Each rendered SQL node writes a `*.render_trace.json` sidecar next to its
 compiled SQL, under the normal target directory. It contains:
 
-- `protocol_version`: `1` for this experimental format.
+- `protocol_version`: `2` for the columnar experimental format.
 - `dbt_version`, `invocation_id`, and `unique_id`: producer and model identity.
 - `filename`: the path used for Jinja source locations.
 - `source_path`: the actual file used as render input. This may differ from
   `filename`, particularly for generated snapshot SQL.
 - `render_stage`: `jinja_before_ephemeral_injection`.
 - `source`, `rendered`: the exact strings supplied to and returned by Jinja.
-- `events`: observations in execution order, each with a `kind`,
-  `source_start`, `source_end`, `rendered_start`, and `rendered_end`.
+- aligned top-level event columns: `kind`, `source_start`, `source_end`,
+  `rendered_start`, and `rendered_end`. Values at the same array index describe
+  one event, and array order is execution order.
 
 Offsets are zero-based UTF-8 bytes and end offsets are exclusive. Layout and
 loop events may have zero-width rendered ranges. Repeated loop iterations may
 refer to the same source span with different output spans. Macro boundary events
 can enclose other events; the event list is not a partition of either string.
-Consumers must validate ranges and must not infer missing provenance by matching
-identical output strings. The initial event kinds are `literal`, `templated`,
-`macro`, `block_start`, `block_mid`, `block_end`, `block_standalone`, `variable`,
-`comment`, `loop_iteration`, and `loop_skipped`.
+Array position preserves global execution order, including ties at zero-width
+rendered positions. Consumers must validate equal column lengths and ranges and
+must not infer missing provenance by matching identical output strings. `kind`
+values include `literal`, `templated`, `macro`, `block_start`, `block_mid`,
+`block_end`, `block_standalone`, `variable`, `comment`, `loop_iteration`, and
+`loop_skipped`.
 
 Layout events describe source tags, not synthetic AST nodes. An if/elif chain
 emits one block_end for its shared endif per execution. Internal macro-span
@@ -80,7 +83,7 @@ Named blocks render into temporary buffers. Their events are rebased when the
 buffer is appended directly, and the enclosing tracker is restored even on an
 error. Captured or transformed block values do not publish intermediate literal
 spans; their final expression output remains generated. Buffer callbacks are
-internal observer hooks and do not add event kinds or change protocol version 1.
+internal observer hooks and do not add event kinds.
 An explicit return replaces that evaluation's output: all events for the
 discarded buffer are removed, and the returned string is generated (`templated`
 with an empty source range at byte zero). Enclosing output remains mapped;
@@ -157,6 +160,11 @@ type. Producer version, invocation ID and paths are fixed example values so the
 fixture stays stable across releases and machines; execution events are captured
 from the real renderer. The local attributes keep fixture newlines as LF because
 the byte offsets describe those exact input bytes.
+
+The project integration fixture also compiles a representative model combining
+multiline `config()`, `ref()`, `source()`, `var()`, `target`, `this`,
+`is_incremental()`, adapter dispatch, macro returns, list-driven column
+generation, whitespace control, loops, comments, and conditional SQL.
 
 ## Regression coverage
 

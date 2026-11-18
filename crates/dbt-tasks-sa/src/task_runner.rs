@@ -44,6 +44,7 @@ use tracing::Instrument;
 use tracing::instrument;
 
 use crate::register_seeds;
+use crate::render_trace_parquet::{prepare_render_trace_output, write_collected_render_traces};
 use crate::run_operation::run_operation_on_run_with_ctx;
 use crate::task::effective_unit_test_execute;
 use crate::utils::filter_missing_schemas;
@@ -343,6 +344,7 @@ impl TaskRunner {
         has_dynamic_closure: bool,
         token: CancellationToken,
     ) -> Result<RunTaskResults, Box<FsError>> {
+        prepare_render_trace_output(&ctx)?;
         self.hooks.will_run(&run_task_args, &schedule);
 
         let registered_schemas = if self.should_register_schemas(run_task_args.as_ref(), &schedule)
@@ -628,6 +630,8 @@ impl TaskRunner {
         self.hooks
             .did_collect_all_run_task_results(&run_task_args, &mut ctx, &token)
             .await;
+
+        write_collected_render_traces(&ctx)?;
 
         Ok(RunTaskResults {
             stats,

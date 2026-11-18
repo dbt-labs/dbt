@@ -21,6 +21,7 @@ pub mod materialize;
 pub mod microbatch;
 pub mod plugin;
 pub mod register_seeds;
+mod render_trace_parquet;
 pub mod renderable;
 pub mod run_adhoc;
 pub mod run_operation;
