@@ -807,6 +807,20 @@ class TestUnparsedModelUpdate(ContractTestCase):
         }
         self.assert_fails_validation(dct)
 
+    def test_int_and_float_versions_are_distinct(self):
+        # mashumaro <3.15 deserializes both `v: 4` and `v: 4.1` as int 4,
+        # which UnparsedModelUpdate treats as a duplicate version (#16284).
+        model = self.ContractType.from_dict(
+            {
+                "name": "foo",
+                "yaml_key": "models",
+                "original_file_path": "/some/fake/path",
+                "package_name": "test",
+                "versions": [{"v": 4}, {"v": 4.1}],
+            }
+        )
+        self.assertEqual([version.v for version in model.versions], [4, 4.1])
+
 
 class TestUnparsedSemanticModelConfig(ContractTestCase):
     ContractType = UnparsedSemanticModelConfig
@@ -1133,6 +1147,13 @@ class TestUnparsedVersion(ContractTestCase):
         version = self.get_ok_dict()
         del version["v"]
         self.assert_fails_validation(version)
+
+    def test_float_v_not_truncated(self):
+        # Regression for #16284: mashumaro <3.15 truncates Union[int, float, str]
+        # so YAML `v: 4.1` becomes int 4.
+        version = self.ContractType.from_dict({"v": 4.1})
+        self.assertEqual(version.v, 4.1)
+        self.assertIsInstance(version.v, float)
 
 
 @pytest.mark.parametrize(
