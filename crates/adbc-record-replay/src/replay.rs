@@ -14,7 +14,7 @@ use crate::naming::{
 };
 use crate::storage::StorageType;
 use crate::storage::sqlite::SqliteHandler;
-use crate::{RecordingContext, SharedConfig};
+use crate::{RecordingContext, SharedConfig, UPDATE_ROWS_AFFECTED_META};
 
 pub struct ReplayConnection {
     recordings_path: PathBuf,
@@ -330,7 +330,11 @@ impl Statement for ReplayStatement {
 
                 self.recorded_options = entry.options;
 
-                Ok(None)
+                Ok(entry
+                    .data
+                    .as_ref()
+                    .and_then(|(schema, _)| schema.metadata().get(UPDATE_ROWS_AFFECTED_META))
+                    .and_then(|rows| rows.parse().ok()))
             }
             StorageType::FileArrowIpc | StorageType::FileParquet => Ok(None),
         }

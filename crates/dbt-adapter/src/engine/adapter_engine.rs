@@ -451,11 +451,13 @@ pub(crate) fn adbc_execute_with_options(
             return Ok((schema, Vec::new(), rows_affected));
         }
 
-        // Redshift and ClickHouse only: other adapters need execute()'s schema metadata
-        // (query_id, BigQuery row counts) that this path drops.
+        // Other adapters need execute()'s schema metadata (query_id, BigQuery
+        // row counts) that this path drops. DuckDB reports the rows a
+        // statement wrote only as the driver's rows_affected, and its result
+        // carries no metadata.
         if matches!(
             adapter_type,
-            AdapterType::Redshift | AdapterType::ClickHouse
+            AdapterType::Redshift | AdapterType::ClickHouse | AdapterType::DuckDB
         ) && !fetch
         {
             let rows_affected = stmt.execute_update()?;

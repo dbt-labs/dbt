@@ -3,7 +3,7 @@ use adbc_core::options::{OptionConnection, OptionStatement, OptionValue};
 use arrow::array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{ArrowError, Schema};
 use dbt_adbc::{Connection, Statement};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs::create_dir_all;
 use std::path::PathBuf;
@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::RecordingContext;
 use crate::SharedConfig;
+use crate::UPDATE_ROWS_AFFECTED_META;
 use crate::error::to_adbc_error;
 use crate::naming::{
     compute_file_name, compute_file_name_for_get_objects, compute_file_name_for_table_schema,
@@ -327,8 +328,17 @@ impl Statement for RecordStatement {
         match result {
             Ok(rows_affected) => {
                 let options = capture_statement_options(self.inner_stmt.as_ref());
+                let metadata = rows_affected
+                    .map(|rows| {
+                        HashMap::from([(UPDATE_ROWS_AFFECTED_META.to_string(), rows.to_string())])
+                    })
+                    .unwrap_or_default();
+                let schema = Arc::new(Schema::new_with_metadata(
+                    Vec::<arrow_schema::Field>::new(),
+                    metadata,
+                ));
                 sqlite_handler
-                    .write_execute(&unique_id, sql, &[], Arc::new(Schema::empty()), &options)
+                    .write_execute(&unique_id, sql, &[], schema, &options)
                     .map_err(|e| to_adbc_error(e, Some(&path)))?;
                 Ok(rows_affected)
             }
