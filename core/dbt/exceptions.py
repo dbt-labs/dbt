@@ -1,3 +1,5 @@
+import functools
+import inspect
 import io
 import json
 import re
@@ -20,6 +22,34 @@ from dbt_common.exceptions import (
 
 if TYPE_CHECKING:
     import agate
+
+
+def _picklable_via_init(cls):
+    """Make an exception class picklable when it is raised with keyword arguments.
+
+    BaseException only remembers positional constructor args, so an exception built as
+    Foo(node=node, name="x") has args == () and cannot be unpickled (this hangs
+    multiprocessing pools). Record the constructor arguments and rebuild from them,
+    then restore the rest of the instance state.
+    """
+    init = cls.__init__
+    signature = inspect.signature(init)
+
+    @functools.wraps(init)
+    def __init__(self, *args, **kwargs):
+        if "_init_args" not in self.__dict__:
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            self._init_args = tuple(list(bound.arguments.values())[1:])
+        init(self, *args, **kwargs)
+
+    def __reduce__(self):
+        state = {k: v for k, v in self.__dict__.items() if k != "_init_args"}
+        return (type(self), self._init_args, state)
+
+    cls.__init__ = __init__
+    cls.__reduce__ = __reduce__
+    return cls
 
 
 class ContractBreakingChangeError(DbtRuntimeError):
@@ -479,6 +509,7 @@ class DocArgsError(CompilationError):
         return msg
 
 
+@_picklable_via_init
 class DocTargetNotFoundError(CompilationError):
     def __init__(
         self, node, target_doc_name: str, target_doc_package: Optional[str] = None
@@ -865,6 +896,7 @@ class EnvVarMissingError(ParsingError):
         return msg
 
 
+@_picklable_via_init
 class TargetNotFoundError(CompilationError):
     def __init__(
         self,
@@ -1161,6 +1193,7 @@ class UnrecognizedCredentialTypeError(CompilationError):
 # jinja exceptions
 
 
+@_picklable_via_init
 class PatchTargetNotFoundError(CompilationError):
     def __init__(self, patches: Dict):
         self.patches = patches
@@ -1183,6 +1216,7 @@ class MissingRelationError(CompilationError):
         super().__init__(msg=msg)
 
 
+@_picklable_via_init
 class AmbiguousAliasError(CompilationError):
     def __init__(self, node_1, node_2, duped_name=None):
         self.node_1 = node_1
@@ -1204,6 +1238,7 @@ class AmbiguousAliasError(CompilationError):
         return msg
 
 
+@_picklable_via_init
 class AmbiguousResourceNameRefError(CompilationError):
     def __init__(self, duped_name, unique_ids, node=None):
         self.duped_name = duped_name
@@ -1245,6 +1280,7 @@ class AmbiguousCatalogMatchError(CompilationError):
         return msg
 
 
+@_picklable_via_init
 class DependencyNotFoundError(CompilationError):
     def __init__(self, node, node_description, required_pkg):
         self.node = node
@@ -1285,6 +1321,7 @@ class DuplicatePatchPathError(CompilationError):
 
 
 # should this inherit ParsingError instead?
+@_picklable_via_init
 class DuplicateResourceNameError(CompilationError):
     def __init__(self, node_1, node_2):
         self.node_1 = node_1
