@@ -330,7 +330,8 @@ impl DbConfig {
             AdapterType::Athena
             | AdapterType::Starburst
             | AdapterType::Dremio
-            | AdapterType::Oracle => &[],
+            | AdapterType::Oracle
+            | AdapterType::MotherDuck => &[],
             AdapterType::Spark => &[
                 "method",
                 "host",

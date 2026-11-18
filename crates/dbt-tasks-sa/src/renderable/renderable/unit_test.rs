@@ -1121,6 +1121,7 @@ fn infer_unit_test_expected_schema(
     // introspection (never in system.columns), so infer via the query schema.
     let materialization = if unit_test.node_adapter() == AdapterType::DuckDB
         || unit_test.node_adapter() == AdapterType::ClickHouse
+        || unit_test.node_adapter() == AdapterType::MotherDuck
         || options.use_query_schema_fallback
     {
         r#"
@@ -2673,7 +2674,7 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
                 DatabricksTyping::is_timestamp_ntz(ref_type)
                     || dbt_adapter::sql_types::databricks::is_complex_type(ref_type)
             }
-            AdapterType::DuckDB => {
+            AdapterType::DuckDB | AdapterType::MotherDuck => {
                 // DuckDB distinct types are wrapped as FixedSizeList(Field(name, ..), 1)
                 match ref_type {
                     DataType::FixedSizeList(_, 1) => true,

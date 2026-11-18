@@ -82,7 +82,8 @@ pub fn is_update_statement(sql: &str, adapter_type: AdapterType) -> bool {
         | AdapterType::Datafusion
         | AdapterType::Dremio
         | AdapterType::Oracle
-        | AdapterType::LakeCompute => false,
+        | AdapterType::LakeCompute
+        | AdapterType::MotherDuck => false,
     }
 }
 
@@ -236,6 +237,7 @@ mod tests {
             AdapterType::Databricks,
             AdapterType::Postgres,
             AdapterType::DuckDB,
+            AdapterType::MotherDuck,
         ] {
             assert!(!is_update_statement(
                 "CREATE TABLE foo (id int)",

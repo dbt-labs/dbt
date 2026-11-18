@@ -1966,7 +1966,10 @@ impl DbtProjectCompilation {
             }
         };
 
-        let is_duckdb_adapter = self.adapter_type() == AdapterType::DuckDB;
+        let is_duckdb_adapter = matches!(
+            self.adapter_type(),
+            AdapterType::DuckDB | AdapterType::MotherDuck
+        );
 
         // Sidecar/service schemas and all remote entries in the epoch cache share
         // this directory, so clear it before loading schemas from the current run.

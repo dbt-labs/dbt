@@ -156,7 +156,7 @@ pub fn push_value_as_sql_literal(adapter_type: AdapterType, value: &Value, resul
 /// DuckDB, `%s` otherwise. Backs the `get_binding_char` adapter method.
 pub fn binding_char(adapter_type: AdapterType) -> &'static str {
     match adapter_type {
-        AdapterType::Fabric | AdapterType::DuckDB => "?",
+        AdapterType::Fabric | AdapterType::DuckDB | AdapterType::MotherDuck => "?",
         _ => "%s",
     }
 }

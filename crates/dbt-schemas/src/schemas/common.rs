@@ -1081,6 +1081,14 @@ pub fn constraint_support(
         (LakeCompute, Check) => NotSupported,
         (LakeCompute, Custom) => NotSupported,
 
+        // MotherDuck - follows DuckDB
+        (MotherDuck, NotNull) => Enforced,
+        (MotherDuck, ForeignKey) => Enforced,
+        (MotherDuck, Unique) => NotEnforced,
+        (MotherDuck, PrimaryKey) => NotEnforced,
+        (MotherDuck, Check) => NotSupported,
+        (MotherDuck, Custom) => NotSupported,
+
         // Fabric
         (Fabric, Check) => NotSupported,
         (Fabric, NotNull) => Enforced,
