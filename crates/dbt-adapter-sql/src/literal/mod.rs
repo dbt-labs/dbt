@@ -27,7 +27,8 @@ pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
         | AdapterType::Datafusion
         | AdapterType::Dremio
         | AdapterType::Oracle
-        | AdapterType::LakeCompute => s.replace('\'', "''"),
+        | AdapterType::LakeCompute
+        | AdapterType::MotherDuck => s.replace('\'', "''"),
     }
 }
 

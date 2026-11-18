@@ -405,7 +405,7 @@ impl AdapterImpl {
                         DuckDB => {
                             Box::new(DuckDBMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
-                        LakeCompute => {
+                        LakeCompute | MotherDuck => {
                             Box::new(DuckDBMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
                         Fabric => {
@@ -754,7 +754,9 @@ impl AdapterImpl {
         use DbtIncrementalStrategy::*;
 
         match self.adapter_type() {
-            Postgres | DuckDB | LakeCompute => &[Append, DeleteInsert, Merge, Microbatch],
+            Postgres | DuckDB | LakeCompute | MotherDuck => {
+                &[Append, DeleteInsert, Merge, Microbatch]
+            }
             Snowflake => &[Append, DeleteInsert, InsertOverwrite, Merge, Microbatch],
             Bigquery => &[Append],
             Databricks => &[
@@ -1329,14 +1331,14 @@ impl AdapterImpl {
             }
             Replay(
                 adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
-                | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena
-                | Trino | Datafusion | Dremio | Oracle),
+                | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+                | Datafusion | Dremio | Oracle | MariaDB | MotherDuck),
                 _,
             )
             | Impl(
                 adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
-                | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena
-                | Trino | Datafusion | Dremio | Oracle),
+                | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+                | Datafusion | Dremio | Oracle | MariaDB | MotherDuck),
                 _,
             ) => Err(AdapterError::new(
                 AdapterErrorKind::Internal,
@@ -1367,8 +1369,8 @@ impl AdapterImpl {
                 self.list_schemas_via_adbc(state, database)
             }
             Snowflake | Databricks | Redshift | Spark | DuckDB | Postgres | Salesforce | Fabric
-            | ClickHouse | Exasol | MariaDB | Athena | Starburst | Trino | Datafusion | Dremio
-            | Oracle | LakeCompute | Bigquery => {
+            | ClickHouse | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle
+            | LakeCompute | Bigquery | MariaDB | MotherDuck => {
                 use crate::macro_exec::execute_macro_wrapper;
                 use minijinja::value::{Kwargs, Value};
 
@@ -1476,7 +1478,7 @@ impl AdapterImpl {
                 }
                 Postgres => "nspname",
                 DuckDB => "schema_name",
-                LakeCompute => "schema_name",
+                LakeCompute | MotherDuck => "schema_name",
                 Fabric => "schema",
                 // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/include/clickhouse/macros/adapters.sql
                 ClickHouse => "name",
@@ -1791,8 +1793,8 @@ impl AdapterImpl {
                 )])))
             }
             Postgres | Bigquery | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 let err = format!(
                     "describe_dynamic_table is not supported by the {} adapter",
                     adapter_type
@@ -1856,8 +1858,8 @@ impl AdapterImpl {
                 )])))
             }
             Postgres | Bigquery | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 let err = format!(
                     "describe_interactive_table is not supported by the {} adapter",
                     adapter_type
@@ -2084,7 +2086,7 @@ impl AdapterImpl {
         name: &str,
         token: CancellationToken,
     ) -> AdapterResult<Option<bool>> {
-        fn duckdb_is_motherduck(config: &AdapterConfig) -> bool {
+        let duckdb_is_motherduck = |config: &AdapterConfig| -> bool {
             matches!(
                 dbt_auth::DuckDbTarget::from_config(config),
                 Ok(dbt_auth::DuckDbTarget::MotherduckBrowserLogin { .. })
@@ -2092,11 +2094,14 @@ impl AdapterImpl {
                     | Ok(dbt_auth::DuckDbTarget::MotherduckSaasBrowserLogin { .. })
                     | Ok(dbt_auth::DuckDbTarget::MotherduckSaasTokenAuth { .. })
             )
-        }
+        };
 
         // All-platform features.
         if name == "transactions" {
             if self.adapter_type() == DuckDB && duckdb_is_motherduck(self.engine().get_config()) {
+                return Ok(Some(false));
+            }
+            if self.adapter_type() == MotherDuck {
                 return Ok(Some(false));
             }
             return Ok(Some(true));
@@ -2110,6 +2115,17 @@ impl AdapterImpl {
                     emit_warn_log_message(
                         ErrorCode::InvalidArgument,
                         format!("Unrecognized feature: {name} for {} adapter", DuckDB),
+                    );
+                    Ok(None)
+                }
+            },
+            // FIXME: may be dead code, kept for safety
+            MotherDuck => match name {
+                "motherduck" => Ok(Some(true)),
+                _ => {
+                    emit_warn_log_message(
+                        ErrorCode::InvalidArgument,
+                        format!("Unrecognized feature: {name} for {} adapter", MotherDuck),
                     );
                     Ok(None)
                 }
@@ -2317,9 +2333,9 @@ impl AdapterImpl {
             // NOTE: This is the default behavior. If said adapter type does not
             // have a get_columns_in_relation() macro, it will fail with a
             // "macro does not exist" error
-            Athena | ClickHouse | Datafusion | Dremio | DuckDB | LakeCompute | Exasol | MariaDB
-            | Fabric | Oracle | Postgres | Redshift | Salesforce | Snowflake | Spark
-            | Starburst | Trino => execute_macro(
+            Athena | ClickHouse | Datafusion | Dremio | DuckDB | LakeCompute | Exasol | Fabric
+            | Oracle | Postgres | Redshift | Salesforce | Snowflake | Spark | Starburst | Trino
+            | MariaDB | MotherDuck => execute_macro(
                 state,
                 &[RelationObject::new(relation.to_owned()).into_value()],
                 "get_columns_in_relation",
@@ -2611,8 +2627,8 @@ impl AdapterImpl {
             }
             Impl(
                 Snowflake | Databricks | Redshift | Salesforce | Postgres | Spark | DuckDB
-                | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle,
+                | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+                | Datafusion | Dremio | Oracle | MariaDB | MotherDuck,
                 _,
             ) => {
                 // downcast relation
@@ -2662,8 +2678,8 @@ impl AdapterImpl {
             }
             Impl(
                 Postgres | Bigquery | Databricks | Redshift | Spark | DuckDB | LakeCompute | Fabric
-                | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino | Datafusion | Dremio
-                | Oracle,
+                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle
+                | MariaDB | MotherDuck,
                 _,
             ) => {
                 if quote_config.unwrap_or(true) {
@@ -2808,7 +2824,7 @@ impl AdapterImpl {
             Replay(_, replay) => {
                 replay.replay_expand_target_column_types(state, from_relation, to_relation)
             }
-            Impl(Bigquery, _) | Impl(DuckDB, _) | Impl(LakeCompute, _) => {
+            Impl(Bigquery, _) | Impl(DuckDB, _) | Impl(LakeCompute, _) | Impl(MotherDuck, _) => {
                 // This method is a noop for BigQuery and DuckDB.
                 // BigQuery: https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L260-L261
                 // DuckDB: type widening (e.g. INT→BIGINT) is handled implicitly;
@@ -2966,8 +2982,8 @@ impl AdapterImpl {
                 Ok(none_value())
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | Fabric | DuckDB
-            | LakeCompute | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+            | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3011,8 +3027,8 @@ impl AdapterImpl {
                 Ok(result)
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | Exasol | MariaDB | Starburst | Athena | Trino | Datafusion
-            | Dremio | Oracle => {
+            | LakeCompute | Fabric | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
+            | Oracle | MariaDB | MotherDuck => {
                 let mut result = vec![];
                 for (_, column) in columns_map {
                     let col_name = if column.quote.unwrap_or(false) {
@@ -3248,7 +3264,8 @@ impl AdapterImpl {
         }
 
         match self.adapter_type() {
-            Postgres | Bigquery | DuckDB | LakeCompute | Exasol | MariaDB | ClickHouse => {
+            Postgres | Bigquery | DuckDB | LakeCompute | Exasol | ClickHouse | MariaDB
+            | MotherDuck => {
                 let grantee_cols = record_batch.column_values::<StringArray>("grantee")?;
                 let privilege_cols = record_batch.column_values::<StringArray>("privilege_type")?;
 
@@ -3472,8 +3489,8 @@ impl AdapterImpl {
                 Ok(AgateTable::from_record_batch(Arc::new(catalog)))
             }
             Snowflake | Bigquery | Databricks | Spark | DuckDB | LakeCompute | Postgres
-            | Salesforce | Fabric | ClickHouse | Exasol | MariaDB | Athena | Starburst | Trino
-            | Datafusion | Dremio | Oracle => Err(AdapterError::new(
+            | Salesforce | Fabric | ClickHouse | Exasol | Athena | Starburst | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => Err(AdapterError::new(
                 AdapterErrorKind::NotSupported,
                 "build_catalog_from_show_tables_and_svv_columns is only supported for Redshift",
             )),
@@ -3488,8 +3505,8 @@ impl AdapterImpl {
         match self.adapter_type() {
             Bigquery => nest_column_data_types(columns, constraints),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3523,8 +3540,8 @@ impl AdapterImpl {
         match self.adapter_type() {
             Bigquery => Ok(Value::from(render_struct_projection(col_name, data_type))),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3627,8 +3644,8 @@ impl AdapterImpl {
                 Ok(none_value())
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3691,8 +3708,8 @@ impl AdapterImpl {
                 Self::parse_dataset_location(&batch)
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3749,8 +3766,8 @@ impl AdapterImpl {
                 Ok(none_value())
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3824,7 +3841,7 @@ impl AdapterImpl {
 
                 Ok(none_value())
             }
-            DuckDB => {
+            DuckDB | MotherDuck => {
                 // DuckDB cannot access local files when `motherduck_saas_mode`
                 // is enabled. In that case, we need to load the dataset in
                 // memory and bulk-ingest it into the motherduck instance
@@ -3947,8 +3964,8 @@ impl AdapterImpl {
                 Ok(none_value())
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4096,7 +4113,7 @@ impl AdapterImpl {
                     ))
                 }
             }
-            Impl(adapter_type @ (Postgres | DuckDB | LakeCompute), engine) => {
+            Impl(adapter_type @ (Postgres | DuckDB | LakeCompute | MotherDuck), engine) => {
                 if let Some(configured_database) = engine.get_configured_database_name() {
                     if database == configured_database {
                         Ok(Value::from(()))
@@ -4213,8 +4230,9 @@ impl AdapterImpl {
                 }
             }
             adapter_type @ (Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark
-            | DuckDB | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB
-            | Starburst | Athena | Trino | Datafusion | Dremio | Oracle) => {
+            | DuckDB | LakeCompute | Fabric | ClickHouse | Exasol | Starburst
+            | Athena | Trino | Datafusion | Dremio | Oracle | MariaDB
+            | MotherDuck) => {
                 unimplemented!(
                     "is_replaceable is only available with BigQuery adapter, not {}",
                     adapter_type
@@ -4279,8 +4297,8 @@ impl AdapterImpl {
                 Ok(Value::from_object(validated_config))
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4303,8 +4321,8 @@ impl AdapterImpl {
                 adapter_type,
             ),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4339,8 +4357,8 @@ impl AdapterImpl {
                 )
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4366,8 +4384,8 @@ impl AdapterImpl {
                 Ok(Value::from_serialize(options))
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => Err(minijinja::Error::new(
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => Err(minijinja::Error::new(
                 minijinja::ErrorKind::InvalidOperation,
                 "get_common_options is only available with BigQuery adapter",
             )),
@@ -4409,8 +4427,8 @@ impl AdapterImpl {
                 Ok(columns_to_value(result))
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4488,7 +4506,7 @@ impl AdapterImpl {
             Impl(Redshift, engine) => {
                 redshift::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
-            Impl(DuckDB, engine) => {
+            Impl(DuckDB | MotherDuck, engine) => {
                 duckdb::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(LakeCompute, engine) => {
@@ -4611,8 +4629,8 @@ impl AdapterImpl {
                 Ok(Value::from(result))
             }
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with Databricksadapter")
             }
         }
@@ -4764,8 +4782,8 @@ impl AdapterImpl {
             }
 
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -4842,8 +4860,8 @@ impl AdapterImpl {
                 Ok(())
             }
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -4951,8 +4969,8 @@ impl AdapterImpl {
                 Ok(!use_managed_iceberg)
             }
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -5326,8 +5344,8 @@ impl AdapterImpl {
                 Ok(())
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
-            | LakeCompute | Fabric | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }

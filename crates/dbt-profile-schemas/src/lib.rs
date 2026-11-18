@@ -137,6 +137,9 @@ impl ProfileSetup {
                     existing.map(|c| c.as_ref()),
                 ))))
             }
+            MotherDuck => {
+                todo!("setup_motherduck_profile")
+            }
         }
     }
 }

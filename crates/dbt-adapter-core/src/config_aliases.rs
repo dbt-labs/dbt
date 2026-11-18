@@ -34,7 +34,10 @@ pub fn config_aliases(adapter_type: AdapterType) -> &'static [(&'static str, &'s
         // dbt-redshift 1.9.0 and 1.9.5 (identical), `dbt/adapters/redshift/connections.py:156`.
         AdapterType::Redshift => &[("dbname", "database"), ("pass", "password")],
         // Verified: these adapters' `Credentials` declare no `_ALIASES`.
-        AdapterType::Snowflake | AdapterType::Spark | AdapterType::DuckDB => &[],
+        AdapterType::Snowflake
+        | AdapterType::Spark
+        | AdapterType::DuckDB
+        | AdapterType::MotherDuck => &[],
         // TODO(fs#13424): `_ALIASES` not transcribed for this adapter -- its Python package was
         // not vendored in the local cache used to populate this map.
         AdapterType::Salesforce

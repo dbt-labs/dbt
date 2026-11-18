@@ -1367,6 +1367,7 @@ fn expected_type_rendering_for(backend: AdapterType) -> Vec<(u32, SqlType, &'sta
                 Exasol => todo!("Exasol tests not implemented yet"),
                 Spark => todo!("Spark tests not implemented yet"),
                 Fabric => todo!("Fabric tests not implemented yet"),
+                MotherDuck => todo!("MotherDuck tests not implemented yet"),
                 _ => generic,
             };
             (line, t, s)
@@ -1929,6 +1930,32 @@ fn duckdb_from_arrow_type_keeps_tinyint_and_unsigned_integers() {
     assert_eq!(render(DataType::UInt16), "USMALLINT");
     assert_eq!(render(DataType::UInt32), "UINTEGER");
     assert_eq!(render(DataType::UInt64), "UBIGINT");
+}
+
+#[test]
+fn motherduck_from_arrow_type_matches_duckdb() {
+    use arrow_schema::{DataType, Field, TimeUnit};
+    use std::sync::Arc;
+
+    let item = Arc::new(Field::new("item", DataType::Int64, true));
+    for data_type in [
+        DataType::Int8,
+        DataType::UInt8,
+        DataType::UInt16,
+        DataType::UInt32,
+        DataType::UInt64,
+        DataType::Timestamp(TimeUnit::Second, None),
+        DataType::Timestamp(TimeUnit::Millisecond, None),
+        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+        DataType::List(item),
+    ] {
+        assert_eq!(
+            SqlType::from_arrow_type(MotherDuck, &data_type).to_string(MotherDuck),
+            SqlType::from_arrow_type(DuckDB, &data_type).to_string(DuckDB),
+            "{data_type}"
+        );
+    }
 }
 
 #[test]

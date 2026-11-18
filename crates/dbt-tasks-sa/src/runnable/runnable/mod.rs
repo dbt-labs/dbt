@@ -1410,7 +1410,10 @@ pub fn prefer_sql_for_node(node: &dyn InternalDbtNodeAttributes) -> bool {
     if node.as_any().is::<DbtSnapshot>() {
         true
     } else if node.as_any().is::<DbtModel>() {
-        node.node_adapter() == AdapterType::DuckDB
+        matches!(
+            node.node_adapter(),
+            AdapterType::DuckDB | AdapterType::MotherDuck
+        )
     } else {
         false
     }

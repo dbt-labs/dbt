@@ -60,7 +60,7 @@ use dbt_tasks_core::{
 
 use dbt_common::{
     DiscreteEventEmitter, ErrorCode, FsResult,
-    artifact_io::write_artifact_to_file,
+    artifact_io::{ArtifactSerialization, write_artifact_to_file},
     cancellation::CancellationToken,
     constants::{DBT_MANIFEST_JSON, DBT_SEMANTIC_MANIFEST_JSON},
     fail_fast::FailFast,
@@ -455,7 +455,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
             // Write semantic manifest
             if !resolved_state.semantic_layer_spec_is_legacy {
                 write_artifact_to_file(
-                    &semantic_manifest,
+                    ArtifactSerialization::WithYamlFlattening(&semantic_manifest),
                     ArtifactType::SemanticManifest,
                     &self.arg.io.out_dir,
                     DBT_SEMANTIC_MANIFEST_JSON,
@@ -468,7 +468,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
             if self.arg.command == FsCommand::Parse {
                 let dbt_manifest = self.memoized_manifest(invocation_id, resolved_state);
                 write_artifact_to_file(
-                    &dbt_manifest,
+                    ArtifactSerialization::Direct(&dbt_manifest),
                     ArtifactType::Manifest,
                     &self.arg.io.out_dir,
                     DBT_MANIFEST_JSON,
@@ -656,7 +656,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
 
                     let dbt_manifest = self.memoized_manifest(invocation_id, resolved_state);
                     write_artifact_to_file(
-                        dbt_manifest,
+                        ArtifactSerialization::Direct(dbt_manifest),
                         ArtifactType::Manifest,
                         &self.arg.io.out_dir,
                         DBT_MANIFEST_JSON,
@@ -1966,7 +1966,10 @@ impl DbtProjectCompilation {
             }
         };
 
-        let is_duckdb_adapter = self.adapter_type() == AdapterType::DuckDB;
+        let is_duckdb_adapter = matches!(
+            self.adapter_type(),
+            AdapterType::DuckDB | AdapterType::MotherDuck
+        );
 
         // Sidecar/service schemas and all remote entries in the epoch cache share
         // this directory, so clear it before loading schemas from the current run.

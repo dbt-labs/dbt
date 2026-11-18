@@ -321,6 +321,7 @@ pub fn internal_package_names(adapter_type: AdapterType) -> Vec<String> {
         AdapterType::Redshift => packages.push("dbt-postgres".to_string()),
         AdapterType::Databricks => packages.push("dbt-spark".to_string()),
         AdapterType::LakeCompute => packages.push("dbt-duckdb".to_string()),
+        AdapterType::MotherDuck => packages.push("dbt-duckdb".to_string()),
         _ => {}
     }
     packages

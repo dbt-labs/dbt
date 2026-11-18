@@ -552,7 +552,9 @@ pub(crate) fn classify_attach_entry(item: &dbt_yaml::Value) -> Option<(String, &
 /// and the probe would never run.
 pub(crate) fn skips_schema_wide_listing(adapter_type: AdapterType, resolved_catalog: &str) -> bool {
     match adapter_type {
-        AdapterType::DuckDB => is_duckdb_external_iceberg_catalog_database(resolved_catalog),
+        AdapterType::DuckDB | AdapterType::MotherDuck => {
+            is_duckdb_external_iceberg_catalog_database(resolved_catalog)
+        }
         AdapterType::LakeCompute => true,
         _ => false,
     }

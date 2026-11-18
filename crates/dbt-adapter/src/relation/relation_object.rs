@@ -616,14 +616,17 @@ pub fn create_relation_from_source(
         .clone()
         .unwrap_or(database);
 
-    if adapter_type == AdapterType::DuckDB
-        && let Some(external) = duckdb_external_location_for_source(source)?
-    {
-        return Ok(Box::new(
-            Relation::new(AdapterType::DuckDB, database, schema, identifier)
-                .with_quoting(custom_quoting)
-                .with_external(external),
-        ));
+    match adapter_type {
+        AdapterType::DuckDB | AdapterType::MotherDuck => {
+            if let Some(external) = duckdb_external_location_for_source(source)? {
+                return Ok(Box::new(
+                    Relation::new(adapter_type, database, schema, identifier)
+                        .with_quoting(custom_quoting)
+                        .with_external(external),
+                ));
+            }
+        }
+        _ => {}
     }
 
     create_relation(
@@ -1165,17 +1168,23 @@ mod tests {
     fn duckdb_source_external_location_formats_and_quotes_path() {
         let source = source_with_meta_location("data/{name}.csv");
 
-        let relation = create_relation_from_source(
-            AdapterType::DuckDB,
-            "main".to_string(),
-            "raw".to_string(),
-            "orders".to_string(),
-            DEFAULT_RESOLVED_QUOTING,
-            &source,
-        )
-        .unwrap();
+        for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+            let relation = create_relation_from_source(
+                adapter_type,
+                "main".to_string(),
+                "raw".to_string(),
+                "orders".to_string(),
+                DEFAULT_RESOLVED_QUOTING,
+                &source,
+            )
+            .unwrap();
 
-        assert_eq!(relation.render_self_as_str(), "'data/orders.csv'");
+            assert_eq!(
+                relation.render_self_as_str(),
+                "'data/orders.csv'",
+                "{adapter_type:?}"
+            );
+        }
     }
 
     #[test]
@@ -1183,17 +1192,23 @@ mod tests {
         let mut source = source_with_meta_location("ignored/{name}.csv");
         source.deprecated_config.external_location = Some("read_csv('orders.csv')".to_string());
 
-        let relation = create_relation_from_source(
-            AdapterType::DuckDB,
-            "main".to_string(),
-            "raw".to_string(),
-            "orders".to_string(),
-            DEFAULT_RESOLVED_QUOTING,
-            &source,
-        )
-        .unwrap();
+        for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+            let relation = create_relation_from_source(
+                adapter_type,
+                "main".to_string(),
+                "raw".to_string(),
+                "orders".to_string(),
+                DEFAULT_RESOLVED_QUOTING,
+                &source,
+            )
+            .unwrap();
 
-        assert_eq!(relation.render_self_as_str(), "read_csv('orders.csv')");
+            assert_eq!(
+                relation.render_self_as_str(),
+                "read_csv('orders.csv')",
+                "{adapter_type:?}"
+            );
+        }
     }
 
     #[test]

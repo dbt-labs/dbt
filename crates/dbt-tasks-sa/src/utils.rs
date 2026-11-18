@@ -8,7 +8,7 @@ use dbt_adapter::sql_types::TypeOpsFactory;
 use dbt_adapter::{Adapter, AdapterResult};
 use dbt_adapter::{Column, ColumnBuilder};
 use dbt_adapter_core::AdapterType;
-use dbt_common::artifact_io::write_artifact_to_file;
+use dbt_common::artifact_io::{ArtifactSerialization, write_artifact_to_file};
 use dbt_common::constants::DBT_MANIFEST_JSON;
 use dbt_common::io_args::IoArgs;
 use dbt_common::path::DbtPath;
@@ -344,7 +344,7 @@ fn update_resolved_states_manifest_with_schemas_and_compiled_sql_core(
         && arg.write_json
     {
         write_artifact_to_file(
-            dbt_manifest,
+            ArtifactSerialization::Direct(dbt_manifest),
             ArtifactType::Manifest,
             &io.out_dir,
             DBT_MANIFEST_JSON,

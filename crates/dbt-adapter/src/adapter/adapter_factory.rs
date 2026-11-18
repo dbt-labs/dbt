@@ -51,6 +51,7 @@ pub fn backend_of(adapter_type: AdapterType) -> Backend {
         AdapterType::Dremio => todo!("Dremio"),
         AdapterType::Oracle => todo!("Oracle"),
         AdapterType::Datafusion => todo!("Datafusion"),
+        AdapterType::MotherDuck => Backend::MotherDuck,
     }
 }
 

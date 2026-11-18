@@ -714,7 +714,8 @@ impl Adapter {
                 | AdapterType::Spark
                 | AdapterType::Databricks
                 | AdapterType::DuckDB
-                | AdapterType::LakeCompute => {
+                | AdapterType::LakeCompute
+                | AdapterType::MotherDuck => {
                     format!("({expr1} IS NOT DISTINCT FROM {expr2})")
                 }
                 _ => format!(
@@ -2578,7 +2579,8 @@ impl Adapter {
                     | AdapterType::Datafusion
                     | AdapterType::Dremio
                     | AdapterType::Oracle
-                    | AdapterType::LakeCompute => Err(AdapterError::new(
+                    | AdapterType::LakeCompute
+                    | AdapterType::MotherDuck => Err(AdapterError::new(
                         AdapterErrorKind::NotSupported,
                         format!("has_dbr_capability is only supported by the Databricks adapter. Use the portable adapter.has_feature(\"{}\") instead.", capability_name),
                     )
@@ -2609,7 +2611,8 @@ impl Adapter {
                 | AdapterType::Datafusion
                 | AdapterType::Dremio
                 | AdapterType::Oracle
-                | AdapterType::LakeCompute => Ok(Value::from(false)),
+                | AdapterType::LakeCompute
+                | AdapterType::MotherDuck => Ok(Value::from(false)),
             },
         }
     }
@@ -2685,6 +2688,7 @@ impl Adapter {
     #[tracing::instrument(skip(self, state), level = "trace")]
     pub fn is_motherduck(&self, state: &State) -> AdapterResult<Value> {
         match self.adapter_type() {
+            AdapterType::MotherDuck => Ok(Value::from(true)),
             AdapterType::DuckDB => self
                 .has_feature(state, &[Value::from("motherduck")])
                 .map_err(|e| AdapterError::new(AdapterErrorKind::UnexpectedResult, e.to_string())),
@@ -2701,7 +2705,7 @@ impl Adapter {
     pub fn disable_transactions(&self, state: &State) -> AdapterResult<Value> {
         let result = match &self.inner {
             Typed { adapter, .. } => match adapter.adapter_type() {
-                AdapterType::DuckDB => {
+                AdapterType::DuckDB | AdapterType::MotherDuck => {
                     let transactions_enabled = adapter.has_feature(
                         state,
                         "transactions",

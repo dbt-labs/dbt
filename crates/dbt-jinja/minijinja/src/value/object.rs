@@ -768,6 +768,7 @@ impl DynObject {
 }
 
 impl Hash for DynObject {
+    #[inline(never)]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         if let Some(iter) = self.try_iter_pairs() {
             for (key, value) in iter {
