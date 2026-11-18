@@ -599,6 +599,7 @@ mod quote_ident_tests {
         AdapterType::Trino,
         AdapterType::Datafusion,
         AdapterType::LakeCompute,
+        AdapterType::MariaDB,
         AdapterType::MotherDuck,
     ];
 
@@ -655,6 +656,7 @@ mod quote_ident_tests {
         quote_ident_matches_trino => AdapterType::Trino,
         quote_ident_matches_datafusion => AdapterType::Datafusion,
         quote_ident_matches_lakecompute => AdapterType::LakeCompute,
+        quote_ident_matches_mariadb => AdapterType::MariaDB,
         quote_ident_matches_motherduck => AdapterType::MotherDuck,
     }
 
