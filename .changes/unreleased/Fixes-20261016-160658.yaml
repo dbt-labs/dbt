@@ -1,0 +1,7 @@
+kind: Fixes
+body: Accept Databricks row_filter as a model config so it no longer emits CustomKeyInConfigDeprecation
+time: 2026-10-16T16:06:58.930+00:00
+custom:
+    author: CodeAlex52
+    issue: "16767"
+    project: dbt-core
