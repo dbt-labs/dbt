@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from click.testing import CliRunner
 
@@ -77,7 +79,7 @@ class BaseConfigProject:
                         "schema": "jaffle_shop",
                         "host": "localhost",
                         "user": "root",
-                        "port": 5432,
+                        "port": int(os.getenv("POSTGRES_TEST_PORT", 5432)),
                         "pass": "password",
                     }
                 },
