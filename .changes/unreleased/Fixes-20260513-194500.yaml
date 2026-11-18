@@ -1,0 +1,6 @@
+kind: Fixes
+body: "Improve error messaging when a `unique_key` passed to a snapshot is not actually unique, preventing generic database exceptions"
+time: 2026-05-13T19:45:00.000000+05:30
+custom:
+    Author: Shaan-alpha
+    Issue: "10864"
