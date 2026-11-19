@@ -59,10 +59,7 @@ impl CatalogRelation {
 
         match (model_catalog_name.as_deref(), catalogs.as_ref()) {
             (None, _) if !wants_iceberg => Ok(Self::default_catalog_relation_bigquery()),
-            (None, _) => Err(AdapterError::new(
-                AdapterErrorKind::Configuration,
-                "On Bigquery, table_format=iceberg requires catalogs.yml and a `catalog_name` that selects a write integration.",
-            )),
+            (None, _) => Self::build_bigquery_without_catalogs_yml(model),
             (Some(catalog_name), None) => Err(AdapterError::new(
                 AdapterErrorKind::Configuration,
                 format!(

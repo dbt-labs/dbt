@@ -26,6 +26,7 @@ use crate::schemas::common::{
     Constraint, ConstraintSupport, ConstraintType, ExternalTable, PersistDocsConfig,
     RowFilterConfig, constraint_support, hooks_equal, normalize_sql,
 };
+use crate::schemas::dbt_catalogs::TableFormat;
 use crate::schemas::dbt_column::{DbtColumnRef, deserialize_dbt_columns, serialize_dbt_columns};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::log_state_mod_diff;
@@ -6084,8 +6085,6 @@ pub struct DbtModel {
 }
 
 impl DbtModel {
-    /// Whether this is a BigQuery table or incremental model stored as Iceberg in a
-    /// resolved `biglake_metastore` catalog without `lakehouse_catalog`.
     pub fn is_bigquery_managed_iceberg_table(
         &self,
         catalogs: Option<&crate::schemas::dbt_catalogs::DbtCatalogs>,
@@ -6098,6 +6097,23 @@ impl DbtModel {
         {
             return Ok(false);
         }
+        let catalog_name = self
+            .__model_attr__
+            .catalog_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.eq_ignore_ascii_case("none"));
+        if catalog_name.is_none() {
+            if self.__common_attr__.language.as_deref() == Some("python") {
+                return Ok(false);
+            }
+            let table_format = TableFormat::parse(self.__model_attr__.table_format.as_deref())
+                .map_err(|err| {
+                    let message = format!("Model '{}': {err}", self.unique_id());
+                    Box::new(err.with_context(message))
+                })?;
+            return Ok(table_format.is_iceberg());
+        }
         let Some(catalogs) = catalogs else {
             return Ok(false);
         };
@@ -6105,8 +6121,7 @@ impl DbtModel {
         // unmanaged: the neighbouring parse checks propagate the same failure.
         let view = catalogs.view()?;
         Ok(view.catalogs.iter().any(|catalog| {
-            Some(catalog.name) == self.__model_attr__.catalog_name.as_deref()
-                && catalog.is_bigquery_managed_iceberg()
+            Some(catalog.name) == catalog_name && catalog.is_bigquery_managed_iceberg()
         }))
     }
 
@@ -8071,6 +8086,7 @@ mod tests {
     fn bigquery_managed_iceberg_table_classification() {
         use crate::schemas::common::DbtMaterialization;
         use crate::schemas::dbt_catalogs::DbtCatalogs;
+        use dbt_common::ErrorCode;
 
         let value: dbt_yaml::Value = dbt_yaml::from_str(
             r#"
@@ -8096,6 +8112,7 @@ catalogs:
 
         for (name, format, materialized, readable) in [
             (Some("bq"), None, DbtMaterialization::Table, true),
+            (Some(" bq "), None, DbtMaterialization::Table, true),
             (Some("bq"), None, DbtMaterialization::Incremental, true),
             (
                 Some("bq"),
@@ -8105,8 +8122,20 @@ catalogs:
             ),
             (Some("runtime"), None, DbtMaterialization::Table, false),
             (None, None, DbtMaterialization::Table, false),
-            (None, Some("iceberg"), DbtMaterialization::Table, false),
+            (None, Some("iceberg"), DbtMaterialization::Table, true),
             (Some("unknown"), None, DbtMaterialization::Table, false),
+            (
+                Some("unknown"),
+                Some("iceberg"),
+                DbtMaterialization::Table,
+                false,
+            ),
+            (
+                Some("none"),
+                Some("iceberg"),
+                DbtMaterialization::Table,
+                true,
+            ),
             (Some("bq"), Some("iceberg"), DbtMaterialization::View, false),
             (
                 Some("bq"),
@@ -8128,6 +8157,32 @@ catalogs:
                 "{name:?} {format:?} {materialized:?}"
             );
         }
+
+        let mut bare = DbtModel::default();
+        bare.__base_attr__.adapter = AdapterType::Bigquery;
+        bare.__base_attr__.materialized = DbtMaterialization::Table;
+        bare.__model_attr__.table_format = Some("iceberg".into());
+        assert!(
+            bare.is_bigquery_managed_iceberg_table(None).unwrap(),
+            "a BigQuery Iceberg table does not need catalogs.yml"
+        );
+
+        let mut invalid = bare.clone();
+        invalid.__common_attr__.unique_id = "model.test.invalid_upstream".into();
+        invalid.__model_attr__.table_format = Some("invalid_format".into());
+        let err = invalid.is_bigquery_managed_iceberg_table(None).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
+        let message = err.to_string();
+        assert!(message.contains("'invalid_format'"), "{message}");
+        assert!(message.contains("model.test.invalid_upstream"), "{message}");
+
+        bare.__common_attr__.language = Some("python".into());
+        assert!(
+            !bare
+                .is_bigquery_managed_iceberg_table(Some(&catalogs))
+                .unwrap(),
+            "a BigQuery Python model does not use table_format to write Iceberg"
+        );
 
         // The adapter is part of the predicate: a Snowflake model declaring the same Iceberg
         // catalog is not a BigQuery-managed table.
