@@ -84,7 +84,6 @@ use dbt_schemas::{
 };
 use dbt_state::explain::{StateExplainOptions, execute_state_explain};
 use dbt_tasks_core::{
-    RunTaskResults,
     task_runner_hooks::TaskRunnerHooksFactory,
     utils::{build_run_results_artifact, write_run_results_json_or_warn},
 };
@@ -1007,7 +1006,7 @@ impl<'a> AllPhasesExecutor<'a> {
     }
 
     /// Handle inline compile - print the compiled SQL
-    async fn run_inline_compile(&self, resolved_state: &ResolverState) -> FsResult<()> {
+    async fn run_inline_compile(&self, nodes: &Nodes) -> FsResult<()> {
         debug_assert!(matches!(
             &self.cli.command,
             Command::Core(CoreCommand::Compile(CompileArgs {
@@ -1016,8 +1015,7 @@ impl<'a> AllPhasesExecutor<'a> {
             })),
         ));
         // Find the inline model in the compiled nodes
-        let inline_model = resolved_state
-            .nodes
+        let inline_model = nodes
             .models
             .values()
             .find(|model| model.materialized() == DbtMaterialization::Inline)
@@ -1062,7 +1060,7 @@ impl<'a> AllPhasesExecutor<'a> {
 
     fn emit_selected_compile_output(
         &self,
-        resolved_state: &ResolverState,
+        nodes: &Nodes,
         schedule: &Schedule<String>,
         map_compiled_sql: &HashMap<&str, Option<&str>>,
     ) -> FsResult<()> {
@@ -1084,7 +1082,7 @@ impl<'a> AllPhasesExecutor<'a> {
             return Ok(());
         }
 
-        let Some(model) = resolved_state.nodes.models.get(unique_id) else {
+        let Some(model) = nodes.models.get(unique_id) else {
             return Ok(());
         };
 
@@ -1219,8 +1217,8 @@ impl<'a> AllPhasesExecutor<'a> {
 
     async fn write_json(
         &self,
-        run_task_results: &RunTaskResults,
-        compilation: &DbtProjectCompilation,
+        run_stats: &dbt_schemas::stats::Stats,
+        root_project_name: &str,
         jinja_env: &Arc<JinjaEnv>,
         base_context: &BTreeMap<String, Value>,
         resolved_state: &ResolverState,
@@ -1232,8 +1230,8 @@ impl<'a> AllPhasesExecutor<'a> {
             let metadata_adapter = adapter
                 .metadata_adapter()
                 .expect("Expected implements MetadataAdapter");
-            let relations = metadata_adapter
-                .create_relations_from_executed_nodes(resolved_state, &run_task_results.stats.run);
+            let relations =
+                metadata_adapter.create_relations_from_executed_nodes(resolved_state, run_stats);
             // Returned, not discarded: this is the only fetch on the --write-catalog
             // without --write-metadata path, so a library caller has no other source.
             return Ok(Some(
@@ -1242,7 +1240,7 @@ impl<'a> AllPhasesExecutor<'a> {
                     resolved_state,
                     relations,
                     jinja_env,
-                    compilation.root_project_name(),
+                    root_project_name,
                     base_context,
                     self.arg.as_ref(),
                     20,
@@ -2066,8 +2064,8 @@ impl<'a> AllPhasesExecutor<'a> {
             try_fetch_catalog(
                 &adapter,
                 &resolved_state,
-                &run_task_results,
-                &compilation,
+                &run_task_results.stats.run,
+                compilation.root_project_name(),
                 &jinja_env,
                 self.arg.as_ref(),
             )
@@ -2122,10 +2120,10 @@ impl<'a> AllPhasesExecutor<'a> {
             inline: Some(_), ..
         })) = &self.cli.command
         {
-            return self.run_inline_compile(&resolved_state).await;
+            return self.run_inline_compile(&resolved_state.nodes).await;
         }
 
-        self.emit_selected_compile_output(&resolved_state, &schedule, &map_compiled_sql)?;
+        self.emit_selected_compile_output(&resolved_state.nodes, &schedule, &map_compiled_sql)?;
 
         let schema_store =
             Arc::clone(&compilation_cache_state.schema_store) as Arc<dyn SchemaStoreTrait>;
@@ -2185,8 +2183,8 @@ impl<'a> AllPhasesExecutor<'a> {
             let base_context = build_base_context(&resolved_state, &jinja_env);
             let refetched_catalog = self
                 .write_json(
-                    &run_task_results,
-                    &compilation,
+                    &run_task_results.stats.run,
+                    compilation.root_project_name(),
                     &jinja_env,
                     &base_context,
                     &resolved_state,
@@ -2790,14 +2788,14 @@ pub fn check_options(cli: &Cli) {
 async fn try_fetch_catalog(
     adapter: &Arc<Adapter>,
     resolved_state: &Arc<ResolverState>,
-    run_task_results: &RunTaskResults,
-    compilation: &DbtProjectCompilation,
+    run_stats: &dbt_schemas::stats::Stats,
+    root_project_name: &str,
     jinja_env: &Arc<JinjaEnv>,
     arg: &EvalArgs,
 ) -> Option<DbtCatalog> {
     let metadata_adapter = adapter.metadata_adapter()?;
-    let relations = metadata_adapter
-        .create_relations_from_executed_nodes(resolved_state, &run_task_results.stats.run);
+    let relations =
+        metadata_adapter.create_relations_from_executed_nodes(resolved_state, run_stats);
     if relations.is_empty() {
         return None;
     }
@@ -2807,7 +2805,7 @@ async fn try_fetch_catalog(
         resolved_state,
         relations,
         jinja_env,
-        compilation.root_project_name(),
+        root_project_name,
         &base_context,
         arg,
         20,
