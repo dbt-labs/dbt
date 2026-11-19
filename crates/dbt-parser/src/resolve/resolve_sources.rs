@@ -1,9 +1,12 @@
 //! Module containing the entrypoint for the resolve phase.
+pub(crate) mod properties;
+
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::properties_index::{IndexCx, IndexedName};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_utils::{canonicalize_source_config_keys, extract_config_map};
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
@@ -42,7 +45,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::{
     TestableNodeTrait, TestableTable, extract_test_unrendered_configs,
 };
@@ -212,6 +215,20 @@ pub(crate) struct Sources;
 
 #[async_trait]
 impl ResolvableNode for Sources {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["sources"]
+    }
+
+    /// A source defines one name for each of its tables.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        cx: &IndexCx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        properties::index_source(key, item, cx)
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // Resolve sources based on the dbt_state, database, schema, and project name
         let (sources, disabled_sources) = resolve_sources(
@@ -220,7 +237,7 @@ impl ResolvableNode for Sources {
             cx.root_package_name,
             cx.dbt_state.root_package(),
             cx.root_project_configs,
-            std::mem::take(&mut cx.min_properties.source_tables),
+            properties::take_source_table_entries(&mut cx.properties, &cx.jinja_env, &cx.base_ctx),
             cx.database,
             cx.adapter_type,
             &cx.base_ctx,
@@ -244,7 +261,7 @@ pub async fn resolve_sources(
     root_package_name: &str,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    source_properties: BTreeMap<(String, String), MinimalPropertiesEntry>,
+    source_properties: BTreeMap<(String, String), PropertiesEntry>,
     database: &str,
     adapter_type: AdapterType,
     base_ctx: &BTreeMap<String, MinijinjaValue>,

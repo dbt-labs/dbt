@@ -1,4 +1,4 @@
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, strip_resource_paths_from_ref_path,
@@ -139,7 +139,7 @@ pub async fn resolve_snapshots(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    mut snapshot_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    mut snapshot_properties: BTreeMap<String, PropertiesEntry>,
     macros: &BTreeMap<String, DbtMacro>,
     database: &str,
     schema: &str,

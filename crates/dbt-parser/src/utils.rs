@@ -1,6 +1,6 @@
 //! Utility functions for the resolver
 use crate::dbt_project_config::strip_resource_paths_from_ref_path;
-use crate::resolve::resolve_properties::MinimalPropertiesEntry;
+use crate::resolve::properties_index::PropertiesEntry;
 use dbt_adapter::relation::render_effective_relation;
 use dbt_adapter_core::AdapterType;
 use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
@@ -335,7 +335,7 @@ pub fn prepare_package_dependencies(dbt_state: Arc<dbt_schemas::state::DbtState>
 
 /// Register a duplicate resource definition for a model
 pub fn register_duplicate_resource(
-    mpe: &MinimalPropertiesEntry,
+    mpe: &PropertiesEntry,
     node_name: &str,
     node_type: &str,
     duplicate_collector: &mut Vec<FsError>,

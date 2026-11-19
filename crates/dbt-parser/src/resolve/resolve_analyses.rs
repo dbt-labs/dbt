@@ -30,7 +30,7 @@ use dbt_schemas::{
     state::{DbtPackage, DbtRuntimeConfig},
 };
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
@@ -102,7 +102,7 @@ pub async fn resolve_analyses(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    analysis_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    analysis_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     parse_adapter_scopes: &Arc<AdapterScopes>,

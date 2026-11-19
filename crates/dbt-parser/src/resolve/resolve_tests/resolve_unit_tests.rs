@@ -4,11 +4,11 @@ use crate::dbt_project_config::RootProjectConfigs;
 use crate::dbt_project_config::disallow_plus_prefix_from_flags;
 use crate::dbt_project_config::init_project_config;
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::properties_index::PropertiesEntry;
 use crate::resolve::properties_index::{
     IndexCx, IndexedName, name_stripped, validate_resource_name,
 };
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
-use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_utils::validate_unit_test_compute;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_path;
@@ -149,7 +149,7 @@ impl ResolvableNode for UnitTests {
             cx.package_name,
             &cx.jinja_env,
             &cx.base_ctx,
-            &cx.min_properties.models,
+            &cx.model_properties,
             &cx.nodes.models,
             &cx.dbt_state.packages,
             cx.adapter_type,
@@ -166,7 +166,7 @@ impl ResolvableNode for UnitTests {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_unit_tests(
     arg: &ResolveArgs,
-    unit_test_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    unit_test_properties: BTreeMap<String, PropertiesEntry>,
     package: &DbtPackage,
     root_package: &DbtPackage,
     package_quoting: DbtQuoting,
@@ -174,7 +174,7 @@ pub async fn resolve_unit_tests(
     package_name: &str,
     jinja_env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
-    model_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    model_properties: &BTreeMap<String, PropertiesEntry>,
     models: &BTreeMap<String, Arc<DbtModel>>,
     packages: &[DbtPackage],
     adapter_type: AdapterType,
@@ -974,7 +974,7 @@ mod tests {
             AdapterType::DuckDB,
             true,
         )?;
-        let entry = MinimalPropertiesEntry {
+        let entry = PropertiesEntry {
             name: "runtime_test".to_string(),
             name_span: Default::default(),
             relative_path: "models/unit_tests.yml".into(),
@@ -1017,11 +1017,7 @@ mod tests {
             .index_item(
                 "unit_tests",
                 &item,
-                &IndexCx {
-                    jinja_env: &env,
-                    base_ctx: &Arc::new(BTreeMap::new()),
-                    dependency_package_name: None,
-                },
+                &IndexCx::new(&env, &Arc::new(BTreeMap::new())),
             )
             .await?;
         assert_eq!(names.len(), 1);

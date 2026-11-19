@@ -51,7 +51,7 @@ use crate::{
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 
 /// Body + dependencies of an overload-only SQL file, captured during the build
 /// loop and merged into its root function during absorption. Overload SQL can
@@ -112,7 +112,7 @@ pub async fn resolve_functions(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    function_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    function_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     parse_adapter_scopes: &Arc<AdapterScopes>,

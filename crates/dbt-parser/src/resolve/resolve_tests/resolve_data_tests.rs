@@ -8,9 +8,9 @@ use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
 use crate::resolve::primary_key_inference::infer_and_apply_primary_keys;
+use crate::resolve::properties_index::PropertiesEntry;
 use crate::resolve::properties_index::{IndexCx, IndexedName, validate_resource_name};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
-use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_tests::persist_generic_data_tests::format_node_unique_id;
 use crate::resolve::resolve_utils::{
     RawProjectConfigsByAdapter, err_resource_name_has_spaces, resolve_node_quoting,
@@ -450,7 +450,7 @@ pub async fn resolve_data_tests(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    test_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    test_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     parse_adapter_scopes: &Arc<AdapterScopes>,

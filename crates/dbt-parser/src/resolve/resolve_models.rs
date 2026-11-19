@@ -1,3 +1,5 @@
+pub(crate) mod properties;
+
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, ResolvedNode};
@@ -11,6 +13,7 @@ use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
+use crate::resolve::properties_index::{IndexCx, IndexedName};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_utils::RawProjectConfigsByAdapter;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
@@ -94,7 +97,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
@@ -165,6 +168,20 @@ pub(crate) struct Models;
 
 #[async_trait]
 impl ResolvableNode for Models {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["models"]
+    }
+
+    /// A model defines one name for each of its versions.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        cx: &IndexCx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        properties::index_model(key, item, cx)
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // Resolve SQLs and get nodes except refs and sources
         let (models, disabled_models) = resolve_models(
@@ -174,7 +191,7 @@ impl ResolvableNode for Models {
             &cx.root_project_configs.adapter_quoting,
             cx.dbt_state.root_package(),
             cx.root_project_configs,
-            &cx.min_properties.models,
+            &cx.model_properties,
             // TODO: pass in typed_models_properties
             cx.database,
             cx.schema,
@@ -215,7 +232,7 @@ pub async fn resolve_models(
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    models_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties: &BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     parse_adapter_scopes: &Arc<AdapterScopes>,
@@ -302,8 +319,7 @@ pub async fn resolve_models(
     // This is a hack because we treat models and models.metrics differently in an attempt
     // for only-once parsing of model yaml properties in resolver.rs, which duplicates the knowledge
     // that you must treat them separately, such as the removal of semantic properties here.
-    let mut models_properties_sans_semantics: BTreeMap<String, MinimalPropertiesEntry> =
-        BTreeMap::new();
+    let mut models_properties_sans_semantics: BTreeMap<String, PropertiesEntry> = BTreeMap::new();
     models_properties.iter().for_each(|(model_key, v)| {
         let mut v = v.clone();
         if let Some(m) = v.schema_value.as_mapping_mut() {
@@ -532,7 +548,7 @@ async fn build_model_nodes(
     package: &DbtPackage,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     root_package: &DbtPackage,
-    models_properties_sans_semantics: &BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties_sans_semantics: &BTreeMap<String, PropertiesEntry>,
     raw_project_configs_by_adapter: &mut RawProjectConfigsByAdapter<'_>,
     raw_schema_yml_configs: &BTreeMap<String, BTreeMap<String, dbt_yaml::Value>>,
     raw_test_configs: &BTreeMap<String, TestUnrenderedConfigs>,
@@ -1620,7 +1636,7 @@ fn process_python_models(
     dbt_project: &DbtProject,
     config_resolver: &ProjectConfigResolver<ModelConfig>,
     python_files: Vec<dbt_schemas::state::DbtAsset>,
-    models_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties: &mut BTreeMap<String, PropertiesEntry>,
     adapter_type: AdapterType,
 ) -> FsResult<Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>> {
     let mut results = Vec::new();
@@ -1744,7 +1760,7 @@ fn process_python_models(
 fn extract_model_properties(
     env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
-    models_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties: &mut BTreeMap<String, PropertiesEntry>,
     ref_name: &str,
 ) -> FsResult<(Option<ModelProperties>, Option<PathBuf>)> {
     if let Some(mpe) = models_properties.get_mut(ref_name)

@@ -24,8 +24,6 @@ pub(crate) mod resolve_metrics;
 pub(crate) mod resolve_models;
 /// Functions for resolving operations
 pub(crate) mod resolve_operations;
-/// Functions for resolving properties
-pub(crate) mod resolve_properties;
 /// Functions for resolving query comments
 pub(crate) mod resolve_query_comment;
 /// Functions for resolving saved queries

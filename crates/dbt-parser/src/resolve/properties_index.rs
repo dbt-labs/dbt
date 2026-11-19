@@ -6,22 +6,32 @@
 //! ([`ResolvableNode::index_item`]). The index maps each name to where it is defined. It holds no
 //! YAML: a kind gets the YAML of its entries from the files, by location, when it resolves.
 
+use crate::args::ResolveArgs;
+use crate::experimental::ActiveExperimentals;
 use crate::resolve::resolvable_node::ResolvableNode;
-use crate::resolve::resolve_properties::MinimalPropertiesEntry;
-use dbt_common::tracing::dbt_emit::emit_strict_parse_error;
-use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
+use crate::resolve::resolve_models::properties::VersionInfo;
+use dbt_common::cancellation::CancellationToken;
+use dbt_common::io_utils::try_read_yml_to_str;
+use dbt_common::tracing::dbt_emit::{emit_strict_parse_error, emit_warn_log_message};
+use dbt_common::tracing::span_info::SpanStatusRecorder as _;
+use dbt_common::{ErrorCode, FsError, FsResult, create_debug_span, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::serde::{
     from_yaml_raw, into_typed_with_error, into_typed_with_jinja, unused_key_error,
 };
+use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::serde::{FloatOrString, strip_one_trailing_newline_at_keys};
+use dbt_schemas::state::DbtPackage;
+use dbt_telemetry::AssetParsed;
 use dbt_yaml::{Mapping, Span, Value, Verbatim};
+use itertools::Itertools;
 use minijinja::Value as MinijinjaValue;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// One properties file, as its top-level keys.
 #[derive(Debug, Default)]
@@ -102,11 +112,6 @@ impl PropertiesFile {
         self.items.contains_key(key)
     }
 
-    /// Takes the list under `key` out of the file, if it has one.
-    pub(crate) fn take_items(&mut self, key: &str) -> Option<Vec<Value>> {
-        self.items.remove(key)
-    }
-
     /// Takes the item at `location` out of the file, leaving null in its place.
     fn take_item(&mut self, location: &PropertiesLocation) -> Value {
         self.items
@@ -115,6 +120,17 @@ impl PropertiesFile {
             .map(std::mem::take)
             .unwrap_or_default()
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PropertiesEntry {
+    pub name: String,
+    pub name_span: Span,
+    pub relative_path: PathBuf,
+    pub schema_value: Value,
+    pub table_value: Option<Value>,
+    pub version_info: Option<VersionInfo>,
+    pub duplicate_paths: Vec<PathBuf>,
 }
 
 /// Where an item is in a package's properties files.
@@ -127,6 +143,21 @@ pub(crate) struct PropertiesLocation {
     pub(crate) key: &'static str,
     /// The item's position in the list under the key.
     pub(crate) item: usize,
+    /// The position of the name among the names that the item defines: the table of a source,
+    /// the version of a model.
+    pub(crate) part: usize,
+}
+
+/// A name found under a key, with the item that is its entry.
+#[derive(Debug)]
+pub(crate) struct IndexedEntry {
+    pub(crate) name: String,
+    /// Where the name is written, for a kind that gives its nodes that location.
+    pub(crate) name_span: Span,
+    /// The item that is the name's entry.
+    pub(crate) location: PropertiesLocation,
+    /// The files of the other items that define the name, in the order they were read.
+    pub(crate) duplicate_paths: Vec<PathBuf>,
 }
 
 /// A name that an item of a properties file defines, as its kind indexes it.
@@ -183,15 +214,32 @@ impl PropertiesIndex {
 }
 
 /// What indexing the items of one properties file reads.
+#[derive(Clone, Copy)]
 pub(crate) struct IndexCx<'a> {
     pub(crate) jinja_env: &'a Arc<JinjaEnv>,
     /// The Jinja context of the package's properties files.
     pub(crate) base_ctx: &'a Arc<BTreeMap<String, MinijinjaValue>>,
     /// The package of the file, unless it is the root package.
     pub(crate) dependency_package_name: Option<&'a str>,
+    /// The file, relative to its package's root.
+    pub(crate) properties_path: &'a Path,
 }
 
-impl IndexCx<'_> {
+impl<'a> IndexCx<'a> {
+    /// What indexing the properties files of one package reads. [`PackageProperties::index_file`]
+    /// names the file.
+    pub(crate) fn new(
+        jinja_env: &'a Arc<JinjaEnv>,
+        base_ctx: &'a Arc<BTreeMap<String, MinijinjaValue>>,
+    ) -> Self {
+        IndexCx {
+            jinja_env,
+            base_ctx,
+            dependency_package_name: dependency_package_name_from_ctx(jinja_env, base_ctx),
+            properties_path: Path::new(""),
+        }
+    }
+
     /// `item` as a `T`, with Jinja rendered.
     pub(crate) fn typed<T: DeserializeOwned>(&self, item: &Value) -> FsResult<T> {
         into_typed_with_jinja(
@@ -204,6 +252,24 @@ impl IndexCx<'_> {
             true,
         )
     }
+}
+
+/// `item` as a `T`, with Jinja rendered, without reporting what [`IndexCx::typed`] reported when
+/// the item was indexed.
+pub(crate) fn typed_again<T: DeserializeOwned>(
+    item: &Value,
+    jinja_env: &JinjaEnv,
+    base_ctx: &BTreeMap<String, MinijinjaValue>,
+) -> FsResult<T> {
+    into_typed_with_jinja(
+        name_stripped(item),
+        false,
+        jinja_env,
+        base_ctx,
+        &[],
+        dependency_package_name_from_ctx(jinja_env, base_ctx),
+        false,
+    )
 }
 
 /// Clone of a schema-yaml entry with `name`'s trailing newline dropped, before Jinja runs.
@@ -249,18 +315,24 @@ impl PackageProperties {
         let file_id = self.files.len();
         self.files.push(file);
         let file = &self.files[file_id];
+        let cx = &IndexCx {
+            properties_path: &file.path,
+            ..*cx
+        };
         for kind in kinds {
             for &key in kind.properties_keys() {
                 let Some(items) = file.items.get(key) else {
                     continue;
                 };
                 for (item_id, item) in items.iter().enumerate() {
-                    let location = PropertiesLocation {
-                        file: file_id,
-                        key,
-                        item: item_id,
-                    };
-                    for name in kind.index_item(key, item, cx).await? {
+                    let names = kind.index_item(key, item, cx).await?;
+                    for (part, name) in names.into_iter().enumerate() {
+                        let location = PropertiesLocation {
+                            file: file_id,
+                            key,
+                            item: item_id,
+                            part,
+                        };
                         self.index.insert(name, location);
                     }
                 }
@@ -308,6 +380,7 @@ impl PackageProperties {
                 file: file_id,
                 key,
                 item: item_id,
+                part: 0,
             };
             self.index.insert(
                 IndexedName::new(key, validate_resource_name(&entry.name)?),
@@ -318,13 +391,20 @@ impl PackageProperties {
         Ok(())
     }
 
+    /// Takes the names found under `key`, in the order of the names. The first item that defines
+    /// a name is its entry. The files of the others are its duplicates.
+    ///
+    /// A kind whose entries are more than an item each builds them from these, with
+    /// [`Self::item`] and [`Self::take_item`].
+    pub(crate) fn take_indexed(&mut self, key: &'static str) -> Vec<IndexedEntry> {
+        self.take_indexed_at(key, |locations| locations.split_first())
+    }
+
     /// Takes the entries found under `key`, by name, with their YAML. The first item that
     /// defines a name is its entry. The files of the others are the entry's duplicates.
-    pub(crate) fn take_entries(
-        &mut self,
-        key: &'static str,
-    ) -> BTreeMap<String, MinimalPropertiesEntry> {
-        self.take_entries_at(key, |locations| locations.split_first())
+    pub(crate) fn take_entries(&mut self, key: &'static str) -> BTreeMap<String, PropertiesEntry> {
+        let indexed = self.take_indexed(key);
+        self.entries(indexed)
     }
 
     /// Takes the entries found under `key`, by name, with their YAML. The last item that defines
@@ -332,20 +412,59 @@ impl PackageProperties {
     pub(crate) fn take_last_entries(
         &mut self,
         key: &'static str,
-    ) -> BTreeMap<String, MinimalPropertiesEntry> {
-        self.take_entries_at(key, |locations| {
+    ) -> BTreeMap<String, PropertiesEntry> {
+        let indexed = self.take_indexed_at(key, |locations| {
             locations.last().map(|last| (last, Default::default()))
-        })
+        });
+        self.entries(indexed)
     }
 
-    /// Takes the entries found under `key`. `split` gives the item that is a name's entry and the
+    /// Whether a file of the package has a list under the top-level key `key`, even an empty
+    /// one.
+    pub(crate) fn has_key(&self, key: &str) -> bool {
+        self.files.iter().any(|file| file.has_items(key))
+    }
+
+    /// The file of the item at `location`, relative to its package's root.
+    pub(crate) fn path(&self, location: &PropertiesLocation) -> &Path {
+        &self.files[location.file].path
+    }
+
+    /// The item at `location`. Null once it is taken.
+    pub(crate) fn item(&self, location: &PropertiesLocation) -> &Value {
+        static NULL: Value = Value::null();
+        self.files[location.file]
+            .items
+            .get(location.key)
+            .and_then(|items| items.get(location.item))
+            .unwrap_or(&NULL)
+    }
+
+    /// The item at `location`, to change in place.
+    ///
+    /// # Panics
+    /// If no item is at `location`. A location from the index has one.
+    pub(crate) fn item_mut(&mut self, location: &PropertiesLocation) -> &mut Value {
+        self.files[location.file]
+            .items
+            .get_mut(location.key)
+            .and_then(|items| items.get_mut(location.item))
+            .expect("an indexed location has an item")
+    }
+
+    /// Takes the item at `location` out of its file, leaving null in its place.
+    pub(crate) fn take_item(&mut self, location: &PropertiesLocation) -> Value {
+        self.files[location.file].take_item(location)
+    }
+
+    /// Takes the names found under `key`. `split` gives the item that is a name's entry and the
     /// items that are its duplicates.
-    fn take_entries_at(
+    fn take_indexed_at(
         &mut self,
         key: &'static str,
         split: impl Fn(&[PropertiesLocation]) -> Option<(&PropertiesLocation, &[PropertiesLocation])>,
-    ) -> BTreeMap<String, MinimalPropertiesEntry> {
-        let files = &mut self.files;
+    ) -> Vec<IndexedEntry> {
+        let files = &self.files;
         self.index
             .entries
             .remove(key)
@@ -353,22 +472,150 @@ impl PackageProperties {
             .into_iter()
             .filter_map(|(name, definitions)| {
                 let (entry, duplicates) = split(&definitions.locations)?;
-                let entry = MinimalPropertiesEntry {
-                    name: name.clone(),
+                Some(IndexedEntry {
+                    name,
                     name_span: definitions.name_span,
-                    relative_path: files[entry.file].path.clone(),
-                    schema_value: files[entry.file].take_item(entry),
-                    table_value: None,
-                    version_info: None,
+                    location: *entry,
                     duplicate_paths: duplicates
                         .iter()
                         .map(|duplicate| files[duplicate.file].path.clone())
                         .collect(),
-                };
-                Some((name, entry))
+                })
             })
             .collect()
     }
+
+    /// The entries of `indexed`, by name: each is its item, taken out of its file.
+    fn entries(&mut self, indexed: Vec<IndexedEntry>) -> BTreeMap<String, PropertiesEntry> {
+        indexed
+            .into_iter()
+            .map(|indexed| {
+                let entry = PropertiesEntry {
+                    name: indexed.name.clone(),
+                    name_span: indexed.name_span,
+                    relative_path: self.path(&indexed.location).to_path_buf(),
+                    schema_value: self.take_item(&indexed.location),
+                    table_value: None,
+                    version_info: None,
+                    duplicate_paths: indexed.duplicate_paths,
+                };
+                (indexed.name, entry)
+            })
+            .collect()
+    }
+}
+
+/// Reads the properties files of `package`, and indexes the items under the keys of each of
+/// `kinds`, kind by kind.
+///
+/// A file that cannot be read is reported, and the others are still read. An item that its kind
+/// cannot index is the error.
+pub(crate) async fn index_properties(
+    kinds: &[&dyn ResolvableNode],
+    arg: &ResolveArgs,
+    package: &DbtPackage,
+    root_package_name: &str,
+    jinja_env: &Arc<JinjaEnv>,
+    base_ctx: &Arc<BTreeMap<String, MinijinjaValue>>,
+    token: &CancellationToken,
+    experimentals: &ActiveExperimentals,
+) -> FsResult<PackageProperties> {
+    let mut properties = PackageProperties::default();
+    let list_keys: Vec<&str> = kinds
+        .iter()
+        .flat_map(|kind| kind.properties_keys())
+        .copied()
+        .collect();
+    let index_cx = IndexCx::new(jinja_env, base_ctx);
+
+    // Entries under `experimental:` for an experimental that is on are collected; any others are
+    // ignored.
+    let mut ignored_experimental_keys: BTreeSet<String> = BTreeSet::new();
+
+    for dbt_asset in package.dbt_properties.iter().dedup() {
+        token.check_cancellation()?;
+        let absolute_path = dbt_asset.base_path.join(&dbt_asset.path);
+        let display_path = dbt_asset.to_display_path(&arg.io.in_dir);
+        let asset_name = dbt_asset
+            .path
+            .file_stem()
+            .expect("File name can't be empty")
+            .to_string_lossy();
+        let span = create_debug_span(AssetParsed::new_with_phase_from_context(
+            package.dbt_project.name.clone(),
+            asset_name.to_string(),
+            dbt_asset.path.display().to_string(),
+            display_path.display().to_string(),
+            None,
+        ));
+
+        let dependency_package_name = if package.dbt_project.name != root_package_name {
+            Some(package.dbt_project.name.as_str())
+        } else {
+            None
+        };
+
+        async {
+            let input = try_read_yml_to_str(&absolute_path)?;
+
+            let result = match PropertiesFile::read(
+                &input,
+                &dbt_asset.path,
+                &absolute_path,
+                dependency_package_name,
+                &list_keys,
+            ) {
+                Ok(mut file) => {
+                    let experimental = file.experimental.take().unwrap_or_default();
+                    let file_id = properties.index_file(kinds, file, &index_cx).await?;
+
+                    for (key, value) in experimental {
+                        match experimentals.key_read(&key) {
+                            Some(key) => properties
+                                .index_experimental_items(file_id, key, value, &index_cx)?,
+                            None => {
+                                ignored_experimental_keys.insert(key);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            };
+
+            // Record both success and failure statuses to the span, but continue processing
+            // regardless of outcome.
+            let _ = result.as_ref().record_status(&span);
+            if let Err(e) = result {
+                emit_strict_parse_error(*e, dependency_package_name);
+            }
+            Ok::<(), Box<FsError>>(())
+        }
+        .instrument(span.clone())
+        .await?;
+    }
+    for key in ignored_experimental_keys {
+        let package_name = &package.dbt_project.name;
+        if experimentals.is_reserved(&key) {
+            emit_warn_log_message(
+                ErrorCode::ExperimentalNotEnabled,
+                format!(
+                    "Ignoring `experimental: {key}` in package '{package_name}': {}",
+                    experimentals.why_ignored(&key)
+                ),
+            );
+        } else {
+            emit_warn_log_message(
+                ErrorCode::UnknownExperimental,
+                format!(
+                    "Ignoring `experimental: {key}` in package '{package_name}': there is no \
+                     `{key}` experimental"
+                ),
+            );
+        }
+    }
+    Ok(properties)
 }
 
 /// The value of the top-level key `key` as a `T`. The error names the key, as typing the whole
@@ -456,11 +703,7 @@ mod tests {
     async fn index(files: &[(&str, &str)]) -> FsResult<PackageProperties> {
         let jinja_env = Arc::new(JinjaEnv::new(minijinja::Environment::new()));
         let base_ctx = Arc::new(BTreeMap::new());
-        let cx = IndexCx {
-            jinja_env: &jinja_env,
-            base_ctx: &base_ctx,
-            dependency_package_name: None,
-        };
+        let cx = IndexCx::new(&jinja_env, &base_ctx);
         let mut properties = PackageProperties::default();
         for (path, input) in files {
             let file = PropertiesFile::read(
@@ -563,11 +806,7 @@ mod tests {
     async fn the_items_under_experimental_are_entries_of_their_key() -> FsResult<()> {
         let jinja_env = Arc::new(JinjaEnv::new(minijinja::Environment::new()));
         let base_ctx = Arc::new(BTreeMap::new());
-        let cx = IndexCx {
-            jinja_env: &jinja_env,
-            base_ctx: &base_ctx,
-            dependency_package_name: None,
-        };
+        let cx = IndexCx::new(&jinja_env, &base_ctx);
         let mut properties = PackageProperties::default();
         for path in ["a.yml", "b.yml"] {
             let mut file = PropertiesFile::read(
@@ -598,11 +837,25 @@ mod tests {
         Ok(())
     }
 
+    #[dbt_runtime::test]
+    async fn a_package_has_a_key_that_one_of_its_files_has() -> FsResult<()> {
+        let properties = index(&[
+            ("a.yml", "widgets:\n  - name: one\n"),
+            // An empty list is a list; a key without a value is not.
+            ("b.yml", "gadgets: []\nwidgets:\n"),
+        ])
+        .await?;
+        assert!(properties.has_key("widgets"));
+        assert!(properties.has_key("gadgets"));
+        assert!(!properties.has_key("models"));
+        assert!(!index(&[("a.yml", "widgets:\n")]).await?.has_key("widgets"));
+        Ok(())
+    }
+
     #[test]
     fn a_file_is_read_as_the_lists_under_its_keys() {
-        let mut file = read("version: 2\nmodels:\n  - name: a\n  - name: b\nseeds: []\n").unwrap();
-        assert_eq!(file.take_items("models").map(|items| items.len()), Some(2));
-        assert!(file.take_items("models").is_none());
+        let file = read("version: 2\nmodels:\n  - name: a\n  - name: b\nseeds: []\n").unwrap();
+        assert_eq!(file.items.get("models").map(Vec::len), Some(2));
         // An empty list is a list; a key without a value is not.
         assert!(file.has_items("seeds"));
         assert!(!read("seeds:\n").unwrap().has_items("seeds"));

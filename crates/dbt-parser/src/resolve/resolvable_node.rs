@@ -3,6 +3,7 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
 use crate::experimental::ActiveExperimentals;
+use crate::resolve::properties_index::PropertiesEntry;
 use crate::resolve::properties_index::{
     IndexCx, IndexedName, PackageProperties, validate_resource_name,
 };
@@ -15,7 +16,6 @@ use crate::resolve::resolve_groups::Groups;
 use crate::resolve::resolve_macros::MacroProperties;
 use crate::resolve::resolve_metrics::Metrics;
 use crate::resolve::resolve_models::Models;
-use crate::resolve::resolve_properties::{MinimalProperties, MinimalPropertiesEntry};
 use crate::resolve::resolve_saved_queries::SavedQueries;
 use crate::resolve::resolve_seeds::Seeds;
 use crate::resolve::resolve_semantic_models::SemanticModels;
@@ -135,10 +135,10 @@ pub(crate) struct ResolveCx<'a> {
     /// The package's properties files, and the index of what they define. A kind takes its own
     /// entries.
     pub(crate) properties: PackageProperties,
-    /// The entries of models and of the tables of sources, which are not indexed by location.
-    pub(crate) min_properties: MinimalProperties,
+    /// The entries under `models:`, by the name each is found under. Several kinds read them.
+    pub(crate) model_properties: BTreeMap<String, PropertiesEntry>,
     /// The properties of the package's macros. They are applied once every package has resolved.
-    pub(crate) macro_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    pub(crate) macro_properties: BTreeMap<String, PropertiesEntry>,
     /// The package's nodes resolved so far.
     pub(crate) nodes: Nodes,
     /// The package's disabled nodes resolved so far.

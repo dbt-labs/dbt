@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 
 /// How a package's groups resolve.
 pub(crate) struct Groups;
@@ -57,7 +57,7 @@ impl ResolvableNode for Groups {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_groups(
     adapter_type: AdapterType,
-    group_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    group_properties: &mut BTreeMap<String, PropertiesEntry>,
     package_name: &str,
     env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,

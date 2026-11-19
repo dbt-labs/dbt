@@ -30,7 +30,7 @@ use regex::Regex;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 
 fn extract_raw_export_configs(
     exports: &dbt_yaml::Value,
@@ -92,7 +92,7 @@ pub async fn resolve_saved_queries(
     root_package: &DbtPackage,
     _root_package_name: &str,
     root_project_configs: &RootProjectConfigs,
-    saved_query_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    saved_query_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     package_name: &str,

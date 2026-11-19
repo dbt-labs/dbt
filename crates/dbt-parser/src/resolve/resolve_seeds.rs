@@ -43,7 +43,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
@@ -89,7 +89,7 @@ impl ResolvableNode for Seeds {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_seeds(
     arg: &ResolveArgs,
-    mut seed_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    mut seed_properties: BTreeMap<String, PropertiesEntry>,
     package: &DbtPackage,
     // Authored quoting per declared adapter name. See `resolve_models`.
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,

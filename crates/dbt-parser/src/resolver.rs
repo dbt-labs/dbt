@@ -60,17 +60,18 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::resolve::properties_index::{PropertiesEntry, index_properties};
 use crate::resolve::resolvable_node::{RESOLVABLE_NODES, ResolveCx};
 use crate::resolve::resolve_macros::apply_macro_patches;
 use crate::resolve::resolve_macros::probe_internal_macro_overrides;
 use crate::resolve::resolve_macros::resolve_docs_macros;
 use crate::resolve::resolve_macros::resolve_macros;
 use crate::resolve::resolve_macros::typecheck_macros;
-use crate::resolve::resolve_properties;
-use crate::resolve::resolve_properties::resolve_minimal_properties;
+use crate::resolve::resolve_models::properties::take_model_entries;
 use crate::resolve::resolve_selectors::{
     resolve_final_selectors, resolve_manifest_selectors, resolve_selectors_from_yaml,
 };
+use crate::resolve::resolve_semantic_models::uses_legacy_semantic_layer_spec;
 use crate::resolve::resolve_utils::validate_adapter_project_configs;
 use crate::unused_config_paths::check_unused_resource_config_paths;
 
@@ -282,10 +283,7 @@ pub async fn resolve(
 
     let mut semantic_layer_spec_is_legacy = false;
     let mut test_name_truncations: HashMap<String, String> = HashMap::new();
-    let all_macro_properties: BTreeMap<
-        String,
-        BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
-    >;
+    let all_macro_properties: BTreeMap<String, BTreeMap<String, PropertiesEntry>>;
 
     let (
         resolved_nodes,
@@ -988,7 +986,7 @@ pub async fn resolve_inner(
     HashMap<String, String>,
     NodeResolver,
     bool,
-    BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
+    BTreeMap<String, PropertiesEntry>,
 )> {
     let database: &String = &dbt_state.dbt_profile.database;
 
@@ -1010,30 +1008,36 @@ pub async fn resolve_inner(
         Some(root_runtime_config.clone()),
     ));
     // Resolve the dbt properties (schema.yml) files
-    let (min_properties, properties) = resolve_minimal_properties(
+    let mut properties = index_properties(
         &RESOLVABLE_NODES,
         arg,
         package,
-        dbt_state.root_package(),
         root_package_name,
-        root_project_configs,
         &jinja_env,
         &base_ctx,
         token,
-        adapter_type,
         experimentals,
     )
     .await?;
+    let semantic_layer_spec_is_legacy = uses_legacy_semantic_layer_spec(
+        &properties,
+        package,
+        dbt_state.root_package(),
+        root_project_configs,
+        adapter_type,
+    )?;
 
     let package_name = package.dbt_project.name.as_str();
+
+    // The entries of models are taken before any kind resolves: the pass below and several
+    // kinds read them.
+    let model_properties = take_model_entries(&mut properties, &jinja_env, &base_ctx)?;
 
     let dbt_tests_dir = arg.io.out_dir.join(DBT_GENERIC_TESTS_DIR_NAME);
     stdfs::create_dir_all(&dbt_tests_dir)?;
 
     let dependency_package_name = dependency_package_name_from_ctx(&jinja_env, &base_ctx);
     let mut typed_models_properties: BTreeMap<String, ModelProperties> = BTreeMap::new();
-
-    let semantic_layer_spec_is_legacy = min_properties.semantic_layer_spec_is_legacy;
 
     // TODO: this eager pass should not exist. Only semantic model and metric resolution read
     // `typed_models_properties`, so it should be a lazy closure that types only the models
@@ -1047,7 +1051,7 @@ pub async fn resolve_inner(
     //   resources resolve, including entries with no model file.
     // Removing it means the parallel render pass must emit those warnings instead, and the
     // errors surface later or not at all. That is a breaking change that needs explicit handling.
-    for (model_name, minimal_model_props) in &min_properties.models {
+    for (model_name, minimal_model_props) in &model_properties {
         // Layer the relative yaml file path over the shared base context.
         // We do this for accurate error reporting.
         let mut model_ctx =
@@ -1106,7 +1110,7 @@ pub async fn resolve_inner(
         semantic_layer_spec_is_legacy,
         typed_models_properties,
         properties,
-        min_properties,
+        model_properties,
         macro_properties: BTreeMap::new(),
         nodes: Nodes::default(),
         disabled_nodes: Nodes::default(),
@@ -1551,7 +1555,7 @@ async fn resolve_package(
     NodeResolver,
     bool,
     HashMap<String, String>,
-    BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
+    BTreeMap<String, PropertiesEntry>,
 )> {
     let package = dbt_state
         .packages
@@ -1639,7 +1643,7 @@ async fn resolve_package_waves(
     BTreeMap<String, String>,
     bool,
     HashMap<String, String>,
-    BTreeMap<String, BTreeMap<String, resolve_properties::MinimalPropertiesEntry>>,
+    BTreeMap<String, BTreeMap<String, PropertiesEntry>>,
 )> {
     let max_concurrency = crate::parallel::effective_parallelism(arg.no_parallel);
     let arg = Arc::new(arg.clone());
@@ -1650,10 +1654,8 @@ async fn resolve_package_waves(
     let mut function_bodies: BTreeMap<String, String> = BTreeMap::new();
     let mut semantic_layer_spec_is_legacy = false;
     let mut test_name_truncations: HashMap<String, String> = HashMap::new();
-    let mut all_macro_properties: BTreeMap<
-        String,
-        BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
-    > = BTreeMap::new();
+    let mut all_macro_properties: BTreeMap<String, BTreeMap<String, PropertiesEntry>> =
+        BTreeMap::new();
 
     for package_wave in package_waves {
         token.check_cancellation()?;

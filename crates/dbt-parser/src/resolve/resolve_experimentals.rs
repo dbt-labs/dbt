@@ -21,8 +21,8 @@ use dbt_schemas::schemas::{
 use dbt_schemas::state::DbtPackage;
 use minijinja::value::Value as MinijinjaValue;
 
+use super::properties_index::PropertiesEntry;
 use super::resolve_exposures::resolve_yaml_depends_on;
-use super::resolve_properties::MinimalPropertiesEntry;
 use crate::args::ResolveArgs;
 use crate::experimental::{
     ActiveExperimentals, ExperimentalDiagnostics, ExperimentalEntry, ExperimentalFile,
@@ -112,7 +112,7 @@ impl ResolvableNode for Experimentals {
 pub(crate) fn resolve_experimentals(
     ctx: &ExperimentalNodeContext<'_>,
     experimentals: &ActiveExperimentals,
-    properties: &mut BTreeMap<String, BTreeMap<String, MinimalPropertiesEntry>>,
+    properties: &mut BTreeMap<String, BTreeMap<String, PropertiesEntry>>,
     nodes: &mut ResolvedExperimentalNodes,
 ) -> FsResult<()> {
     let package_name = ctx.package.dbt_project.name.as_str();
@@ -173,7 +173,7 @@ pub(crate) fn resolve_experimentals(
 fn experimental_entries(
     key: &str,
     package_name: &str,
-    by_name: BTreeMap<String, MinimalPropertiesEntry>,
+    by_name: BTreeMap<String, PropertiesEntry>,
 ) -> Vec<ExperimentalEntry> {
     let mut entries = Vec::new();
     for (name, mpe) in by_name {

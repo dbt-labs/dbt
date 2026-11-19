@@ -37,7 +37,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 
 /// How a package's exposures resolve.
 pub(crate) struct Exposures;
@@ -73,7 +73,7 @@ impl ResolvableNode for Exposures {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_exposures(
     args: &ResolveArgs,
-    exposure_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    exposure_properties: &mut BTreeMap<String, PropertiesEntry>,
     package: &DbtPackage,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,

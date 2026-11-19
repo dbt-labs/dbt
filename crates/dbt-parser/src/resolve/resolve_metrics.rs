@@ -27,7 +27,7 @@ use minijinja::value::Value as MinijinjaValue;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::validate_metrics::validate_metric;
 
 use dbt_schemas::schemas::manifest::metric::{
@@ -61,7 +61,7 @@ impl ResolvableNode for Metrics {
             cx.package,
             cx.dbt_state.root_package(),
             cx.root_project_configs,
-            &cx.min_properties.models,
+            &cx.model_properties,
             &cx.properties.take_entries("metrics"),
             &cx.typed_models_properties,
             cx.package_name,
@@ -82,8 +82,8 @@ pub async fn resolve_metrics(
     package: &DbtPackage,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    minimal_model_properties: &BTreeMap<String, MinimalPropertiesEntry>,
-    minimal_metric_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    minimal_model_properties: &BTreeMap<String, PropertiesEntry>,
+    minimal_metric_properties: &BTreeMap<String, PropertiesEntry>,
     typed_models_properties: &BTreeMap<String, ModelProperties>,
     package_name: &str,
     env: &JinjaEnv,
@@ -155,7 +155,7 @@ pub fn resolve_nested_model_metrics(
     arg: &ResolveArgs,
     package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    minimal_model_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    minimal_model_properties: &BTreeMap<String, PropertiesEntry>,
     typed_models_properties: &BTreeMap<String, ModelProperties>,
     package_name: &str,
     env: &JinjaEnv,
@@ -392,7 +392,7 @@ pub fn resolve_top_level_metrics(
     arg: &ResolveArgs,
     package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    minimal_metric_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    minimal_metric_properties: &BTreeMap<String, PropertiesEntry>,
     package_name: &str,
     env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
