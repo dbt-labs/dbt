@@ -2233,3 +2233,79 @@ fn catalog_types_match_declared_columns_case_insensitively() {
         );
     }
 }
+
+/// Every information-schema parquet file must be uncompressed or ZSTD.
+///
+/// The docs site reads these files in the browser before DuckDB-WASM loads,
+/// with a parquet reader and decoders that ship on the first-paint critical
+/// path. Those libraries must stay minimal in size, so they cannot support
+/// arbitrary codecs: they decode only ZSTD and uncompressed pages. A writer
+/// that switches to another codec (Snappy, gzip, Brotli, LZ4, ...) breaks
+/// first paint for that table. Before you change a codec here, change
+/// `dbt-docs-server/web/src/shared/data-sources/duckdb/bootstrap.ts` and
+/// account for the bundle size it adds.
+#[test]
+fn info_schema_parquet_is_uncompressed_or_zstd_on_both_materializers() {
+    use parquet::basic::Compression;
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    let metadata = tempfile::tempdir().unwrap();
+    // Rows in several tables, so the files have column chunks to inspect.
+    write_node_config_corpus(metadata.path());
+    write_catalog_stats_epoch(
+        metadata.path(),
+        1,
+        &[json!({
+            "unique_id": "model.pkg.a",
+            "table_type": "BASE TABLE",
+            "database_name": "db",
+            "schema_name": "sch",
+            "table_name": "a",
+            "row_count": 1,
+            "ingested_at": "2026-09-08T12:00:00Z",
+        })],
+    );
+
+    let mut materializers = vec![super::Materializer::Arrow];
+    if crate::db::Db::open_memory().is_ok() {
+        materializers.push(super::Materializer::Copy);
+    } else {
+        eprintln!("skipping COPY: DuckDB driver unavailable");
+    }
+    for how in materializers {
+        let root = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        super::write_info_schema_with(how, metadata.path(), root.path(), staging.path()).unwrap();
+        let dir = super::versioned_dir(root.path());
+
+        let mut tables_with_rows = 0;
+        for table in INFO_SCHEMA {
+            let file = std::fs::File::open(dir.join(table.file_name())).unwrap();
+            let reader = SerializedFileReader::new(file).unwrap();
+            let row_groups = reader.metadata().row_groups();
+            if row_groups.iter().any(|rg| rg.num_rows() > 0) {
+                tables_with_rows += 1;
+            }
+            for rg in row_groups {
+                for col in rg.columns() {
+                    assert!(
+                        matches!(
+                            col.compression(),
+                            Compression::UNCOMPRESSED | Compression::ZSTD(_)
+                        ),
+                        "{how:?}: {}.{} is compressed with {:?}; the first-paint \
+                         parquet reader decodes only ZSTD and uncompressed pages",
+                        table.qualified_name(),
+                        col.column_path(),
+                        col.compression(),
+                    );
+                }
+            }
+        }
+        // Guard against a vacuous pass: empty files have no column chunks.
+        assert!(
+            tables_with_rows >= 3,
+            "{how:?}: only {tables_with_rows} tables have rows, too few to check codecs"
+        );
+    }
+}
