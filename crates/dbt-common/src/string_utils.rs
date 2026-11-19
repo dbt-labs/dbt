@@ -208,13 +208,6 @@ mod tests {
 }
 
 pub fn ephemeral_cte_identifier(unique_id: &str) -> String {
-    use std::fmt::Write;
-
-    let mut result = String::from("m_");
-
-    for byte in unique_id.bytes() {
-        write!(&mut result, "{byte:02x}").expect("writing to String cannot fail");
-    }
-
-    result
+    let hash = blake3::hash(unique_id.as_bytes());
+    format!("m_{}", &hash.to_hex()[..32])
 }
