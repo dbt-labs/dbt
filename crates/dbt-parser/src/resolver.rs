@@ -11,8 +11,7 @@ use dbt_common::path::DbtPath;
 use dbt_common::stdfs;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
 use dbt_common::tracing::event_info::store_event_attributes;
-use dbt_common::tracing::span_info::SpanStatusRecorder as _;
-use dbt_common::{ErrorCode, FsResult, create_debug_span, err, fs_err};
+use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_jinja_utils::JinjaFactory;
 use dbt_jinja_utils::invocation_args::InvocationArgs;
 use dbt_jinja_utils::invocation_graph::reset_invocation_graph;
@@ -35,14 +34,12 @@ use dbt_schemas::schemas::properties::{
     ModelProperties, is_any_type,
 };
 use dbt_schemas::schemas::{DbtModel, DbtSeed, DbtSource, InternalDbtNode, Nodes, TableFormat};
-use dbt_telemetry::GenericOpExecuted;
 
 use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{RootProjectConfigs, build_root_project_configs};
 use crate::experimental::{ActiveExperimentals, ResolveExperimentals};
-use crate::resolve::resolve_groups::resolve_groups;
 use crate::resolve::resolve_operations::resolve_operations;
 use crate::resolve::resolve_query_comment::resolve_query_comment;
 use crate::resolver_hooks::ResolverHooks;
@@ -51,8 +48,8 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schemas::schemas::common::DbtQuoting;
 use dbt_schemas::schemas::telemetry::{ExecutionPhase, NodeType, PhaseExecuted};
 use dbt_schemas::state::{
-    DbtPackage, GenericTestAsset, GetColumnsInRelationCalls, GetRelationCalls, Macros,
-    ManifestPathConfig, PatternedDanglingSources,
+    DbtPackage, GetColumnsInRelationCalls, GetRelationCalls, Macros, ManifestPathConfig,
+    PatternedDanglingSources,
 };
 use dbt_schemas::state::{DbtRuntimeConfig, Operations};
 use dbt_schemas::state::{DbtState, ResolverState};
@@ -62,37 +59,19 @@ use minijinja::value::OverlayMap;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::Instrument as _;
 
-use crate::resolve::resolve_analyses::resolve_analyses;
-use crate::resolve::resolve_checks::resolve_checks;
-use crate::resolve::resolve_experimentals::{
-    ExperimentalNodeContext, ResolvedExperimentalNodes, resolve_experimentals,
-};
-use crate::resolve::resolve_exposures::resolve_exposures;
-use crate::resolve::resolve_functions::resolve_functions;
+use crate::resolve::resolvable_node::{RESOLVABLE_NODES, ResolveCx};
 use crate::resolve::resolve_macros::apply_macro_patches;
 use crate::resolve::resolve_macros::probe_internal_macro_overrides;
 use crate::resolve::resolve_macros::resolve_docs_macros;
 use crate::resolve::resolve_macros::resolve_macros;
 use crate::resolve::resolve_macros::typecheck_macros;
-use crate::resolve::resolve_metrics::resolve_metrics;
-use crate::resolve::resolve_models::resolve_models;
 use crate::resolve::resolve_properties;
 use crate::resolve::resolve_properties::resolve_minimal_properties;
-use crate::resolve::resolve_saved_queries::resolve_saved_queries;
-use crate::resolve::resolve_seeds::resolve_seeds;
-use crate::resolve::resolve_semantic_models::resolve_semantic_models;
-use crate::resolve::resolve_snapshots::resolve_snapshots;
-use crate::resolve::resolve_sources::resolve_sources;
-use crate::resolve::resolve_tests::resolve_data_tests::resolve_data_tests;
-use crate::resolve::resolve_tests::resolve_unit_tests::resolve_unit_tests;
-use crate::resolve::resolve_utils::validate_adapter_project_configs;
-
-use crate::resolve::primary_key_inference::infer_and_apply_primary_keys;
 use crate::resolve::resolve_selectors::{
     resolve_final_selectors, resolve_manifest_selectors, resolve_selectors_from_yaml,
 };
+use crate::resolve::resolve_utils::validate_adapter_project_configs;
 use crate::unused_config_paths::check_unused_resource_config_paths;
 
 use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
@@ -995,7 +974,7 @@ pub async fn resolve_inner(
     parse_adapter_scopes: &Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
-    mut node_resolver: NodeResolver,
+    node_resolver: NodeResolver,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     test_name_truncations: &mut HashMap<String, String>,
@@ -1011,9 +990,6 @@ pub async fn resolve_inner(
     bool,
     BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
 )> {
-    let mut nodes = Nodes::default();
-    let mut disabled_nodes = Nodes::default();
-
     let database: &String = &dbt_state.dbt_profile.database;
 
     let schema = &dbt_state.dbt_profile.schema;
@@ -1052,8 +1028,6 @@ pub async fn resolve_inner(
 
     // Collect macro properties for patching later (after all packages resolved)
     let macro_properties = std::mem::take(&mut min_properties.macros);
-
-    let mut collected_generic_tests: Vec<GenericTestAsset> = Vec::new();
 
     let dbt_tests_dir = arg.io.out_dir.join(DBT_GENERIC_TESTS_DIR_NAME);
     stdfs::create_dir_all(&dbt_tests_dir)?;
@@ -1111,364 +1085,55 @@ pub async fn resolve_inner(
         }
     }
 
-    // Resolve sources based on the dbt_state, database, schema, and project name
-    let (sources, disabled_sources) = resolve_sources(
+    let mut cx = ResolveCx {
         arg,
         package,
+        dbt_state: &dbt_state,
         root_package_name,
-        dbt_state.root_package(),
         root_project_configs,
-        min_properties.source_tables,
-        database,
         adapter_type,
-        &base_ctx,
-        &jinja_env,
-        &mut collected_generic_tests,
-        test_name_truncations,
-        seen_generic_test_paths,
-        &mut node_resolver,
-    )
-    .await?;
-    nodes.sources.extend(sources);
-    disabled_nodes.sources.extend(disabled_sources);
-
-    // Resolve seeds based on the dbt_state, database, schema, and project name
-    let (seeds, disabled_seeds) = resolve_seeds(
-        arg,
-        min_properties.seeds,
-        package,
-        &root_project_configs.adapter_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        database,
-        schema,
         parse_adapter_scopes,
-        adapter_type,
-        package_name,
-        &jinja_env,
-        &base_ctx,
-        &mut collected_generic_tests,
-        test_name_truncations,
-        seen_generic_test_paths,
-        &mut node_resolver,
-    )
-    .await?;
-    nodes.seeds.extend(seeds);
-    disabled_nodes.seeds.extend(disabled_seeds);
-
-    // TODO: resolve_snapshots still creates its own local JinjaTypeCheckingEventListenerFactory
-    // instead of receiving the top-level one, so snapshot macro dependencies are populated
-    // locally rather than via update_manifest_with_macro_depends_on. Out of scope for now.
-    // Resolve snapshots based on the dbt_state, database, schema, and project name
-    let (snapshots, disabled_snapshots) = resolve_snapshots(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        min_properties.snapshots,
-        &macros.macros,
-        database,
-        schema,
-        parse_adapter_scopes,
-        adapter_type,
-        &root_project_configs.adapter_quoting,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        &mut node_resolver,
-        &mut collected_generic_tests,
-        test_name_truncations,
-        seen_generic_test_paths,
+        macros,
+        jinja_env,
+        base_ctx,
+        runtime_config,
+        root_runtime_config,
         token,
-    )
-    .await?;
-    nodes.snapshots.extend(snapshots);
-    disabled_nodes.snapshots.extend(disabled_snapshots);
-
-    let (groups, disabled_groups) = resolve_groups(
-        adapter_type,
-        &mut min_properties.groups,
-        package_name,
-        &jinja_env,
-        &base_ctx,
-    )
-    .await?;
-
-    nodes.groups.extend(groups);
-    disabled_nodes.groups.extend(disabled_groups);
-
-    // Resolve SQLs and get nodes except refs and sources
-    let (models, disabled_models) = resolve_models(
-        arg,
-        package,
-        package_quoting,
-        &root_project_configs.adapter_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &min_properties.models,
-        // TODO: pass in typed_models_properties
-        database,
-        schema,
-        parse_adapter_scopes,
-        adapter_type,
-        package_name,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        &mut collected_generic_tests,
-        test_name_truncations,
-        seen_generic_test_paths,
-        &mut node_resolver,
-        token,
-        jinja_type_checking_event_listener_factory.clone(),
-    )
-    .await?;
-    nodes.models.extend(models);
-    disabled_nodes.models.extend(disabled_models);
-
-    // TODO: resolve_analyses still creates its own local JinjaTypeCheckingEventListenerFactory
-    // instead of receiving the top-level one — same issue as resolve_snapshots. Out of scope for now.
-    let analyses = resolve_analyses(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &mut min_properties.analyses,
-        database,
-        schema,
-        parse_adapter_scopes,
-        adapter_type,
-        package_name,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        token,
-    )
-    .await?;
-    nodes.analyses.extend(analyses);
-
-    // Resolve checks
-    let (checks, disabled_checks) = resolve_checks(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &mut min_properties.checks,
-        database,
-        schema,
-        adapter_type,
-        package_name,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        token,
-    )
-    .await?;
-    nodes.checks.extend(checks);
-    disabled_nodes.checks.extend(disabled_checks);
-
-    // Resolve functions
-    let (functions, disabled_functions, function_bodies) = resolve_functions(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &mut min_properties.functions,
-        database,
-        schema,
-        parse_adapter_scopes,
-        adapter_type,
-        &root_project_configs.adapter_quoting,
-        package_name,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        &mut node_resolver,
-        token,
-    )
-    .await?;
-    nodes.functions.extend(functions);
-    disabled_nodes.functions.extend(disabled_functions);
-
-    let (exposures, disabled_exposures) = resolve_exposures(
-        arg,
-        &mut min_properties.exposures,
-        package,
-        dbt_state.root_package(),
-        root_project_configs,
-        database,
-        schema,
-        adapter_type,
-        package_name,
-        &jinja_env,
-        &base_ctx,
-    )
-    .await?;
-    nodes.exposures.extend(exposures);
-    disabled_nodes.exposures.extend(disabled_exposures);
-
-    let experimental_ctx = ExperimentalNodeContext {
-        args: arg,
-        package,
-        root_package: dbt_state.root_package(),
-        database,
-        schema,
-        adapter_type,
-        env: &jinja_env,
-        base_ctx: &base_ctx,
-    };
-    let mut experimental_nodes = ResolvedExperimentalNodes::default();
-    resolve_experimentals(
-        &experimental_ctx,
+        jinja_type_checking_event_listener_factory,
         experimentals,
-        &mut min_properties.experimental,
-        &mut experimental_nodes,
-    )?;
-    nodes.experimentals.extend(experimental_nodes.enabled);
-    disabled_nodes
-        .experimentals
-        .extend(experimental_nodes.disabled);
-
-    if !semantic_layer_spec_is_legacy {
-        let (semantic_models, disabled_semantic_models) = resolve_semantic_models(
-            adapter_type,
-            arg,
-            package,
-            dbt_state.root_package(),
-            root_project_configs,
-            &min_properties.models,
-            &typed_models_properties,
-            &nodes.models,
-            package_name,
-            &jinja_env,
-            &base_ctx,
-        )
-        .await?;
-        nodes.semantic_models.extend(semantic_models);
-        disabled_nodes
-            .semantic_models
-            .extend(disabled_semantic_models);
-
-        let (metrics, disabled_metrics) = resolve_metrics(
-            adapter_type,
-            arg,
-            package,
-            dbt_state.root_package(),
-            root_project_configs,
-            &min_properties.models,
-            &min_properties.metrics,
-            &typed_models_properties,
-            package_name,
-            &jinja_env,
-            &base_ctx,
-        )
-        .await?;
-        nodes.metrics.extend(metrics);
-        disabled_nodes.metrics.extend(disabled_metrics);
-
-        let (saved_queries, disabled_saved_queries) = resolve_saved_queries(
-            adapter_type,
-            arg,
-            package,
-            dbt_state.root_package(),
-            root_package_name,
-            root_project_configs,
-            &mut min_properties.saved_queries,
-            database,
-            schema,
-            package_name,
-            jinja_env.clone(),
-            &base_ctx,
-        )
-        .await?;
-        nodes.saved_queries.extend(saved_queries);
-        disabled_nodes.saved_queries.extend(disabled_saved_queries);
-    }
-
-    // Scoped so the span handle drops on both exits: SpanEnd fires on last-handle-drop.
-    // operation_id has the package name: resolve_inner runs concurrently across packages.
-    let (data_tests, disabled_tests) = {
-        let span = create_debug_span(GenericOpExecuted::new(
-            format!("resolve.resolve_data_tests.{package_name}"),
-            "resolving data tests".to_string(),
-            None,
-        ));
-        resolve_data_tests(
-            arg,
-            package,
-            package_quoting,
-            dbt_state.root_package(),
-            root_project_configs,
-            &mut min_properties.tests,
-            database,
-            schema,
-            parse_adapter_scopes,
-            adapter_type,
-            jinja_env.clone(),
-            &base_ctx,
-            runtime_config.clone(),
-            root_runtime_config.clone(),
-            &collected_generic_tests,
-            &node_resolver,
-            token,
-            jinja_type_checking_event_listener_factory.clone(),
-            &root_project_configs.adapter_quoting,
-            &nodes.models,
-            &disabled_nodes.models,
-            &nodes.seeds,
-            &nodes.snapshots,
-        )
-        .instrument(span.clone())
-        .await
-        .record_status(&span)?
-    };
-    nodes.tests.extend(data_tests);
-    disabled_nodes.tests.extend(disabled_tests);
-
-    infer_and_apply_primary_keys(&mut nodes, &disabled_nodes);
-
-    let (unit_tests, disabled_unit_tests) = resolve_unit_tests(
-        arg,
-        min_properties.unit_tests,
-        package,
-        dbt_state.root_package(),
-        package_quoting,
-        root_project_configs,
+        database,
+        schema,
         package_name,
-        &jinja_env,
-        &base_ctx,
-        &min_properties.models,
-        &nodes.models,
-        &dbt_state.packages,
-        adapter_type,
-        &node_resolver,
-    )
-    .await?;
+        package_quoting,
+        semantic_layer_spec_is_legacy,
+        typed_models_properties,
+        min_properties,
+        nodes: Nodes::default(),
+        disabled_nodes: Nodes::default(),
+        function_bodies: HashMap::new(),
+        node_resolver,
+        collected_generic_tests: Vec::new(),
+        test_name_truncations,
+        seen_generic_test_paths,
+    };
 
-    nodes.unit_tests.extend(unit_tests);
-    disabled_nodes.unit_tests.extend(disabled_unit_tests);
-
-    if let Some(query_comment) = package.dbt_project.query_comment.as_ref() {
-        resolve_query_comment(query_comment, &jinja_env, &base_ctx)?;
+    // Each kind of node resolves in turn and adds its nodes to `cx`.
+    for node in RESOLVABLE_NODES {
+        node.resolve(&mut cx).await?;
     }
 
-    clear_package_diagnostics(&arg.io, package);
+    if let Some(query_comment) = cx.package.dbt_project.query_comment.as_ref() {
+        resolve_query_comment(query_comment, &cx.jinja_env, &cx.base_ctx)?;
+    }
+
+    clear_package_diagnostics(&cx.arg.io, cx.package);
 
     Ok((
-        nodes,
-        disabled_nodes,
-        function_bodies,
-        node_resolver,
-        semantic_layer_spec_is_legacy,
+        cx.nodes,
+        cx.disabled_nodes,
+        cx.function_bodies,
+        cx.node_resolver,
+        cx.semantic_layer_spec_is_legacy,
         macro_properties,
     ))
 }

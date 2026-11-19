@@ -2,10 +2,12 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::utils::{
     extract_resource_config_from_raw_project, get_node_fqn, get_original_file_path, get_unique_id,
 };
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
@@ -52,6 +54,38 @@ fn semantic_model_properties_config(model_props: &ModelProperties) -> Option<Sem
             meta: smc.config.as_ref().and_then(|c| c.meta.clone()),
             tags: Tags::default(),
         })
+}
+
+/// How a package's semantic models resolve.
+pub(crate) struct SemanticModels;
+
+#[async_trait]
+impl ResolvableNode for SemanticModels {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // A package on the legacy semantic layer YAML resolves none.
+        if cx.semantic_layer_spec_is_legacy {
+            return Ok(());
+        }
+        let (semantic_models, disabled_semantic_models) = resolve_semantic_models(
+            cx.adapter_type,
+            cx.arg,
+            cx.package,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            &cx.min_properties.models,
+            &cx.typed_models_properties,
+            &cx.nodes.models,
+            cx.package_name,
+            &cx.jinja_env,
+            &cx.base_ctx,
+        )
+        .await?;
+        cx.nodes.semantic_models.extend(semantic_models);
+        cx.disabled_nodes
+            .semantic_models
+            .extend(disabled_semantic_models);
+        Ok(())
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::expect_fun_call)]

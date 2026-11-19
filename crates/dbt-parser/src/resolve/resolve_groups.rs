@@ -1,3 +1,5 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
 use dbt_common::path::DbtPath;
@@ -13,6 +15,27 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::resolve_properties::MinimalPropertiesEntry;
+
+/// How a package's groups resolve.
+pub(crate) struct Groups;
+
+#[async_trait]
+impl ResolvableNode for Groups {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        let (groups, disabled_groups) = resolve_groups(
+            cx.adapter_type,
+            &mut cx.min_properties.groups,
+            cx.package_name,
+            &cx.jinja_env,
+            &cx.base_ctx,
+        )
+        .await?;
+
+        cx.nodes.groups.extend(groups);
+        cx.disabled_nodes.groups.extend(disabled_groups);
+        Ok(())
+    }
+}
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_groups(

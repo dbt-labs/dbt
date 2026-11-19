@@ -4,9 +4,11 @@ use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_utils::{canonicalize_source_config_keys, extract_config_map};
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 
 use dbt_adapter::load_catalogs;
 use dbt_adapter::metadata::routed_source_databases;
@@ -203,6 +205,36 @@ fn build_source_unrendered_config(
     }
 
     Ok(unrendered)
+}
+
+/// How a package's sources resolve.
+pub(crate) struct Sources;
+
+#[async_trait]
+impl ResolvableNode for Sources {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // Resolve sources based on the dbt_state, database, schema, and project name
+        let (sources, disabled_sources) = resolve_sources(
+            cx.arg,
+            cx.package,
+            cx.root_package_name,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            std::mem::take(&mut cx.min_properties.source_tables),
+            cx.database,
+            cx.adapter_type,
+            &cx.base_ctx,
+            &cx.jinja_env,
+            &mut cx.collected_generic_tests,
+            cx.test_name_truncations,
+            cx.seen_generic_test_paths,
+            &mut cx.node_resolver,
+        )
+        .await?;
+        cx.nodes.sources.extend(sources);
+        cx.disabled_nodes.sources.extend(disabled_sources);
+        Ok(())
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]

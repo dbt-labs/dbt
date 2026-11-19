@@ -4,12 +4,14 @@ use crate::dbt_project_config::RootProjectConfigs;
 use crate::dbt_project_config::disallow_plus_prefix_from_flags;
 use crate::dbt_project_config::init_project_config;
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_utils::validate_unit_test_compute;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::CodeLocationWithFile;
 use dbt_common::ErrorCode;
@@ -77,6 +79,36 @@ pub(crate) fn unit_test_jinja_join_error(
         },
         "Unit test Jinja task failed: {error}"
     )
+}
+
+/// How a package's unit tests resolve.
+pub(crate) struct UnitTests;
+
+#[async_trait]
+impl ResolvableNode for UnitTests {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        let (unit_tests, disabled_unit_tests) = resolve_unit_tests(
+            cx.arg,
+            std::mem::take(&mut cx.min_properties.unit_tests),
+            cx.package,
+            cx.dbt_state.root_package(),
+            cx.package_quoting,
+            cx.root_project_configs,
+            cx.package_name,
+            &cx.jinja_env,
+            &cx.base_ctx,
+            &cx.min_properties.models,
+            &cx.nodes.models,
+            &cx.dbt_state.packages,
+            cx.adapter_type,
+            &cx.node_resolver,
+        )
+        .await?;
+
+        cx.nodes.unit_tests.extend(unit_tests);
+        cx.disabled_nodes.unit_tests.extend(disabled_unit_tests);
+        Ok(())
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]

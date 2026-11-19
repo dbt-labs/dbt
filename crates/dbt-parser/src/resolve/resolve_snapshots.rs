@@ -7,6 +7,7 @@ use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
     render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
@@ -22,6 +23,7 @@ use crate::utils::{
     update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
@@ -61,6 +63,46 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// How a package's snapshots resolve.
+pub(crate) struct Snapshots;
+
+#[async_trait]
+impl ResolvableNode for Snapshots {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // TODO: resolve_snapshots still creates its own local JinjaTypeCheckingEventListenerFactory
+        // instead of receiving the top-level one, so snapshot macro dependencies are populated
+        // locally rather than via update_manifest_with_macro_depends_on. Out of scope for now.
+        // Resolve snapshots based on the dbt_state, database, schema, and project name
+        let (snapshots, disabled_snapshots) = resolve_snapshots(
+            cx.arg,
+            cx.package,
+            cx.package_quoting,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            std::mem::take(&mut cx.min_properties.snapshots),
+            &cx.macros.macros,
+            cx.database,
+            cx.schema,
+            cx.parse_adapter_scopes,
+            cx.adapter_type,
+            &cx.root_project_configs.adapter_quoting,
+            cx.jinja_env.clone(),
+            &cx.base_ctx,
+            cx.runtime_config.clone(),
+            cx.root_runtime_config.clone(),
+            &mut cx.node_resolver,
+            &mut cx.collected_generic_tests,
+            cx.test_name_truncations,
+            cx.seen_generic_test_paths,
+            cx.token,
+        )
+        .await?;
+        cx.nodes.snapshots.extend(snapshots);
+        cx.disabled_nodes.snapshots.extend(disabled_snapshots);
+        Ok(())
+    }
+}
 
 #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
 pub async fn resolve_snapshots(

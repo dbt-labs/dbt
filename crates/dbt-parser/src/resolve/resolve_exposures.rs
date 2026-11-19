@@ -2,9 +2,11 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::CodeLocationWithFile;
 use dbt_common::io_args::StaticAnalysisKind;
@@ -36,6 +38,32 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use super::resolve_properties::MinimalPropertiesEntry;
+
+/// How a package's exposures resolve.
+pub(crate) struct Exposures;
+
+#[async_trait]
+impl ResolvableNode for Exposures {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        let (exposures, disabled_exposures) = resolve_exposures(
+            cx.arg,
+            &mut cx.min_properties.exposures,
+            cx.package,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            cx.database,
+            cx.schema,
+            cx.adapter_type,
+            cx.package_name,
+            &cx.jinja_env,
+            &cx.base_ctx,
+        )
+        .await?;
+        cx.nodes.exposures.extend(exposures);
+        cx.disabled_nodes.exposures.extend(disabled_exposures);
+        Ok(())
+    }
+}
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_exposures(

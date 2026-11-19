@@ -11,6 +11,7 @@ use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_utils::RawProjectConfigsByAdapter;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
 use crate::resolve::resolve_utils::extract_config_map;
@@ -20,6 +21,7 @@ use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
 use crate::utils::{node_starting_database_and_schema, update_node_relation_components};
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 
 use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
@@ -156,6 +158,45 @@ fn parse_source_from_constraint(to: &str) -> Option<(String, String)> {
     let src = parts.next()?.trim().trim_matches(|c| c == '\'' || c == '"');
     let tbl = parts.next()?.trim().trim_matches(|c| c == '\'' || c == '"');
     Some((src.to_string(), tbl.to_string()))
+}
+
+/// How a package's models resolve.
+pub(crate) struct Models;
+
+#[async_trait]
+impl ResolvableNode for Models {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // Resolve SQLs and get nodes except refs and sources
+        let (models, disabled_models) = resolve_models(
+            cx.arg,
+            cx.package,
+            cx.package_quoting,
+            &cx.root_project_configs.adapter_quoting,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            &cx.min_properties.models,
+            // TODO: pass in typed_models_properties
+            cx.database,
+            cx.schema,
+            cx.parse_adapter_scopes,
+            cx.adapter_type,
+            cx.package_name,
+            cx.jinja_env.clone(),
+            &cx.base_ctx,
+            cx.runtime_config.clone(),
+            cx.root_runtime_config.clone(),
+            &mut cx.collected_generic_tests,
+            cx.test_name_truncations,
+            cx.seen_generic_test_paths,
+            &mut cx.node_resolver,
+            cx.token,
+            cx.jinja_type_checking_event_listener_factory.clone(),
+        )
+        .await?;
+        cx.nodes.models.extend(models);
+        cx.disabled_nodes.models.extend(disabled_models);
+        Ok(())
+    }
 }
 
 #[allow(

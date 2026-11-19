@@ -1,3 +1,5 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -62,6 +64,41 @@ struct CapturedOverload {
     functions: Vec<DbtRef>,
     sources: Vec<DbtSourceWrapper>,
     macros: Vec<String>,
+}
+
+/// How a package's functions resolve.
+pub(crate) struct Functions;
+
+#[async_trait]
+impl ResolvableNode for Functions {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // Resolve functions
+        let (functions, disabled_functions, function_bodies) = resolve_functions(
+            cx.arg,
+            cx.package,
+            cx.package_quoting,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            &mut cx.min_properties.functions,
+            cx.database,
+            cx.schema,
+            cx.parse_adapter_scopes,
+            cx.adapter_type,
+            &cx.root_project_configs.adapter_quoting,
+            cx.package_name,
+            cx.jinja_env.clone(),
+            &cx.base_ctx,
+            cx.runtime_config.clone(),
+            cx.root_runtime_config.clone(),
+            &mut cx.node_resolver,
+            cx.token,
+        )
+        .await?;
+        cx.nodes.functions.extend(functions);
+        cx.disabled_nodes.functions.extend(disabled_functions);
+        cx.function_bodies.extend(function_bodies);
+        Ok(())
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

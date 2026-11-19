@@ -1,3 +1,5 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -33,6 +35,37 @@ use crate::{
     renderer::{SqlFileRenderResult, render_unresolved_sql_files},
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
+
+/// How a package's checks resolve.
+pub(crate) struct Checks;
+
+#[async_trait]
+impl ResolvableNode for Checks {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // Resolve checks
+        let (checks, disabled_checks) = resolve_checks(
+            cx.arg,
+            cx.package,
+            cx.package_quoting,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            &mut cx.min_properties.checks,
+            cx.database,
+            cx.schema,
+            cx.adapter_type,
+            cx.package_name,
+            cx.jinja_env.clone(),
+            &cx.base_ctx,
+            cx.runtime_config.clone(),
+            cx.root_runtime_config.clone(),
+            cx.token,
+        )
+        .await?;
+        cx.nodes.checks.extend(checks);
+        cx.disabled_nodes.checks.extend(disabled_checks);
+        Ok(())
+    }
+}
 
 /// Resolve check resources for a package into [`DbtCheck`] nodes and rendered SQL.
 #[allow(clippy::too_many_arguments)]

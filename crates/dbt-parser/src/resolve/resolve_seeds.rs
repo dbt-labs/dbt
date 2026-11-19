@@ -1,6 +1,7 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_utils::{
     RawProjectConfigsByAdapter, err_resource_name_has_spaces, extract_config_map,
     node_effective_propagation_target, resolve_node_quoting, select_node_adapter,
@@ -10,6 +11,7 @@ use crate::utils::{
     register_duplicate_resource, trigger_duplicate_errors, update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
@@ -46,6 +48,39 @@ use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
+
+/// How a package's seeds resolve.
+pub(crate) struct Seeds;
+
+#[async_trait]
+impl ResolvableNode for Seeds {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // Resolve seeds based on the dbt_state, database, schema, and project name
+        let (seeds, disabled_seeds) = resolve_seeds(
+            cx.arg,
+            std::mem::take(&mut cx.min_properties.seeds),
+            cx.package,
+            &cx.root_project_configs.adapter_quoting,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            cx.database,
+            cx.schema,
+            cx.parse_adapter_scopes,
+            cx.adapter_type,
+            cx.package_name,
+            &cx.jinja_env,
+            &cx.base_ctx,
+            &mut cx.collected_generic_tests,
+            cx.test_name_truncations,
+            cx.seen_generic_test_paths,
+            &mut cx.node_resolver,
+        )
+        .await?;
+        cx.nodes.seeds.extend(seeds);
+        cx.disabled_nodes.seeds.extend(disabled_seeds);
+        Ok(())
+    }
+}
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_seeds(

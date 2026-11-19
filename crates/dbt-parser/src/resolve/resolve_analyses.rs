@@ -1,3 +1,5 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -40,6 +42,38 @@ use crate::{
     renderer::{SqlFileRenderResult, render_unresolved_sql_files},
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
+
+/// How a package's analyses resolve.
+pub(crate) struct Analyses;
+
+#[async_trait]
+impl ResolvableNode for Analyses {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // TODO: resolve_analyses still creates its own local JinjaTypeCheckingEventListenerFactory
+        // instead of receiving the top-level one — same issue as resolve_snapshots. Out of scope for now.
+        let analyses = resolve_analyses(
+            cx.arg,
+            cx.package,
+            cx.package_quoting,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            &mut cx.min_properties.analyses,
+            cx.database,
+            cx.schema,
+            cx.parse_adapter_scopes,
+            cx.adapter_type,
+            cx.package_name,
+            cx.jinja_env.clone(),
+            &cx.base_ctx,
+            cx.runtime_config.clone(),
+            cx.root_runtime_config.clone(),
+            cx.token,
+        )
+        .await?;
+        cx.nodes.analyses.extend(analyses);
+        Ok(())
+    }
+}
 
 /// Resolve analysis resources for a package into models and rendered SQL, updating refs/sources.
 #[allow(clippy::too_many_arguments)]

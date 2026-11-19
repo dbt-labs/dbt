@@ -2,11 +2,13 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{
     extract_resource_config_from_raw_project, get_node_fqn, get_original_file_path, get_unique_id,
 };
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
@@ -43,6 +45,39 @@ fn extract_raw_export_configs(
         }
     }
     export_configs
+}
+
+/// How a package's saved queries resolve.
+pub(crate) struct SavedQueries;
+
+#[async_trait]
+impl ResolvableNode for SavedQueries {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // A package on the legacy semantic layer YAML resolves none.
+        if cx.semantic_layer_spec_is_legacy {
+            return Ok(());
+        }
+        let (saved_queries, disabled_saved_queries) = resolve_saved_queries(
+            cx.adapter_type,
+            cx.arg,
+            cx.package,
+            cx.dbt_state.root_package(),
+            cx.root_package_name,
+            cx.root_project_configs,
+            &mut cx.min_properties.saved_queries,
+            cx.database,
+            cx.schema,
+            cx.package_name,
+            cx.jinja_env.clone(),
+            &cx.base_ctx,
+        )
+        .await?;
+        cx.nodes.saved_queries.extend(saved_queries);
+        cx.disabled_nodes
+            .saved_queries
+            .extend(disabled_saved_queries);
+        Ok(())
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

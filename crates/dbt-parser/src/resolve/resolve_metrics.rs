@@ -2,11 +2,13 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{
     extract_resource_config_from_raw_project, get_node_fqn, get_original_file_path, get_unique_id,
 };
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
 use dbt_common::path::DbtPath;
@@ -38,6 +40,36 @@ type ResolveMetricsResult = FsResult<(
     HashMap<String, Arc<DbtMetric>>,
     HashMap<String, Arc<DbtMetric>>,
 )>;
+
+/// How a package's metrics resolve.
+pub(crate) struct Metrics;
+
+#[async_trait]
+impl ResolvableNode for Metrics {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        // A package on the legacy semantic layer YAML resolves none.
+        if cx.semantic_layer_spec_is_legacy {
+            return Ok(());
+        }
+        let (metrics, disabled_metrics) = resolve_metrics(
+            cx.adapter_type,
+            cx.arg,
+            cx.package,
+            cx.dbt_state.root_package(),
+            cx.root_project_configs,
+            &cx.min_properties.models,
+            &cx.min_properties.metrics,
+            &cx.typed_models_properties,
+            cx.package_name,
+            &cx.jinja_env,
+            &cx.base_ctx,
+        )
+        .await?;
+        cx.nodes.metrics.extend(metrics);
+        cx.disabled_nodes.metrics.extend(disabled_metrics);
+        Ok(())
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_metrics(

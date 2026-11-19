@@ -1,3 +1,5 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use async_trait::async_trait;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -61,6 +63,37 @@ impl ResolvedExperimentalNodes {
         } else {
             self.disabled.insert(unique_id, Arc::new(node));
         }
+    }
+}
+
+/// How the nodes that experimentals add to a package resolve.
+pub(crate) struct Experimentals;
+
+#[async_trait]
+impl ResolvableNode for Experimentals {
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        let experimental_ctx = ExperimentalNodeContext {
+            args: cx.arg,
+            package: cx.package,
+            root_package: cx.dbt_state.root_package(),
+            database: cx.database,
+            schema: cx.schema,
+            adapter_type: cx.adapter_type,
+            env: &cx.jinja_env,
+            base_ctx: &cx.base_ctx,
+        };
+        let mut experimental_nodes = ResolvedExperimentalNodes::default();
+        resolve_experimentals(
+            &experimental_ctx,
+            cx.experimentals,
+            &mut cx.min_properties.experimental,
+            &mut experimental_nodes,
+        )?;
+        cx.nodes.experimentals.extend(experimental_nodes.enabled);
+        cx.disabled_nodes
+            .experimentals
+            .extend(experimental_nodes.disabled);
+        Ok(())
     }
 }
 
