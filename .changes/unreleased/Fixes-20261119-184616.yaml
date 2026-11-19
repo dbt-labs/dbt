@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[BigQuery] Keep a non-numeric `notebook_template_id` instead of silently dropping it'
+time: 2026-11-19T18:46:16.644791+01:00
+custom:
+    author: anor4k
+    issue: "17235"
+    project: dbt-core
