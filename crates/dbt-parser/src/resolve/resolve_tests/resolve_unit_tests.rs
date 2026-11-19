@@ -4,6 +4,9 @@ use crate::dbt_project_config::RootProjectConfigs;
 use crate::dbt_project_config::disallow_plus_prefix_from_flags;
 use crate::dbt_project_config::init_project_config;
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::properties_index::{
+    IndexCx, IndexedName, name_stripped, validate_resource_name,
+};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_utils::validate_unit_test_compute;
@@ -23,6 +26,7 @@ use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
 use dbt_common::stdfs;
+use dbt_yaml::Verbatim;
 
 use dbt_common::path::DbtPath;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -81,15 +85,63 @@ pub(crate) fn unit_test_jinja_join_error(
     )
 }
 
+/// The parts of a unit test's properties that are read when it is indexed.
+#[derive(Debug, serde::Deserialize)]
+struct MinimalUnitTestValue {
+    name: Spanned<String>,
+    // Typed so that a `model` or `versions` that doesn't render is an error here.
+    #[allow(dead_code)]
+    model: Option<String>,
+    #[allow(dead_code)]
+    versions: Option<dbt_yaml::Value>,
+    __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
+}
+
 /// How a package's unit tests resolve.
 pub(crate) struct UnitTests;
 
 #[async_trait]
 impl ResolvableNode for UnitTests {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["unit_tests"]
+    }
+
+    /// A unit test keeps where its name is written. Its name, model and versions are rendered on
+    /// the runtime's blocking pool.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        cx: &IndexCx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        let value = name_stripped(item);
+        let env = Arc::clone(cx.jinja_env);
+        let context = Arc::clone(cx.base_ctx);
+        let dependency_package = cx.dependency_package_name.map(str::to_owned);
+        let unit_test = dbt_runtime::spawn_blocking(move || {
+            into_typed_with_jinja::<MinimalUnitTestValue, _>(
+                value,
+                false,
+                &env,
+                context.as_ref(),
+                &[],
+                dependency_package.as_deref(),
+                true,
+            )
+        })
+        .await
+        .map_err(unit_test_jinja_join_error)??;
+        Ok(vec![IndexedName {
+            key,
+            name: validate_resource_name(unit_test.name.as_ref())?,
+            name_span: unit_test.name.span().clone(),
+        }])
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         let (unit_tests, disabled_unit_tests) = resolve_unit_tests(
             cx.arg,
-            std::mem::take(&mut cx.min_properties.unit_tests),
+            cx.properties.take_entries("unit_tests"),
             cx.package,
             cx.dbt_state.root_package(),
             cx.package_quoting,
@@ -957,19 +1009,22 @@ mod tests {
     #[dbt_runtime::test]
     async fn unit_test_discovery_jinja_uses_runtime_worker() -> FsResult<()> {
         let (env, calls) = runtime_probe_env();
-        let properties = dbt_yaml::from_str(
-            "unit_tests:\n  - name: 'runtime_{{ runtime_probe() }}'\n    model: my_model\n    given: []\n    expect:\n      rows: []\n",
+        let item: dbt_yaml::Value = dbt_yaml::from_str(
+            "name: 'runtime_{{ runtime_probe() }}'\nmodel: my_model\ngiven: []\nexpect:\n  rows: []\n",
         )?;
-        let mut minimal = crate::resolve::resolve_properties::MinimalProperties::default();
-        minimal
-            .extend_from_minimal_properties_file(
-                properties,
-                &env,
-                std::path::Path::new("models/unit_tests.yml"),
-                &BTreeMap::new(),
+        let env = Arc::new(env);
+        let names = UnitTests
+            .index_item(
+                "unit_tests",
+                &item,
+                &IndexCx {
+                    jinja_env: &env,
+                    base_ctx: &Arc::new(BTreeMap::new()),
+                    dependency_package_name: None,
+                },
             )
             .await?;
-        assert_eq!(minimal.unit_tests.len(), 1);
+        assert_eq!(names.len(), 1);
         assert!(calls.load(Ordering::SeqCst) > 0);
         Ok(())
     }

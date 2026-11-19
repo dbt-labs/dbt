@@ -416,19 +416,24 @@ where
 {
     let mut warnings: Vec<FsError> = Vec::new();
     let warn_unused_keys = |path: dbt_yaml::path::Path, key: &Value, _: &Value| {
-        let key_repr = dbt_yaml::to_string(key).unwrap_or_else(|_| "<opaque>".to_string());
-        let path = strip_dunder_fields_from_path(&path.to_string());
-        warnings.push(*fs_err!(
-            code => ErrorCode::UnusedConfigKey,
-            loc => key.span().clone(),
-            "Ignored unexpected key `{:?}`. YAML path: `{}`.", key_repr.trim(), path
-        ))
+        warnings.push(*unused_key_error(key, &path.to_string()))
     };
 
     let res = value
         .into_typed(warn_unused_keys, transform)
         .map_err(|e| yaml_to_fs_error(e, None))?;
     Ok((res, warnings))
+}
+
+/// The error for the key `key` at the YAML path `path`, which nothing reads.
+pub fn unused_key_error(key: &Value, path: &str) -> Box<FsError> {
+    let key_repr = dbt_yaml::to_string(key).unwrap_or_else(|_| "<opaque>".to_string());
+    let path = strip_dunder_fields_from_path(path);
+    fs_err!(
+        code => ErrorCode::UnusedConfigKey,
+        loc => key.span().clone(),
+        "Ignored unexpected key `{:?}`. YAML path: `{}`.", key_repr.trim(), path
+    )
 }
 
 /// Strips any dunder fields (fields of the form `__<something>__`) from a dot-separated path string.

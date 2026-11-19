@@ -7,6 +7,7 @@ use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
     render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
 };
+use crate::resolve::properties_index::{IndexCx, IndexedName, validate_resource_name};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
@@ -56,6 +57,7 @@ use dbt_schemas::schemas::{
 use dbt_schemas::state::{
     DbtAsset, DbtPackage, DbtRuntimeConfig, GenericTestAsset, ModelStatus, NodeResolverTracker,
 };
+use dbt_yaml::{Spanned, Verbatim};
 use indexmap::IndexMap;
 use minijinja::Value as MinijinjaValue;
 use std::collections::BTreeMap;
@@ -64,11 +66,37 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// The part of a snapshot's properties that names it.
+#[derive(Debug, serde::Deserialize)]
+struct MinimalSnapshotValue {
+    name: Spanned<String>,
+    __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
+}
+
 /// How a package's snapshots resolve.
 pub(crate) struct Snapshots;
 
 #[async_trait]
 impl ResolvableNode for Snapshots {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["snapshots"]
+    }
+
+    /// A snapshot keeps where its name is written.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        cx: &IndexCx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        let item: MinimalSnapshotValue = cx.typed(item)?;
+        Ok(vec![IndexedName {
+            key,
+            name: validate_resource_name(item.name.as_ref())?,
+            name_span: item.name.span().clone(),
+        }])
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // TODO: resolve_snapshots still creates its own local JinjaTypeCheckingEventListenerFactory
         // instead of receiving the top-level one, so snapshot macro dependencies are populated
@@ -80,7 +108,7 @@ impl ResolvableNode for Snapshots {
             cx.package_quoting,
             cx.dbt_state.root_package(),
             cx.root_project_configs,
-            std::mem::take(&mut cx.min_properties.snapshots),
+            cx.properties.take_entries("snapshots"),
             &cx.macros.macros,
             cx.database,
             cx.schema,

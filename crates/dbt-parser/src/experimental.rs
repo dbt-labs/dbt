@@ -375,6 +375,15 @@ impl ActiveExperimentals {
             .find(|experimental| reads(experimental.as_ref(), key))
     }
 
+    /// `key` as the experimental that is on and reads it names it, under `experimental:` and
+    /// `experimental-paths:`.
+    pub(crate) fn key_read(&self, key: &str) -> Option<&'static str> {
+        self.on
+            .iter()
+            .flat_map(|experimental| keys(experimental.as_ref()))
+            .find(|own| *own == key)
+    }
+
     /// Whether `key` is reserved.
     pub(crate) fn is_reserved(&self, key: &str) -> bool {
         self.reserved.contains(&key)

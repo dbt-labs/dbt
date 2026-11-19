@@ -82,11 +82,18 @@ impl ResolvableNode for Experimentals {
             env: &cx.jinja_env,
             base_ctx: &cx.base_ctx,
         };
+        // The entries under each key of the experimentals that are on.
+        let mut entries = BTreeMap::new();
+        for experimental in &cx.experimentals.on {
+            for key in keys(experimental.as_ref()) {
+                entries.insert(key.to_string(), cx.properties.take_entries(key));
+            }
+        }
         let mut experimental_nodes = ResolvedExperimentalNodes::default();
         resolve_experimentals(
             &experimental_ctx,
             cx.experimentals,
-            &mut cx.min_properties.experimental,
+            &mut entries,
             &mut experimental_nodes,
         )?;
         cx.nodes.experimentals.extend(experimental_nodes.enabled);

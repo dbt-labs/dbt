@@ -1,3 +1,4 @@
+use crate::resolve::properties_index::{IndexCx, IndexedName, validate_resource_name};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -48,6 +49,24 @@ pub(crate) struct Analyses;
 
 #[async_trait]
 impl ResolvableNode for Analyses {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["analyses"]
+    }
+
+    /// The whole item is typed, so an analysis with invalid properties is an error here.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        cx: &IndexCx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        let item: AnalysesProperties = cx.typed(item)?;
+        Ok(vec![IndexedName::new(
+            key,
+            validate_resource_name(&item.name)?,
+        )])
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // TODO: resolve_analyses still creates its own local JinjaTypeCheckingEventListenerFactory
         // instead of receiving the top-level one — same issue as resolve_snapshots. Out of scope for now.
@@ -57,7 +76,7 @@ impl ResolvableNode for Analyses {
             cx.package_quoting,
             cx.dbt_state.root_package(),
             cx.root_project_configs,
-            &mut cx.min_properties.analyses,
+            &mut cx.properties.take_entries("analyses"),
             cx.database,
             cx.schema,
             cx.parse_adapter_scopes,

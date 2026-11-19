@@ -1010,7 +1010,8 @@ pub async fn resolve_inner(
         Some(root_runtime_config.clone()),
     ));
     // Resolve the dbt properties (schema.yml) files
-    let mut min_properties = resolve_minimal_properties(
+    let (min_properties, properties) = resolve_minimal_properties(
+        &RESOLVABLE_NODES,
         arg,
         package,
         dbt_state.root_package(),
@@ -1025,9 +1026,6 @@ pub async fn resolve_inner(
     .await?;
 
     let package_name = package.dbt_project.name.as_str();
-
-    // Collect macro properties for patching later (after all packages resolved)
-    let macro_properties = std::mem::take(&mut min_properties.macros);
 
     let dbt_tests_dir = arg.io.out_dir.join(DBT_GENERIC_TESTS_DIR_NAME);
     stdfs::create_dir_all(&dbt_tests_dir)?;
@@ -1107,7 +1105,9 @@ pub async fn resolve_inner(
         package_quoting,
         semantic_layer_spec_is_legacy,
         typed_models_properties,
+        properties,
         min_properties,
+        macro_properties: BTreeMap::new(),
         nodes: Nodes::default(),
         disabled_nodes: Nodes::default(),
         function_bodies: HashMap::new(),
@@ -1134,7 +1134,7 @@ pub async fn resolve_inner(
         cx.function_bodies,
         cx.node_resolver,
         cx.semantic_layer_spec_is_legacy,
-        macro_properties,
+        cx.macro_properties,
     ))
 }
 

@@ -1,3 +1,4 @@
+use crate::resolve::properties_index::{IndexCx, IndexedName};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
@@ -8,6 +9,7 @@ use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::nodes::{CommonAttributes, DbtGroup, DbtGroupAttr, NodeBaseAttributes};
+use dbt_schemas::schemas::properties::MinimalSchemaValue;
 use dbt_schemas::schemas::properties::{GroupConfig, GroupProperties};
 use minijinja::value::Value as MinijinjaValue;
 use std::collections::BTreeMap;
@@ -21,10 +23,25 @@ pub(crate) struct Groups;
 
 #[async_trait]
 impl ResolvableNode for Groups {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["groups"]
+    }
+
+    /// The name of a group is not checked for forbidden characters.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        cx: &IndexCx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        let item: MinimalSchemaValue = cx.typed(item)?;
+        Ok(vec![IndexedName::new(key, item.name)])
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         let (groups, disabled_groups) = resolve_groups(
             cx.adapter_type,
-            &mut cx.min_properties.groups,
+            &mut cx.properties.take_entries("groups"),
             cx.package_name,
             &cx.jinja_env,
             &cx.base_ctx,

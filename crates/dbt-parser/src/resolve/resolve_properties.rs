@@ -3,31 +3,35 @@ use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::experimental::ActiveExperimentals;
-use crate::resolve::resolve_tests::resolve_unit_tests::unit_test_jinja_join_error;
+use crate::resolve::properties_index::{
+    IndexCx, PackageProperties, PropertiesFile, name_stripped, validate_resource_name,
+};
+use crate::resolve::resolvable_node::ResolvableNode;
 use crate::resolve::resolve_utils::deep_merge_yaml;
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_utils::try_read_yml_to_str;
 use dbt_common::tracing::dbt_emit::{emit_strict_parse_error, emit_warn_log_message};
 use dbt_common::tracing::span_info::SpanStatusRecorder as _;
-use dbt_common::{ErrorCode, FsResult, create_debug_span, fs_err};
+use dbt_common::{ErrorCode, FsResult, create_debug_span};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
-use dbt_jinja_utils::serde::{from_yaml_raw, into_typed_with_jinja};
+use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
-use dbt_schemas::schemas::properties::{
-    AnalysesProperties, CheckProperties, DbtPropertiesFileValues, MinimalExperimentalEntryValue,
-    MinimalSchemaValue, MinimalTableValue, MinimalUnitTestValue,
-};
-use dbt_schemas::schemas::serde::{FloatOrString, strip_one_trailing_newline_at_keys};
+use dbt_schemas::schemas::properties::{MinimalSchemaValue, MinimalTableValue};
+use dbt_schemas::schemas::serde::FloatOrString;
 use dbt_schemas::state::DbtPackage;
 use dbt_telemetry::AssetParsed;
-use dbt_yaml::{Span, Spanned, Verbatim};
+use dbt_yaml::{Span, Verbatim};
 use itertools::Itertools;
 use minijinja::Value as MinijinjaValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::Instrument;
+
+/// The top-level keys of properties files that this pass reads a list of items from, besides the
+/// keys of the kinds of node.
+const LIST_KEYS: [&str; 3] = ["models", "sources", "semantic_models"];
 
 #[derive(Debug, Clone)]
 pub struct MinimalPropertiesEntry {
@@ -40,99 +44,25 @@ pub struct MinimalPropertiesEntry {
     pub duplicate_paths: Vec<PathBuf>,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct MinimalSnapshotValue {
-    name: Spanned<String>,
-    __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
-}
-
 #[derive(Default, Debug)]
 pub struct MinimalProperties {
     pub source_tables: BTreeMap<(String, String), MinimalPropertiesEntry>,
     pub models: BTreeMap<String, MinimalPropertiesEntry>,
-    pub analyses: BTreeMap<String, MinimalPropertiesEntry>,
-    pub checks: BTreeMap<String, MinimalPropertiesEntry>,
-    pub seeds: BTreeMap<String, MinimalPropertiesEntry>,
-    pub snapshots: BTreeMap<String, MinimalPropertiesEntry>,
-    pub functions: BTreeMap<String, MinimalPropertiesEntry>,
-    pub unit_tests: BTreeMap<String, MinimalPropertiesEntry>,
-    pub tests: BTreeMap<String, MinimalPropertiesEntry>,
-    pub exposures: BTreeMap<String, MinimalPropertiesEntry>,
-    pub metrics: BTreeMap<String, MinimalPropertiesEntry>,
-    pub saved_queries: BTreeMap<String, MinimalPropertiesEntry>,
-    pub groups: BTreeMap<String, MinimalPropertiesEntry>,
-    pub macros: BTreeMap<String, MinimalPropertiesEntry>,
-    /// Entries under `experimental:`, by key (an experimental type or a definition key) and then
-    /// name.
-    pub experimental: BTreeMap<String, BTreeMap<String, MinimalPropertiesEntry>>,
     pub semantic_layer_spec_is_legacy: bool,
 }
 
 // impl try extend from MinimalResolvedProperties
 #[allow(clippy::cognitive_complexity)]
 impl MinimalProperties {
-    /// Collects the entries under `experimental:` in one properties file.
-    pub fn extend_from_experimental_values(
-        &mut self,
-        experimental_values: Vec<(String, dbt_yaml::Value)>,
-        jinja_env: &JinjaEnv,
-        properties_path: &Path,
-        base_ctx: &BTreeMap<String, MinijinjaValue>,
-    ) -> FsResult<()> {
-        for (key, value) in experimental_values {
-            let entries = self.experimental.entry(key.clone()).or_default();
-            if value.is_null() {
-                continue;
-            }
-            let Some(values) = value.as_sequence() else {
-                return Err(fs_err!(
-                    code => ErrorCode::InvalidConfig,
-                    loc => properties_path.to_path_buf(),
-                    "`experimental: {}` must be a list",
-                    key
-                ));
-            };
-            for entry_value in values {
-                let entry = into_typed_with_jinja::<MinimalExperimentalEntryValue, _>(
-                    name_stripped(entry_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                let name = validate_resource_name(&entry.name)?;
-                if let Some(existing) = entries.get_mut(&name) {
-                    existing.duplicate_paths.push(properties_path.to_path_buf());
-                    continue;
-                }
-                entries.insert(
-                    name.clone(),
-                    MinimalPropertiesEntry {
-                        name,
-                        name_span: Span::default(),
-                        relative_path: properties_path.to_path_buf(),
-                        schema_value: entry_value.clone(),
-                        table_value: None,
-                        version_info: None,
-                        duplicate_paths: vec![],
-                    },
-                );
-            }
-        }
-        Ok(())
-    }
-
     pub async fn extend_from_minimal_properties_file(
         &mut self,
-        other: DbtPropertiesFileValues,
+        file: &mut PropertiesFile,
         jinja_env: &Arc<JinjaEnv>,
         properties_path: &Path,
         base_ctx: &BTreeMap<String, MinijinjaValue>,
     ) -> FsResult<()> {
         // TODO: This is a bit repetetive. Can be shortened!
-        if let Some(models) = other.models {
+        if let Some(models) = file.take_items("models") {
             // Extend but error on duplicate keys
             for model_value in models {
                 let model = into_typed_with_jinja::<MinimalSchemaValue, _>(
@@ -178,69 +108,7 @@ impl MinimalProperties {
                 }
             }
         }
-        if let Some(analyses) = other.analyses {
-            for analysis_value in analyses {
-                let analysis = into_typed_with_jinja::<AnalysesProperties, _>(
-                    name_stripped(&analysis_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_analysis) = self.analyses.get_mut(&analysis.name) {
-                    existing_analysis
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.analyses.insert(
-                        analysis.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(&analysis.name)?,
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: analysis_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(checks) = other.checks {
-            for check_value in checks {
-                let check = into_typed_with_jinja::<CheckProperties, _>(
-                    name_stripped(&check_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_check) = self.checks.get_mut(&check.name) {
-                    existing_check
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.checks.insert(
-                        check.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(&check.name)?,
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: check_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(sources) = other.sources {
+        if let Some(sources) = file.take_items("sources") {
             for mut source_value in sources {
                 // Pre-render the `tables` field if it is a single Jinja expression
                 // (e.g. `{{ var('source_tables') }}`). MinimalSchemaValue wraps
@@ -331,388 +199,42 @@ impl MinimalProperties {
                 }
             }
         }
-        if let Some(seeds) = other.seeds {
-            for seed_value in seeds {
-                let seed = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    name_stripped(&seed_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_seed) = self.seeds.get_mut(&seed.name) {
-                    existing_seed
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.seeds.insert(
-                        seed.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(&seed.name)?,
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: seed_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(snapshots) = other.snapshots {
-            for snapshot_value in snapshots {
-                let snapshot = into_typed_with_jinja::<MinimalSnapshotValue, _>(
-                    name_stripped(&snapshot_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_snapshot) = self.snapshots.get_mut(snapshot.name.as_ref()) {
-                    existing_snapshot
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.snapshots.insert(
-                        snapshot.name.clone().into_inner(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(snapshot.name.as_ref())?,
-                            name_span: snapshot.name.span().clone(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: snapshot_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(functions) = other.functions {
-            for function_value in functions {
-                let function = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    name_stripped(&function_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_function) = self.functions.get_mut(&function.name) {
-                    existing_function
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.functions.insert(
-                        function.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(&function.name)?,
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: function_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(exposures) = other.exposures {
-            for exposure_value in exposures {
-                let exposure = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    name_stripped(&exposure_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                self.exposures.insert(
-                    exposure.name.clone(),
-                    MinimalPropertiesEntry {
-                        name: validate_resource_name(&exposure.name)?,
-                        name_span: Span::default(),
-                        relative_path: properties_path.to_path_buf(),
-                        schema_value: exposure_value,
-                        table_value: None,
-                        version_info: None,
-                        duplicate_paths: vec![],
-                    },
-                );
-            }
-        }
-        if let Some(metrics) = other.metrics {
-            for metric_value in metrics {
-                let metric = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    name_stripped(&metric_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_metric) = self.metrics.get_mut(&metric.name) {
-                    existing_metric
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.metrics.insert(
-                        metric.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(&metric.name)?,
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: metric_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(saved_queries) = other.saved_queries {
-            for saved_query_value in saved_queries {
-                let saved_query = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    name_stripped(&saved_query_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_saved_query) = self.saved_queries.get_mut(&saved_query.name) {
-                    existing_saved_query
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.saved_queries.insert(
-                        saved_query.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(&saved_query.name)?,
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: saved_query_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(unit_tests) = other.unit_tests {
-            for unit_test_value in unit_tests {
-                let value = name_stripped(&unit_test_value);
-                let env = Arc::clone(jinja_env);
-                let context = base_ctx.clone();
-                let dependency_package =
-                    dependency_package_name_from_ctx(jinja_env, base_ctx).map(str::to_owned);
-                let unit_test = dbt_runtime::spawn_blocking(move || {
-                    into_typed_with_jinja::<MinimalUnitTestValue, _>(
-                        value,
-                        false,
-                        &env,
-                        &context,
-                        &[],
-                        dependency_package.as_deref(),
-                        true,
-                    )
-                })
-                .await
-                .map_err(unit_test_jinja_join_error)??;
-                if let Some(existing_unit_test) = self.unit_tests.get_mut(unit_test.name.as_ref()) {
-                    existing_unit_test
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.unit_tests.insert(
-                        unit_test.name.clone().into_inner(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(unit_test.name.as_ref())?,
-                            name_span: unit_test.name.span().clone(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: unit_test_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(tests) = other.tests {
-            for test_value in tests {
-                let test = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    name_stripped(&test_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_test) = self.tests.get_mut(&test.name) {
-                    existing_test
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.tests.insert(
-                        test.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(&test.name)?,
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: test_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(data_tests) = other.data_tests {
-            for test_value in data_tests {
-                let test = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    name_stripped(&test_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_test) = self.tests.get_mut(&test.name) {
-                    existing_test
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.tests.insert(
-                        test.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(&test.name)?,
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: test_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(groups) = other.groups {
-            for group_value in groups {
-                let group = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    name_stripped(&group_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_group) = self.groups.get_mut(&group.name) {
-                    existing_group
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.groups.insert(
-                        group.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: group.name.clone(),
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: group_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(macros) = other.macros {
-            for macro_value in macros {
-                // Only `name` is needed here. The full `MacrosProperties` renders every string
-                // field and discards it, double-rendering what `apply_macro_patches` renders.
-                let macro_props = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    name_stripped(&macro_value),
-                    false,
-                    jinja_env,
-                    base_ctx,
-                    &[],
-                    dependency_package_name_from_ctx(jinja_env, base_ctx),
-                    true,
-                )?;
-                if let Some(existing_macro) = self.macros.get_mut(&macro_props.name) {
-                    existing_macro
-                        .duplicate_paths
-                        .push(properties_path.to_path_buf());
-                } else {
-                    self.macros.insert(
-                        macro_props.name.clone(),
-                        MinimalPropertiesEntry {
-                            name: validate_resource_name(&macro_props.name)?,
-                            name_span: Span::default(),
-                            relative_path: properties_path.to_path_buf(),
-                            schema_value: macro_value,
-                            table_value: None,
-                            version_info: None,
-                            duplicate_paths: vec![],
-                        },
-                    );
-                }
-            }
-        }
-
         Ok(())
-    }
-}
-
-fn validate_resource_name(name: &str) -> FsResult<String> {
-    // Check for the space character for now. This can be extended anytime we deprecate
-    // more of special characters like !@#%$":'
-    if name.chars().any(|c| matches!(c, ' ')) {
-        let err = fs_err!(
-            ErrorCode::DbtYamlValidationError,
-            "Resource name '{}' contains forbidden characters",
-            name
-        );
-        Err(err)
-    } else {
-        Ok(name.to_string())
     }
 }
 
 #[allow(clippy::cognitive_complexity)]
 pub async fn resolve_minimal_properties(
+    kinds: &[&dyn ResolvableNode],
     arg: &ResolveArgs,
     package: &DbtPackage,
     root_package: &DbtPackage,
     root_package_name: &str,
     root_project_configs: &RootProjectConfigs,
     jinja_env: &Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, MinijinjaValue>,
+    base_ctx: &Arc<BTreeMap<String, MinijinjaValue>>,
     token: &CancellationToken,
     adapter_type: AdapterType,
     experimentals: &ActiveExperimentals,
-) -> FsResult<MinimalProperties> {
+) -> FsResult<(MinimalProperties, PackageProperties)> {
     let mut minimal_resolved_properties = MinimalProperties {
         semantic_layer_spec_is_legacy: false,
         ..Default::default()
+    };
+    let mut properties = PackageProperties::default();
+    let list_keys: Vec<&str> = LIST_KEYS
+        .into_iter()
+        .chain(
+            kinds
+                .iter()
+                .flat_map(|kind| kind.properties_keys())
+                .copied(),
+        )
+        .collect();
+    let index_cx = IndexCx {
+        jinja_env,
+        base_ctx,
+        dependency_package_name: dependency_package_name_from_ctx(jinja_env, base_ctx),
     };
 
     let is_dependency = package.dbt_project.name != root_package_name;
@@ -761,38 +283,40 @@ pub async fn resolve_minimal_properties(
         async {
             let input = try_read_yml_to_str(&absolute_path)?;
 
-            let result = match from_yaml_raw::<DbtPropertiesFileValues>(
+            let result = match PropertiesFile::read(
                 &input,
-                Some(&absolute_path),
-                true,
+                &dbt_asset.path,
+                &absolute_path,
                 dependency_package_name,
+                &list_keys,
             ) {
-                Ok(properties_file_values) => {
+                Ok(mut file) => {
                     let properties_path = &dbt_asset.path;
                     minimal_resolved_properties
                         .extend_from_minimal_properties_file(
-                            properties_file_values.clone(),
+                            &mut file,
                             jinja_env,
                             properties_path,
                             base_ctx,
                         )
                         .await?;
-                    let (experimental_values, ignored): (Vec<_>, Vec<_>) = properties_file_values
-                        .experimental
-                        .clone()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .partition(|(key, _)| experimentals.reading(key).is_some());
-                    ignored_experimental_keys.extend(ignored.into_iter().map(|(key, _)| key));
-                    minimal_resolved_properties.extend_from_experimental_values(
-                        experimental_values,
-                        jinja_env,
-                        properties_path,
-                        base_ctx,
-                    )?;
+                    let experimental = file.experimental.take().unwrap_or_default();
+                    let has_semantic_models = file.has_items("semantic_models");
+                    let file_id = properties.index_file(kinds, file, &index_cx).await?;
+
+                    for (key, value) in experimental {
+                        match experimentals.key_read(&key) {
+                            Some(key) => properties.index_experimental_items(
+                                file_id, key, value, &index_cx,
+                            )?,
+                            None => {
+                                ignored_experimental_keys.insert(key);
+                            }
+                        }
+                    }
 
                     if !minimal_resolved_properties.semantic_layer_spec_is_legacy
-                        && let Some(_semantic_models) = properties_file_values.semantic_models
+                        && has_semantic_models
                     {
                         // Check whether the root project has explicitly disabled this package's
                         // semantic models. If so, suppress the legacy warning and skip them.
@@ -852,7 +376,7 @@ pub async fn resolve_minimal_properties(
             );
         }
     }
-    Ok(minimal_resolved_properties)
+    Ok((minimal_resolved_properties, properties))
 }
 
 #[derive(Debug, Clone)]
@@ -1005,13 +529,6 @@ pub fn collect_model_version_info(
 /// `MinimalSchemaValue.tables` is wrapped in `Verbatim` (to protect table
 /// *contents* from premature rendering), which also blocks the field-level
 /// Jinja transform that would normally expand the string into a sequence.
-/// Clone of a schema-yaml entry with `name`'s trailing newline dropped, before Jinja runs.
-fn name_stripped(value: &dbt_yaml::Value) -> dbt_yaml::Value {
-    let mut value = value.clone();
-    strip_one_trailing_newline_at_keys(&mut value, &["name"]);
-    value
-}
-
 fn pre_render_tables_field(
     source_value: &mut dbt_yaml::Value,
     jinja_env: &JinjaEnv,

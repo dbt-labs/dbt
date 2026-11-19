@@ -54,11 +54,15 @@ pub(crate) struct Seeds;
 
 #[async_trait]
 impl ResolvableNode for Seeds {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["seeds"]
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // Resolve seeds based on the dbt_state, database, schema, and project name
         let (seeds, disabled_seeds) = resolve_seeds(
             cx.arg,
-            std::mem::take(&mut cx.min_properties.seeds),
+            cx.properties.take_entries("seeds"),
             cx.package,
             &cx.root_project_configs.adapter_quoting,
             cx.dbt_state.root_package(),

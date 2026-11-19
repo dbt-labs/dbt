@@ -71,6 +71,10 @@ pub(crate) struct Functions;
 
 #[async_trait]
 impl ResolvableNode for Functions {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["functions"]
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // Resolve functions
         let (functions, disabled_functions, function_bodies) = resolve_functions(
@@ -79,7 +83,7 @@ impl ResolvableNode for Functions {
             cx.package_quoting,
             cx.dbt_state.root_package(),
             cx.root_project_configs,
-            &mut cx.min_properties.functions,
+            &mut cx.properties.take_entries("functions"),
             cx.database,
             cx.schema,
             cx.parse_adapter_scopes,

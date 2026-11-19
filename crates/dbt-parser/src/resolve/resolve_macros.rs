@@ -31,9 +31,29 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
+use async_trait::async_trait;
 
 use crate::utils::parse_macro_statements;
+
+/// The properties of a package's macros.
+///
+/// Macros resolve before any package's nodes. Their properties are only collected here:
+/// [`apply_macro_patches`] applies them once every package has resolved.
+pub(crate) struct MacroProperties;
+
+#[async_trait]
+impl ResolvableNode for MacroProperties {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["macros"]
+    }
+
+    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        cx.macro_properties = cx.properties.take_entries("macros");
+        Ok(())
+    }
+}
 
 /// Resolve docs macros from a list of docs macro files
 pub fn resolve_docs_macros(

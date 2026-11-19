@@ -1,5 +1,7 @@
 /// Utilities for inferring model primary keys from constraints and tests
 pub(crate) mod primary_key_inference;
+/// The properties files of one package
+pub(crate) mod properties_index;
 /// What the kinds of node of one package resolve with
 pub(crate) mod resolvable_node;
 /// Functions for resolving analyses

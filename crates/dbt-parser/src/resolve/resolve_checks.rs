@@ -1,3 +1,4 @@
+use crate::resolve::properties_index::{IndexCx, IndexedName, validate_resource_name};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -41,6 +42,24 @@ pub(crate) struct Checks;
 
 #[async_trait]
 impl ResolvableNode for Checks {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["checks"]
+    }
+
+    /// The whole item is typed, so a check with invalid properties is an error here.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        cx: &IndexCx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        let item: CheckProperties = cx.typed(item)?;
+        Ok(vec![IndexedName::new(
+            key,
+            validate_resource_name(&item.name)?,
+        )])
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // Resolve checks
         let (checks, disabled_checks) = resolve_checks(
@@ -49,7 +68,7 @@ impl ResolvableNode for Checks {
             cx.package_quoting,
             cx.dbt_state.root_package(),
             cx.root_project_configs,
-            &mut cx.min_properties.checks,
+            &mut cx.properties.take_entries("checks"),
             cx.database,
             cx.schema,
             cx.adapter_type,

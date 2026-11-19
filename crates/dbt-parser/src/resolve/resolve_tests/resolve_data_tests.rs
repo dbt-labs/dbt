@@ -8,6 +8,7 @@ use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
 use crate::resolve::primary_key_inference::infer_and_apply_primary_keys;
+use crate::resolve::properties_index::{IndexCx, IndexedName, validate_resource_name};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_tests::persist_generic_data_tests::format_node_unique_id;
@@ -63,6 +64,7 @@ use dbt_schemas::schemas::project::DataTestConfig;
 use dbt_schemas::schemas::project::ResolvableConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
 use dbt_schemas::schemas::properties::DataTestProperties;
+use dbt_schemas::schemas::properties::MinimalSchemaValue;
 use dbt_schemas::schemas::properties::ModelProperties;
 use dbt_schemas::schemas::ref_and_source::DbtRef;
 use dbt_schemas::schemas::ref_and_source::DbtSourceWrapper;
@@ -376,6 +378,24 @@ pub(crate) struct DataTests;
 
 #[async_trait]
 impl ResolvableNode for DataTests {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["tests", "data_tests"]
+    }
+
+    /// The items under `tests` and `data_tests` are one set of entries, found under `tests`.
+    async fn index_item(
+        &self,
+        _key: &'static str,
+        item: &dbt_yaml::Value,
+        cx: &IndexCx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        let item: MinimalSchemaValue = cx.typed(item)?;
+        Ok(vec![IndexedName::new(
+            "tests",
+            validate_resource_name(&item.name)?,
+        )])
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // Scoped so the span handle drops on both exits: SpanEnd fires on last-handle-drop.
         // operation_id has the package name: resolve_inner runs concurrently across packages.
@@ -391,7 +411,7 @@ impl ResolvableNode for DataTests {
                 cx.package_quoting,
                 cx.dbt_state.root_package(),
                 cx.root_project_configs,
-                &mut cx.min_properties.tests,
+                &mut cx.properties.take_entries("tests"),
                 cx.database,
                 cx.schema,
                 cx.parse_adapter_scopes,

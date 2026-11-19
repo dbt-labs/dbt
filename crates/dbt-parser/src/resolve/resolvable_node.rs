@@ -3,15 +3,19 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
 use crate::experimental::ActiveExperimentals;
+use crate::resolve::properties_index::{
+    IndexCx, IndexedName, PackageProperties, validate_resource_name,
+};
 use crate::resolve::resolve_analyses::Analyses;
 use crate::resolve::resolve_checks::Checks;
 use crate::resolve::resolve_experimentals::Experimentals;
 use crate::resolve::resolve_exposures::Exposures;
 use crate::resolve::resolve_functions::Functions;
 use crate::resolve::resolve_groups::Groups;
+use crate::resolve::resolve_macros::MacroProperties;
 use crate::resolve::resolve_metrics::Metrics;
 use crate::resolve::resolve_models::Models;
-use crate::resolve::resolve_properties::MinimalProperties;
+use crate::resolve::resolve_properties::{MinimalProperties, MinimalPropertiesEntry};
 use crate::resolve::resolve_saved_queries::SavedQueries;
 use crate::resolve::resolve_seeds::Seeds;
 use crate::resolve::resolve_semantic_models::SemanticModels;
@@ -29,26 +33,50 @@ use dbt_jinja_utils::node_resolver::NodeResolver;
 use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_schemas::schemas::Nodes;
 use dbt_schemas::schemas::common::DbtQuoting;
-use dbt_schemas::schemas::properties::ModelProperties;
+use dbt_schemas::schemas::properties::{MinimalSchemaValue, ModelProperties};
 use dbt_schemas::state::{DbtPackage, DbtRuntimeConfig, DbtState, GenericTestAsset, Macros};
 use minijinja::Value as MinijinjaValue;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// One kind of node a package defines: how its nodes of one package resolve.
+/// One kind of node a package defines: the properties it owns, and how its nodes of one package
+/// resolve.
 #[async_trait]
 pub(crate) trait ResolvableNode: Send + Sync {
+    /// The top-level keys of properties files that hold the kind's items.
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// The names that `item`, under the kind's key `key`, defines.
+    ///
+    /// The default is one name, found under `key`: the item's `name`, with Jinja rendered. An
+    /// error fails the package's resolution.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        cx: &IndexCx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        let item: MinimalSchemaValue = cx.typed(item)?;
+        Ok(vec![IndexedName::new(
+            key,
+            validate_resource_name(&item.name)?,
+        )])
+    }
+
     /// Resolves the kind's nodes of `cx.package`, and adds them to `cx.nodes` and
     /// `cx.disabled_nodes`.
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()>;
 }
 
-/// dbt's kinds of node, in the order they resolve.
+/// dbt's kinds of node, in the order they resolve. The items of a properties file are indexed
+/// kind by kind in the same order.
 ///
 /// A kind reads the nodes of the kinds before it. Data tests read the sources, seeds, snapshots
 /// and models that declare them. Semantic models and unit tests read models.
-pub(crate) static RESOLVABLE_NODES: [&dyn ResolvableNode; 15] = [
+pub(crate) static RESOLVABLE_NODES: [&dyn ResolvableNode; 16] = [
     &Sources,
     &Seeds,
     &Snapshots,
@@ -64,6 +92,7 @@ pub(crate) static RESOLVABLE_NODES: [&dyn ResolvableNode; 15] = [
     &SavedQueries,
     &DataTests,
     &UnitTests,
+    &MacroProperties,
 ];
 
 /// What resolving one package's nodes reads, and what it has resolved so far.
@@ -103,8 +132,13 @@ pub(crate) struct ResolveCx<'a> {
     /// The typed properties of the models that have a `semantic_model` or `metrics`.
     pub(crate) typed_models_properties: BTreeMap<String, ModelProperties>,
 
-    /// The entries of the package's properties files. A kind consumes its own.
+    /// The package's properties files, and the index of what they define. A kind takes its own
+    /// entries.
+    pub(crate) properties: PackageProperties,
+    /// The entries of models and of the tables of sources, which are not indexed by location.
     pub(crate) min_properties: MinimalProperties,
+    /// The properties of the package's macros. They are applied once every package has resolved.
+    pub(crate) macro_properties: BTreeMap<String, MinimalPropertiesEntry>,
     /// The package's nodes resolved so far.
     pub(crate) nodes: Nodes,
     /// The package's disabled nodes resolved so far.

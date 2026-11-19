@@ -52,6 +52,10 @@ pub(crate) struct SavedQueries;
 
 #[async_trait]
 impl ResolvableNode for SavedQueries {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["saved_queries"]
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // A package on the legacy semantic layer YAML resolves none.
         if cx.semantic_layer_spec_is_legacy {
@@ -64,7 +68,7 @@ impl ResolvableNode for SavedQueries {
             cx.dbt_state.root_package(),
             cx.root_package_name,
             cx.root_project_configs,
-            &mut cx.min_properties.saved_queries,
+            &mut cx.properties.take_entries("saved_queries"),
             cx.database,
             cx.schema,
             cx.package_name,

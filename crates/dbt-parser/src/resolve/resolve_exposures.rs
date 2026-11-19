@@ -44,10 +44,15 @@ pub(crate) struct Exposures;
 
 #[async_trait]
 impl ResolvableNode for Exposures {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["exposures"]
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         let (exposures, disabled_exposures) = resolve_exposures(
             cx.arg,
-            &mut cx.min_properties.exposures,
+            // A later definition of an exposure replaces an earlier one.
+            &mut cx.properties.take_last_entries("exposures"),
             cx.package,
             cx.dbt_state.root_package(),
             cx.root_project_configs,

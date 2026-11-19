@@ -46,6 +46,10 @@ pub(crate) struct Metrics;
 
 #[async_trait]
 impl ResolvableNode for Metrics {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["metrics"]
+    }
+
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
         // A package on the legacy semantic layer YAML resolves none.
         if cx.semantic_layer_spec_is_legacy {
@@ -58,7 +62,7 @@ impl ResolvableNode for Metrics {
             cx.dbt_state.root_package(),
             cx.root_project_configs,
             &cx.min_properties.models,
-            &cx.min_properties.metrics,
+            &cx.properties.take_entries("metrics"),
             &cx.typed_models_properties,
             cx.package_name,
             &cx.jinja_env,
