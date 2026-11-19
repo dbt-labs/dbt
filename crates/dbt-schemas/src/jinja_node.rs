@@ -16,6 +16,14 @@ use serde::Serialize;
 use crate::schemas::InternalDbtNode;
 use crate::schemas::serialization_utils::{SerializationMode, apply_mode, serialize_with_mode};
 
+/// Derives [`JinjaNodeFields`] from a node type's serde field attributes. A crate that uses it
+/// also depends on `serde`.
+pub use dbt_proc_macros::JinjaNodeFields;
+
+/// For what the derive of [`JinjaNodeFields`] generates.
+#[doc(hidden)]
+pub use minijinja;
+
 /// The serialized node surface, accessible without serializing the entire node.
 pub trait JinjaNodeFields: Send + Sync + std::fmt::Debug {
     fn get(&self, key: &str, mode: SerializationMode) -> Option<dbt_yaml::Value>;

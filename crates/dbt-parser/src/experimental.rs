@@ -16,7 +16,9 @@
 //! ([`ResolveCx::experimental_package`]), decides what each one deserializes to, its `config:`
 //! included, and gives back the nodes they define ([`ResolveCx::add_experimental_nodes`]). dbt
 //! resolves each node's `depends_on` with the project's own `ref()`, `source()` and `metric()`
-//! rules. The kind's own data for a node is opaque to dbt.
+//! rules. The nodes are of the kind's own type
+//! ([`InjectedNodeType`](dbt_schemas::schemas::InjectedNodeType)): dbt reads only their common
+//! and base attributes.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,10 +34,7 @@ use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::DbtChecksum;
 use dbt_schemas::schemas::project::{ExperimentalNodeConfig, Tags};
 use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
-use dbt_schemas::schemas::{
-    CommonAttributes, DbtExperimentalNode, DbtExperimentalNodeAttr, ExperimentalData,
-    NodeBaseAttributes,
-};
+use dbt_schemas::schemas::{CommonAttributes, InjectedNodeType, NodeBaseAttributes};
 use dbt_yaml::Spanned;
 use indexmap::IndexMap;
 use minijinja::value::Value as MinijinjaValue;
@@ -174,8 +173,6 @@ pub struct ExperimentalNodeDef {
     pub meta: IndexMap<String, dbt_yaml::Value>,
     /// `ref()`, `source()` and `metric()` calls the node depends on.
     pub depends_on: Vec<Spanned<String>>,
-    /// The experimental's own data for the node.
-    pub data: ExperimentalData,
 }
 
 /// A problem an experimental reports. dbt reports it under the experimental codes
@@ -278,16 +275,20 @@ impl ResolveCx<'_> {
         }
     }
 
-    /// Adds the nodes that `defs` define to the package's nodes, as nodes of the kind
-    /// `experimental_type`, and reports `diagnostics`.
+    /// Adds the nodes that `defs` define to the package's nodes, and reports `diagnostics`.
+    ///
+    /// Each definition comes with what the kind keeps for its node. `node` builds the node, of
+    /// the kind's own type, from that and from the attributes that dbt resolves for the
+    /// definition.
     ///
     /// `defs` that are an error give no node, and the error is reported. A node that is defined
     /// twice is reported and gets no second node.
-    pub fn add_experimental_nodes(
+    pub fn add_experimental_nodes<T: InjectedNodeType, D>(
         &mut self,
         experimental_type: &str,
-        defs: Result<Vec<ExperimentalNodeDef>, ExperimentalError>,
+        defs: Result<Vec<(ExperimentalNodeDef, D)>, ExperimentalError>,
         diagnostics: ExperimentalDiagnostics,
+        node: impl Fn(CommonAttributes, NodeBaseAttributes, D) -> T,
     ) -> FsResult<()> {
         report(experimental_type, diagnostics);
         let defs = match defs {
@@ -300,7 +301,7 @@ impl ResolveCx<'_> {
             }
         };
         let package_name = self.package_name;
-        for def in defs {
+        for (def, data) in defs {
             let unique_id = format!("{experimental_type}.{package_name}.{}", def.name);
             if self.nodes.experimentals.contains_key(&unique_id)
                 || self.disabled_nodes.experimentals.contains_key(&unique_id)
@@ -318,24 +319,27 @@ impl ResolveCx<'_> {
             let checksum = DbtChecksum::hash(
                 &stdfs::read(self.package.package_root_path.join(&def.path)).unwrap_or_default(),
             );
-            let node = self.experimental_node(experimental_type, def, checksum)?;
-            let nodes = if node.__base_attr__.enabled {
+            let (common, base) = self.node_attributes(experimental_type, def, checksum)?;
+            let nodes = if base.enabled {
                 &mut self.nodes
             } else {
                 &mut self.disabled_nodes
             };
-            nodes.experimentals.insert(unique_id, Arc::new(node));
+            nodes
+                .experimentals
+                .insert(unique_id, Arc::new(node(common, base, data)));
         }
         Ok(())
     }
 
-    /// A node from its definition, its `depends_on` resolved with the project's own rules.
-    fn experimental_node(
+    /// The attributes of a node from its definition, its `depends_on` resolved with the
+    /// project's own rules.
+    fn node_attributes(
         &self,
         experimental_type: &str,
         def: ExperimentalNodeDef,
         checksum: DbtChecksum,
-    ) -> FsResult<DbtExperimentalNode> {
+    ) -> FsResult<(CommonAttributes, NodeBaseAttributes)> {
         let package_name = self.package_name;
         let unique_id = format!("{experimental_type}.{package_name}.{}", def.name);
         let fqn = get_node_fqn(
@@ -365,8 +369,8 @@ impl ResolveCx<'_> {
             &def.path.to_string_lossy(),
             self.arg.static_analysis,
         )?;
-        Ok(DbtExperimentalNode {
-            __common_attr__: CommonAttributes {
+        Ok((
+            CommonAttributes {
                 name: def.name,
                 package_name: package_name.to_string(),
                 path: DbtPath::from(&def.path),
@@ -379,7 +383,7 @@ impl ResolveCx<'_> {
                 meta: def.meta,
                 ..Default::default()
             },
-            __base_attr__: NodeBaseAttributes {
+            NodeBaseAttributes {
                 adapter: self.adapter_type,
                 enabled: def.enabled,
                 refs,
@@ -387,11 +391,7 @@ impl ResolveCx<'_> {
                 metrics,
                 ..Default::default()
             },
-            __experimental_attr__: DbtExperimentalNodeAttr {
-                experimental_type: experimental_type.to_string(),
-                data: def.data,
-            },
-        })
+        ))
     }
 }
 

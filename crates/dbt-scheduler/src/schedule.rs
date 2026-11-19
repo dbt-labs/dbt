@@ -5473,24 +5473,46 @@ mod experimental_selection_tests {
     use super::*;
     use dbt_adapter_core::AdapterType;
     use dbt_common::io_args::FsCommand;
-    use dbt_schemas::schemas::{CommonAttributes, DbtExperimentalNode, DbtExperimentalNodeAttr};
+    use dbt_schemas::jinja_node::JinjaNodeFields;
+    use dbt_schemas::schemas::{CommonAttributes, InjectedNodeType, NodeBaseAttributes};
     use std::sync::Arc;
 
     const WIDGET: &str = "widget.package.w";
 
+    /// A node of a kind that a feature adds.
+    #[derive(Debug, Clone, Default, serde::Serialize, JinjaNodeFields)]
+    struct Widget {
+        __common_attr__: CommonAttributes,
+        __base_attr__: NodeBaseAttributes,
+    }
+
+    impl InjectedNodeType for Widget {
+        fn kind(&self) -> &str {
+            "widget"
+        }
+        fn common_attributes(&self) -> &CommonAttributes {
+            &self.__common_attr__
+        }
+        fn common_attributes_mut(&mut self) -> &mut CommonAttributes {
+            &mut self.__common_attr__
+        }
+        fn base_attributes(&self) -> &NodeBaseAttributes {
+            &self.__base_attr__
+        }
+        fn base_attributes_mut(&mut self) -> &mut NodeBaseAttributes {
+            &mut self.__base_attr__
+        }
+    }
+
     /// Models `a` → `b`, and an experimental node `w` that depends on `b`.
     fn deps_and_nodes() -> (BTreeMap<String, BTreeSet<String>>, Nodes) {
         let mut nodes = TestGraphBuilder::new().add_edge("a", "b").build_nodes();
-        let mut widget = DbtExperimentalNode {
+        let mut widget = Widget {
             __common_attr__: CommonAttributes {
                 unique_id: WIDGET.to_string(),
                 name: "w".to_string(),
                 package_name: "package".to_string(),
                 fqn: vec!["package".to_string(), "w".to_string()],
-                ..Default::default()
-            },
-            __experimental_attr__: DbtExperimentalNodeAttr {
-                experimental_type: "widget".to_string(),
                 ..Default::default()
             },
             ..Default::default()

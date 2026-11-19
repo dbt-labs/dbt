@@ -200,7 +200,7 @@ impl GraphBuilder {
                         let mut task_schedule = schedule.clone();
                         task_schedule.selected_nodes.retain(|unique_id| {
                             nodes.experimentals.get(unique_id).is_some_and(|node| {
-                                node.__experimental_attr__.experimental_type == experimental_type
+                                node.experimental_type() == Some(experimental_type)
                             })
                         });
                         Self::build_phased_task_graph(

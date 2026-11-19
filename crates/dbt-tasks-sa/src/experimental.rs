@@ -33,9 +33,7 @@ use dbt_jinja_utils::utils::render_sql;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::profiles::TargetContext;
 use dbt_schemas::schemas::relations::base::{BaseRelation, ComponentName};
-use dbt_schemas::schemas::{
-    DbtExperimentalNode, ExperimentalData, InternalDbtNodeAttributes, Nodes,
-};
+use dbt_schemas::schemas::{InjectedNode, InternalDbtNodeAttributes, Nodes};
 use dbt_tasks_core::RunTasksArgs;
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation};
@@ -117,21 +115,20 @@ pub trait ExperimentalRun: Send + Sync {
 pub struct ExperimentalNodeRef {
     pub unique_id: String,
     pub name: String,
-    /// The experimental's own data for the node.
-    pub data: ExperimentalData,
+    node: Arc<dyn InjectedNode>,
     /// The nodes it depends on.
     pub depends_on: Vec<ExperimentalDependency>,
 }
 
 impl ExperimentalNodeRef {
-    /// The experimental's data for the node, if it is a `T`.
-    pub fn data<T: std::any::Any>(&self) -> Option<&T> {
-        self.data.get()
+    /// The node, if it is a `T`: the node type of the experimental that added it.
+    pub fn node<T: std::any::Any>(&self) -> Option<&T> {
+        self.node.as_any().downcast_ref()
     }
 
-    fn new(node: &DbtExperimentalNode, nodes: &Nodes) -> Self {
+    fn new(node: &Arc<dyn InjectedNode>, nodes: &Nodes) -> Self {
         let depends_on = node
-            .__base_attr__
+            .base()
             .depends_on
             .nodes
             .iter()
@@ -145,9 +142,9 @@ impl ExperimentalNodeRef {
             })
             .collect();
         Self {
-            unique_id: node.__common_attr__.unique_id.clone(),
-            name: node.__common_attr__.name.clone(),
-            data: node.__experimental_attr__.data.clone(),
+            unique_id: node.common().unique_id.clone(),
+            name: node.common().name.clone(),
+            node: Arc::clone(node),
             depends_on,
         }
     }
@@ -480,7 +477,7 @@ impl std::fmt::Debug for TargetRelation {
 /// The task the core runs for one selected experimental node.
 pub struct ExperimentalTask {
     experimental_type: &'static str,
-    node: Arc<DbtExperimentalNode>,
+    node: Arc<dyn InjectedNode>,
     node_ref: ExperimentalNodeRef,
     run: Arc<dyn ExperimentalRun>,
 }
@@ -562,7 +559,7 @@ fn target_namespace(ctx: &TaskRunnerCtx) -> (String, String) {
 
 /// The node's compile context, as a model's SQL is compiled with, plus `doc()` and `metric()`,
 /// which no compile context has.
-fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<DbtExperimentalNode>) -> FsResult<NodeJinja> {
+fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<dyn InjectedNode>) -> FsResult<NodeJinja> {
     let base = ctx.run_base_context(node.as_ref())?;
     let (mut context, _) = ctx.build_compile_node_context(
         Arc::clone(node),
@@ -570,7 +567,7 @@ fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<DbtExperimentalNode>) -> FsResult<
         DependencyValidationConfig::new_validated(),
     )?;
     let state = ctx.resolver_state();
-    let package = node.__common_attr__.package_name.clone();
+    let package = node.common().package_name.clone();
     let root = state.root_project_name.clone();
 
     // Docs from the root project first, then the node's package, as core searches them.
@@ -597,7 +594,7 @@ fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<DbtExperimentalNode>) -> FsResult<
     // At run time core's `metric()` is a reference that renders as the metric's name. Only
     // metrics the node depends on resolve.
     let metrics: BTreeSet<String> = node
-        .__base_attr__
+        .base()
         .depends_on
         .nodes
         .iter()
@@ -620,7 +617,7 @@ fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<DbtExperimentalNode>) -> FsResult<
     Ok(NodeJinja {
         env: Arc::clone(&ctx.env),
         context,
-        path: PathBuf::from(node.__common_attr__.original_file_path.to_string()),
+        path: PathBuf::from(node.common().original_file_path.to_string()),
     })
 }
 
@@ -835,7 +832,7 @@ impl ExperimentalRuns {
                 .iter()
                 .filter(|unique_id| schedule.selected_nodes.contains(*unique_id))
                 .filter_map(|unique_id| nodes.experimentals.get(unique_id))
-                .filter(|node| node.__experimental_attr__.experimental_type == experimental_type)
+                .filter(|node| node.experimental_type() == Some(experimental_type))
                 .map(|node| ExperimentalNodeRef::new(node, nodes))
                 .collect();
             if selected.is_empty() {
@@ -872,11 +869,9 @@ impl ExperimentalRuns {
     }
 
     /// The task for an experimental node, if its experimental is running.
-    pub fn task(&self, node: &Arc<DbtExperimentalNode>, nodes: &Nodes) -> Option<Arc<dyn Task>> {
-        let (experimental_type, run) = self
-            .started
-            .runs
-            .get_key_value(node.__experimental_attr__.experimental_type.as_str())?;
+    pub fn task(&self, node: &Arc<dyn InjectedNode>, nodes: &Nodes) -> Option<Arc<dyn Task>> {
+        let (experimental_type, run) =
+            self.started.runs.get_key_value(node.experimental_type()?)?;
         Some(Arc::new(ExperimentalTask {
             experimental_type,
             node: Arc::clone(node),
@@ -896,6 +891,8 @@ impl ExperimentalRuns {
 mod tests {
     use super::*;
     use dbt_flags::Remote;
+    use dbt_schemas::jinja_node::JinjaNodeFields;
+    use dbt_schemas::schemas::{CommonAttributes, InjectedNodeType, NodeBaseAttributes};
     use std::sync::atomic::AtomicUsize;
 
     static TEST_FLAG: FlagDef = flag(false, Stage::Preview);
@@ -1130,14 +1127,43 @@ mod tests {
         )
     }
 
+    /// The node type of the tests' experimentals: dbt's attributes, and the node's kind.
+    #[derive(Debug, Clone, Default, serde::Serialize, JinjaNodeFields)]
+    struct TestNode {
+        __common_attr__: CommonAttributes,
+        __base_attr__: NodeBaseAttributes,
+        #[serde(skip)]
+        kind: &'static str,
+    }
+
+    impl InjectedNodeType for TestNode {
+        fn kind(&self) -> &str {
+            self.kind
+        }
+        fn common_attributes(&self) -> &CommonAttributes {
+            &self.__common_attr__
+        }
+        fn common_attributes_mut(&mut self) -> &mut CommonAttributes {
+            &mut self.__common_attr__
+        }
+        fn base_attributes(&self) -> &NodeBaseAttributes {
+            &self.__base_attr__
+        }
+        fn base_attributes_mut(&mut self) -> &mut NodeBaseAttributes {
+            &mut self.__base_attr__
+        }
+    }
+
     /// A selected `widget` node and a selected `gadget` node.
     fn nodes_and_schedule() -> (Nodes, Schedule<String>) {
         let mut nodes = Nodes::default();
         let mut schedule = Schedule::default();
-        for experimental_type in ["widget", "gadget"] {
-            let mut node = DbtExperimentalNode::default();
+        for experimental_type in [WIDGET, GADGET] {
+            let mut node = TestNode {
+                kind: experimental_type,
+                ..Default::default()
+            };
             node.__common_attr__.unique_id = format!("{experimental_type}.p.n");
-            node.__experimental_attr__.experimental_type = experimental_type.to_string();
             let unique_id = node.__common_attr__.unique_id.clone();
             nodes
                 .experimentals
