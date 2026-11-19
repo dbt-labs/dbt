@@ -258,7 +258,7 @@ pub(crate) fn get_relation(
         "materialized_view" => Some(RelationType::MaterializedView),
         other => {
             return Err(AdapterError::new(
-                AdapterErrorKind::Internal,
+                AdapterErrorKind::UnexpectedResult,
                 format!("Unexpected relation type: {other}"),
             ));
         }

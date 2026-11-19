@@ -691,6 +691,14 @@ mod tests {
                 None,
                 "varchar",
             ),
+            // An unbounded varchar, as the driver reports it.
+            (
+                vec![(type_key, "VARCHAR"), ("sql.length", "2147483647")],
+                "varchar",
+                None,
+                None,
+                "varchar",
+            ),
             (
                 vec![(type_key, "CHAR"), ("sql.length", "3")],
                 "char",

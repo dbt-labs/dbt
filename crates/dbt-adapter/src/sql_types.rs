@@ -892,10 +892,15 @@ pub mod trino {
         TRINO_PRECISION_METADATA_KEY, TRINO_SCALE_METADATA_KEY,
     };
 
+    /// The length Trino puts in the type signature of an unbounded `varchar`,
+    /// `VarcharType.UNBOUNDED_LENGTH`, which the driver reports as `sql.length`.
+    /// https://github.com/trinodb/trino/blob/478/core/trino-spi/src/main/java/io/trino/spi/type/VarcharType.java#L42
+    const VARCHAR_UNBOUNDED_LENGTH: usize = i32::MAX as usize;
+
     /// `type_name`, the driver's `sql.database_type_name`, with the parameters the driver
     /// reports as other metadata keys: `VARCHAR(10)`, `DECIMAL(10,2)`,
     /// `TIMESTAMP(6) WITH TIME ZONE`. Nested types (`ARRAY(..)`, `ROW(..)`) already come in
-    /// full, and a type without the keys keeps its bare name.
+    /// full, and a type without the keys keeps its bare name, as does an unbounded `varchar`.
     pub(crate) fn with_metadata_parameters<'a>(
         field: &Field,
         type_name: Cow<'a, str>,
@@ -907,9 +912,11 @@ pub mod trino {
             return type_name;
         };
         let sql_type = match sql_type {
-            SqlType::Varchar(None, attrs) => {
-                SqlType::Varchar(number(field, TRINO_LENGTH_METADATA_KEY), attrs)
-            }
+            SqlType::Varchar(None, attrs) => SqlType::Varchar(
+                number(field, TRINO_LENGTH_METADATA_KEY)
+                    .filter(|&length| length != VARCHAR_UNBOUNDED_LENGTH),
+                attrs,
+            ),
             SqlType::Char(None) => SqlType::Char(number(field, TRINO_LENGTH_METADATA_KEY)),
             SqlType::Numeric(None) => SqlType::Numeric(
                 number(field, TRINO_PRECISION_METADATA_KEY)
@@ -2133,6 +2140,12 @@ mod tests {
         for (field, expected) in [
             (field("VARCHAR", &[("sql.length", "10")]), "VARCHAR(10)"),
             (field("VARCHAR", &[]), "VARCHAR"),
+            // Trino sends an unbounded varchar with its `UNBOUNDED_LENGTH` signature argument.
+            (field("VARCHAR", &[("sql.length", "2147483647")]), "VARCHAR"),
+            (
+                field("VARCHAR", &[("sql.length", "2147483646")]),
+                "VARCHAR(2147483646)",
+            ),
             (field("CHAR", &[("sql.length", "3")]), "CHAR(3)"),
             (
                 field("DECIMAL", &[("sql.precision", "10"), ("sql.scale", "2")]),
