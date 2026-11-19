@@ -1,11 +1,14 @@
 use std::{collections::BTreeMap, env};
 
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use chrono_tz::Tz;
 use dbt_common::io_args::EvalArgs;
 use dbt_common::io_args::LogLevel;
 use dbt_common::io_args::ReplayMode;
 use dbt_common::warn_error_options::WarnErrorOptions;
 use itertools::Itertools;
 use minijinja::Value;
+use minijinja_contrib::modules::{py_datetime::datetime::PyDateTime, pytz::PytzTimezone};
 
 /// Invocation args is the dictionary of arguments passed into the jinja environment.
 // TODO: this is not complete, we will add more as we go.
@@ -77,9 +80,9 @@ pub struct InvocationArgs {
     pub empty: bool,
 
     /// Override end datetime when generating microbatches
-    pub event_time_end: Option<String>,
+    pub event_time_end: Option<DateTime<Utc>>,
     /// Override start datetime when generating microbatches
-    pub event_time_start: Option<String>,
+    pub event_time_start: Option<DateTime<Utc>>,
 
     /// Replay mode (when running against a recording)
     pub replay: Option<ReplayMode>,
@@ -130,10 +133,38 @@ impl Default for InvocationArgs {
     }
 }
 
+/// Parse an `--event-time-*` value into a UTC datetime (naive values are assumed to be UTC).
+fn parse_event_time(value: &str) -> Option<DateTime<Utc>> {
+    let value = value.trim();
+    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(value, fmt) {
+            return Some(dt.and_utc());
+        }
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|dt| dt.and_utc())
+}
+
+/// Expose a datetime to Jinja as a Python-like aware datetime (supports `strftime`, timedelta math, ...).
+fn event_time_value(dt: DateTime<Utc>) -> Value {
+    Value::from_object(PyDateTime::new_aware(
+        dt.with_timezone(&Tz::UTC),
+        Some(PytzTimezone::new(Tz::UTC)),
+    ))
+}
+
 impl InvocationArgs {
     /// Create an InvocationArgs from an EvalArgs.
     pub fn from_eval_args(arg: &EvalArgs) -> Self {
         let log_level = arg.log_level.unwrap_or(LogLevel::Info);
+        let log_level_file = arg.log_level_file.unwrap_or(log_level);
+        let log_format = arg.log_format;
+        let log_format_file = arg.log_format_file.unwrap_or(log_format);
 
         InvocationArgs {
             invocation_command: arg.command.as_str().to_string(),
@@ -168,10 +199,10 @@ impl InvocationArgs {
                 .display()
                 .to_string(),
             debug: arg.debug,
-            log_format: arg.log_format.to_string(),
-            log_format_file: arg.log_format_file.unwrap_or(arg.log_format).to_string(),
+            log_format: log_format.to_string(),
+            log_format_file: log_format_file.to_string(),
             log_level: log_level.to_string(),
-            log_level_file: arg.log_level_file.unwrap_or(log_level).to_string(),
+            log_level_file: log_level_file.to_string(),
             log_path: arg
                 .log_path
                 .clone()
@@ -193,8 +224,8 @@ impl InvocationArgs {
             store_failures: arg.store_failures,
             favor_state: arg.favor_state,
             empty: arg.empty,
-            event_time_end: arg.event_time_end.clone(),
-            event_time_start: arg.event_time_start.clone(),
+            event_time_end: arg.event_time_end.as_deref().and_then(parse_event_time),
+            event_time_start: arg.event_time_start.as_deref().and_then(parse_event_time),
             replay: arg.replay.clone(),
             use_v2_compatible_package_downloads: arg.io.use_v2_compatible_package_downloads,
         }
@@ -272,7 +303,24 @@ impl InvocationArgs {
             Value::from(self.send_anonymous_usage_stats),
         );
         dict.insert("WRITE_JSON".to_string(), Value::from(self.write_json));
-        self.insert_runtime_flags(&mut dict);
+        dict.insert("FULL_REFRESH".to_string(), Value::from(self.full_refresh));
+        dict.insert(
+            "STORE_FAILURES".to_string(),
+            Value::from(self.store_failures),
+        );
+        dict.insert("FAVOR_STATE".to_string(), Value::from(self.favor_state));
+        dict.insert("EMPTY".to_string(), Value::from(self.empty));
+        if let Some(value) = self.event_time_end {
+            dict.insert("EVENT_TIME_END".to_string(), event_time_value(value));
+        }
+        if let Some(value) = self.event_time_start {
+            dict.insert("EVENT_TIME_START".to_string(), event_time_value(value));
+        }
+        dict.insert("REPLAY".to_string(), Value::from(self.replay.is_some()));
+        dict.insert(
+            "USE_V2_COMPATIBLE_PACKAGE_DOWNLOADS".to_string(),
+            Value::from(self.use_v2_compatible_package_downloads),
+        );
 
         // !!HACK!!: Inject a lower case version of the upper-case keys, for use
         // in `invocation_args_dict` -- we do this because this method is
@@ -290,27 +338,6 @@ impl InvocationArgs {
                 }
             })
             .collect()
-    }
-
-    fn insert_runtime_flags(&self, dict: &mut BTreeMap<String, Value>) {
-        dict.insert("FULL_REFRESH".to_string(), Value::from(self.full_refresh));
-        dict.insert(
-            "STORE_FAILURES".to_string(),
-            Value::from(self.store_failures),
-        );
-        dict.insert("FAVOR_STATE".to_string(), Value::from(self.favor_state));
-        dict.insert("EMPTY".to_string(), Value::from(self.empty));
-        if let Some(value) = &self.event_time_end {
-            dict.insert("EVENT_TIME_END".to_string(), Value::from(value.clone()));
-        }
-        if let Some(value) = &self.event_time_start {
-            dict.insert("EVENT_TIME_START".to_string(), Value::from(value.clone()));
-        }
-        dict.insert("REPLAY".to_string(), Value::from(self.replay.is_some()));
-        dict.insert(
-            "USE_V2_COMPATIBLE_PACKAGE_DOWNLOADS".to_string(),
-            Value::from(self.use_v2_compatible_package_downloads),
-        );
     }
 
     /// Set the number of threads to use.
@@ -357,30 +384,33 @@ mod tests {
     }
 
     #[test]
-    fn to_dict_includes_event_time_flags() {
+    fn to_dict_includes_event_time_flags_as_datetimes() {
         let args = InvocationArgs::from_eval_args(&EvalArgs {
             event_time_start: Some("2026-09-01".to_string()),
-            event_time_end: Some("2026-09-03".to_string()),
+            event_time_end: Some("2026-09-03 12:30:00".to_string()),
             ..EvalArgs::default()
         });
+        assert_eq!(
+            args.event_time_start,
+            Some("2026-09-01T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            args.event_time_end,
+            Some("2026-09-03T12:30:00Z".parse().unwrap())
+        );
 
         let dict = args.to_dict();
-        assert_eq!(
-            dict.get("EVENT_TIME_START").unwrap().to_string(),
-            "2026-09-01"
-        );
-        assert_eq!(
-            dict.get("EVENT_TIME_END").unwrap().to_string(),
-            "2026-09-03"
-        );
-        assert_eq!(
-            dict.get("event_time_start").unwrap().to_string(),
-            "2026-09-01"
-        );
-        assert_eq!(
-            dict.get("event_time_end").unwrap().to_string(),
-            "2026-09-03"
-        );
+        for key in ["EVENT_TIME_START", "event_time_start"] {
+            let value = dict.get(key).unwrap();
+            assert!(value.as_object().is_some(), "{key} should be a datetime object");
+        }
+        assert!(dict.contains_key("EVENT_TIME_END"));
+        assert!(dict.contains_key("event_time_end"));
+    }
+
+    #[test]
+    fn parse_event_time_rejects_garbage() {
+        assert!(parse_event_time("not-a-date").is_none());
     }
 
     #[test]

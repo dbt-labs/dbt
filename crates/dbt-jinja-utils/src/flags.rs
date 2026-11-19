@@ -388,19 +388,15 @@ mod tests {
     #[test]
     fn invocation_event_time_flags_are_available_to_jinja() {
         let invocation_args = InvocationArgs {
-            event_time_start: Some("2026-09-01".to_string()),
-            event_time_end: Some("2026-09-03".to_string()),
+            event_time_start: Some("2026-09-01T00:00:00Z".parse().unwrap()),
+            event_time_end: Some("2026-09-03T00:00:00Z".parse().unwrap()),
             ..InvocationArgs::default()
         };
         let flags = Flags::from_invocation_args(invocation_args.to_dict());
 
-        assert_eq!(
-            flags.lookup("EVENT_TIME_START"),
-            Some(Value::from("2026-09-01"))
-        );
-        assert_eq!(
-            flags.lookup("EVENT_TIME_END"),
-            Some(Value::from("2026-09-03"))
-        );
+        for key in ["EVENT_TIME_START", "EVENT_TIME_END"] {
+            let value = flags.lookup(key).expect("event time flag should be set");
+            assert!(value.as_object().is_some(), "{key} should be a datetime object");
+        }
     }
 }

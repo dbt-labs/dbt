@@ -572,8 +572,8 @@ mod tests {
     #[test]
     fn renders_event_time_flags_in_the_jinja_context() {
         let invocation_args = InvocationArgs {
-            event_time_start: Some("2026-09-01".to_string()),
-            event_time_end: Some("2026-09-03".to_string()),
+            event_time_start: Some("2026-09-01T00:00:00Z".parse().unwrap()),
+            event_time_end: Some("2026-09-03T00:00:00Z".parse().unwrap()),
             ..InvocationArgs::default()
         };
         let invocation_args_dict = invocation_args.to_dict();
@@ -591,7 +591,7 @@ mod tests {
 
         let rendered = env
             .render_str(
-                "{{ invocation_args_dict.event_time_start }}|{{ invocation_args_dict.event_time_end }}|{{ flags.EVENT_TIME_START }}|{{ flags.EVENT_TIME_END }}",
+                "{{ invocation_args_dict.event_time_start.strftime('%Y-%m-%d') }}|{{ invocation_args_dict.event_time_end.strftime('%Y-%m-%d') }}|{{ flags.EVENT_TIME_START.strftime('%Y-%m-%d') }}|{{ flags.EVENT_TIME_END.strftime('%Y-%m-%d') }}",
                 context! {},
                 &[],
             )
