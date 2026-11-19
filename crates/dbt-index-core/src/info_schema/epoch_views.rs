@@ -1401,6 +1401,13 @@ fn resolve_cols(
             EpochExpr::Same => EpochExpr::Col(col.src),
             EpochExpr::JoinCol(_) if !joined => EpochExpr::Null,
             EpochExpr::JoinJsonList(_) if !joined => EpochExpr::EmptyList,
+            // The view's filter keeps no row of the type. A payload read here would make every
+            // query on this column extract the view's payload list.
+            EpochExpr::TextOrColForType(resource_type, _, column)
+                if !admits(spec.filter, resource_type) =>
+            {
+                EpochExpr::Col(column)
+            }
             other => other,
         };
         let guard = guards.iter().find(|(t, _)| *t == table).map(|(_, g)| *g);
@@ -1409,6 +1416,14 @@ fn resolve_cols(
         });
     }
     Ok(Ok(resolved))
+}
+
+/// Whether a row of `resource_type` can pass `filter`.
+fn admits(filter: Filter, resource_type: &str) -> bool {
+    match filter {
+        Filter::All => true,
+        Filter::ResourceTypeIn(types) => types.contains(&resource_type),
+    }
 }
 
 /// The staging table an output column resolves against, mirroring
@@ -1519,6 +1534,42 @@ mod tests {
             1,
             "{sql}"
         );
+    }
+
+    /// `original_file_path` reads the payload for tests only. A node view that cannot hold a
+    /// test reads the column, so a query on it does not extract the payload.
+    #[test]
+    fn original_file_path_reads_the_payload_only_in_views_with_tests() {
+        let all: Vec<&'static str> = EPOCH_RELATIONS.iter().map(|r| r.view).collect();
+        let mut reads_payload = std::collections::BTreeMap::new();
+        for spec in crate::info_schema::schema::INFO_SCHEMA {
+            let base = match spec.src {
+                Src::Table(t) | Src::Join { left: t, .. } => t,
+                Src::Own => continue,
+            };
+            if base != "nodes" {
+                continue;
+            }
+            let (sql, _) = table_view_sql(spec, &all, true)
+                .expect("table_view_sql")
+                .unwrap_or_else(|why| panic!("{} is not mappable: {why}", spec.qualified_name()));
+            let Some(column) = sql
+                .lines()
+                .find(|l| l.contains("AS \"original_file_path\""))
+            else {
+                continue;
+            };
+            let reads = column.contains("_payload_");
+            assert_eq!(
+                reads,
+                admits(spec.filter, "test"),
+                "{}: {column}",
+                spec.qualified_name()
+            );
+            reads_payload.insert(spec.qualified_name(), reads);
+        }
+        assert_eq!(reads_payload.get("dbt.models"), Some(&false));
+        assert_eq!(reads_payload.get("dbt.data_tests"), Some(&true));
     }
 
     /// Payload paths that still parse the payload themselves, each because it cannot join a
