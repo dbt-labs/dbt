@@ -2,14 +2,12 @@
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
-use crate::experimental::ActiveExperimentals;
-use crate::resolve::properties_index::PropertiesEntry;
+pub use crate::resolve::properties_index::{IndexCx, IndexedName};
 use crate::resolve::properties_index::{
-    IndexCx, IndexedName, PackageProperties, validate_resource_name,
+    PackageProperties, PropertiesEntry, validate_resource_name,
 };
 use crate::resolve::resolve_analyses::Analyses;
 use crate::resolve::resolve_checks::Checks;
-use crate::resolve::resolve_experimentals::Experimentals;
 use crate::resolve::resolve_exposures::Exposures;
 use crate::resolve::resolve_functions::Functions;
 use crate::resolve::resolve_groups::Groups;
@@ -27,6 +25,8 @@ use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
+use dbt_common::io_args::project_flag_bool;
+use dbt_flags::FlagDef;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
@@ -43,7 +43,15 @@ use std::sync::Arc;
 /// One kind of node a package defines: the properties it owns, and how its nodes of one package
 /// resolve.
 #[async_trait]
-pub(crate) trait ResolvableNode: Send + Sync {
+pub trait ResolvableNode: Send + Sync {
+    /// The feature flag that turns the kind on. A kind without one is always on.
+    ///
+    /// The items under the keys of a kind that is off are ignored, with a warning that names the
+    /// flag.
+    fn flag(&self) -> Option<&'static FlagDef> {
+        None
+    }
+
     /// The top-level keys of properties files that hold the kind's items.
     fn properties_keys(&self) -> &'static [&'static str] {
         &[]
@@ -71,35 +79,107 @@ pub(crate) trait ResolvableNode: Send + Sync {
     async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()>;
 }
 
-/// dbt's kinds of node, in the order they resolve. The items of a properties file are indexed
-/// kind by kind in the same order.
+/// The kinds of node a project resolves with, in the order they resolve. The items of a
+/// properties file are indexed kind by kind in the same order.
 ///
 /// A kind reads the nodes of the kinds before it. Data tests read the sources, seeds, snapshots
 /// and models that declare them. Semantic models and unit tests read models.
-pub(crate) static RESOLVABLE_NODES: [&dyn ResolvableNode; 16] = [
-    &Sources,
-    &Seeds,
-    &Snapshots,
-    &Groups,
-    &Models,
-    &Analyses,
-    &Checks,
-    &Functions,
-    &Exposures,
-    &Experimentals,
-    &SemanticModels,
-    &Metrics,
-    &SavedQueries,
-    &DataTests,
-    &UnitTests,
-    &MacroProperties,
-];
+#[derive(Clone)]
+pub struct ResolvableNodes {
+    nodes: Vec<Arc<dyn ResolvableNode>>,
+}
+
+impl Default for ResolvableNodes {
+    fn default() -> Self {
+        Self::dbt()
+    }
+}
+
+impl ResolvableNodes {
+    /// dbt's own kinds of node.
+    pub fn dbt() -> Self {
+        ResolvableNodes {
+            nodes: vec![
+                Arc::new(Sources),
+                Arc::new(Seeds),
+                Arc::new(Snapshots),
+                Arc::new(Groups),
+                Arc::new(Models),
+                Arc::new(Analyses),
+                Arc::new(Checks),
+                Arc::new(Functions),
+                Arc::new(Exposures),
+                Arc::new(SemanticModels),
+                Arc::new(Metrics),
+                Arc::new(SavedQueries),
+                Arc::new(DataTests),
+                Arc::new(UnitTests),
+                Arc::new(MacroProperties),
+            ],
+        }
+    }
+
+    /// Adds `node` after the kinds added so far. It resolves after them.
+    pub fn with(mut self, node: Arc<dyn ResolvableNode>) -> Self {
+        self.nodes.push(node);
+        self
+    }
+
+    /// The top-level keys of properties files that the kinds own.
+    pub fn properties_keys(&self) -> impl Iterator<Item = &'static str> {
+        self.nodes
+            .iter()
+            .flat_map(|node| node.properties_keys())
+            .copied()
+    }
+
+    /// Sorts the kinds by whether their flag is on, reading the root project's `flags:`.
+    pub(crate) fn enabled(self, project_flags: Option<&dbt_yaml::Value>) -> EnabledNodes {
+        let mut enabled = EnabledNodes {
+            on: Vec::new(),
+            off_keys: BTreeMap::new(),
+        };
+        for node in self.nodes {
+            match node.flag() {
+                Some(flag)
+                    if !flag
+                        .resolve_with_project(&project_flag_bool(project_flags))
+                        .value =>
+                {
+                    for key in node.properties_keys() {
+                        enabled.off_keys.insert(*key, flag);
+                    }
+                }
+                _ => enabled.on.push(node),
+            }
+        }
+        enabled
+    }
+}
+
+/// The kinds of node of one invocation: the ones that are on, and the keys of the others.
+pub struct EnabledNodes {
+    on: Vec<Arc<dyn ResolvableNode>>,
+    off_keys: BTreeMap<&'static str, &'static FlagDef>,
+}
+
+impl EnabledNodes {
+    /// The kinds that are on, in the order they resolve.
+    pub(crate) fn on(&self) -> Vec<&dyn ResolvableNode> {
+        self.on.iter().map(|node| node.as_ref()).collect()
+    }
+
+    /// The top-level keys of the kinds that are off, with the flag that turns each kind on.
+    pub(crate) fn off_keys(&self) -> &BTreeMap<&'static str, &'static FlagDef> {
+        &self.off_keys
+    }
+}
 
 /// What resolving one package's nodes reads, and what it has resolved so far.
 ///
 /// The kinds of node resolve one after another. Each reads what it needs from here and adds its
 /// nodes to `nodes` and `disabled_nodes`, where the kinds after it find them.
-pub(crate) struct ResolveCx<'a> {
+pub struct ResolveCx<'a> {
     pub(crate) arg: &'a ResolveArgs,
     /// The package whose nodes resolve.
     pub(crate) package: &'a DbtPackage,
@@ -119,7 +199,6 @@ pub(crate) struct ResolveCx<'a> {
     pub(crate) token: &'a CancellationToken,
     pub(crate) jinja_type_checking_event_listener_factory:
         Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    pub(crate) experimentals: &'a ActiveExperimentals,
     /// The profile's database.
     pub(crate) database: &'a str,
     /// The profile's schema.

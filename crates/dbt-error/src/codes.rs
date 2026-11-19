@@ -458,15 +458,9 @@ pub enum ErrorCode {
     ExperimentalError = 1900,
     /// A warning an experimental reported. Experimentals never report under any other code.
     ExperimentalWarning = 1901,
-    /// A project gives entries or paths to a reserved experimental type whose experimental is off,
-    /// or that this dbt doesn't have. dbt ignores them.
+    /// A properties file has a top-level key of a kind of node whose feature flag is off. dbt
+    /// ignores what is under it.
     ExperimentalNotEnabled = 1902,
-    /// A project gives entries or paths to an experimental type no one reserved. dbt ignores them.
-    UnknownExperimental = 1903,
-    /// An `experimental-paths` entry overlaps a directory dbt reads, or another experimental's.
-    ExperimentalPathOverlap = 1904,
-    /// An `experimental-paths` entry resolves outside the project that declared it. dbt skips it.
-    ExperimentalPathEscapesProject = 1905,
 
     // --------------------------------------------------------------------------------------------
     // Local execution

@@ -7,7 +7,6 @@
 //! YAML: a kind gets the YAML of its entries from the files, by location, when it resolves.
 
 use crate::args::ResolveArgs;
-use crate::experimental::ActiveExperimentals;
 use crate::resolve::resolvable_node::ResolvableNode;
 use crate::resolve::resolve_models::properties::VersionInfo;
 use dbt_common::cancellation::CancellationToken;
@@ -15,6 +14,7 @@ use dbt_common::io_utils::try_read_yml_to_str;
 use dbt_common::tracing::dbt_emit::{emit_strict_parse_error, emit_warn_log_message};
 use dbt_common::tracing::span_info::SpanStatusRecorder as _;
 use dbt_common::{ErrorCode, FsError, FsResult, create_debug_span, fs_err};
+use dbt_flags::FlagDef;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::serde::{
     from_yaml_raw, into_typed_with_error, into_typed_with_jinja, unused_key_error,
@@ -40,8 +40,8 @@ pub(crate) struct PropertiesFile {
     path: PathBuf,
     /// The items under each top-level key that holds a list. A key without a value has none.
     items: BTreeMap<String, Vec<Value>>,
-    /// What is under `experimental:`, by key.
-    pub(crate) experimental: Option<BTreeMap<String, Value>>,
+    /// The top-level keys of the file that are ignored: see [`PropertiesFile::read`].
+    ignored_keys: Vec<String>,
 }
 
 impl PropertiesFile {
@@ -49,13 +49,15 @@ impl PropertiesFile {
     ///
     /// `list_keys` are the top-level keys that dbt reads a list of items from. One that holds
     /// anything else is an error, and the file is not read. A key that dbt doesn't read is
-    /// reported as unused, and the rest of the file is still read.
+    /// reported as unused, and the rest of the file is still read. A key in `ignored_keys` is
+    /// neither read nor reported here: the file only keeps that it has it.
     pub(crate) fn read(
         input: &str,
         path: &Path,
         absolute_path: &Path,
         dependency_package_name: Option<&str>,
         list_keys: &[&str],
+        ignored_keys: &[&str],
     ) -> FsResult<Self> {
         let mut file = PropertiesFile {
             path: path.to_path_buf(),
@@ -78,7 +80,9 @@ impl PropertiesFile {
                     typed_key::<Option<FloatOrString>>(key, value)?;
                 }
                 Some("anchors") => {}
-                Some("experimental") => file.experimental = typed_key(key, value)?,
+                Some(name) if ignored_keys.contains(&name) => {
+                    file.ignored_keys.push(name.to_string());
+                }
                 Some(name) if list_keys.contains(&name) => {
                     let name = name.to_string();
                     let items = match value {
@@ -162,18 +166,19 @@ pub(crate) struct IndexedEntry {
 
 /// A name that an item of a properties file defines, as its kind indexes it.
 #[derive(Debug)]
-pub(crate) struct IndexedName {
+pub struct IndexedName {
     /// The key the name is found under: the item's top-level key, unless its kind reads the
     /// items of several keys as one set of entries.
-    pub(crate) key: &'static str,
-    pub(crate) name: String,
+    pub key: &'static str,
+    /// The name.
+    pub name: String,
     /// Where the name is written, for a kind that gives its nodes that location.
-    pub(crate) name_span: Span,
+    pub name_span: Span,
 }
 
 impl IndexedName {
     /// A name found under `key`, without where it is written.
-    pub(crate) fn new(key: &'static str, name: String) -> Self {
+    pub fn new(key: &'static str, name: String) -> Self {
         IndexedName {
             key,
             name,
@@ -215,7 +220,7 @@ impl PropertiesIndex {
 
 /// What indexing the items of one properties file reads.
 #[derive(Clone, Copy)]
-pub(crate) struct IndexCx<'a> {
+pub struct IndexCx<'a> {
     pub(crate) jinja_env: &'a Arc<JinjaEnv>,
     /// The Jinja context of the package's properties files.
     pub(crate) base_ctx: &'a Arc<BTreeMap<String, MinijinjaValue>>,
@@ -238,6 +243,23 @@ impl<'a> IndexCx<'a> {
             dependency_package_name: dependency_package_name_from_ctx(jinja_env, base_ctx),
             properties_path: Path::new(""),
         }
+    }
+
+    /// The one name that `item` defines, found under `key`: its `name`, with Jinja rendered.
+    /// Nothing else of the item is read.
+    pub fn named(&self, key: &'static str, item: &Value) -> FsResult<Vec<IndexedName>> {
+        /// An item, read only for its name.
+        #[derive(Deserialize)]
+        struct Named {
+            name: String,
+            __additional_properties__: Verbatim<BTreeMap<String, Value>>,
+        }
+
+        let item: Named = self.typed(item)?;
+        Ok(vec![IndexedName::new(
+            key,
+            validate_resource_name(&item.name)?,
+        )])
     }
 
     /// `item` as a `T`, with Jinja rendered.
@@ -304,14 +326,13 @@ pub(crate) struct PackageProperties {
 
 impl PackageProperties {
     /// Adds `file`, and indexes the items under the keys of each of `kinds`, kind by kind. The
-    /// first item that a kind cannot index is the error. Gives the file's position among the
-    /// package's files.
+    /// first item that a kind cannot index is the error.
     pub(crate) async fn index_file(
         &mut self,
         kinds: &[&dyn ResolvableNode],
         file: PropertiesFile,
         cx: &IndexCx<'_>,
-    ) -> FsResult<usize> {
+    ) -> FsResult<()> {
         let file_id = self.files.len();
         self.files.push(file);
         let file = &self.files[file_id];
@@ -338,56 +359,6 @@ impl PackageProperties {
                 }
             }
         }
-        Ok(file_id)
-    }
-
-    /// Adds `value`, the list under `experimental: <key>:` in the file `file_id`, to the file as
-    /// the items of `key`, and indexes each item by its `name`.
-    ///
-    /// The keys of experimentals are under `experimental:`, not top-level keys, so no kind of
-    /// node owns them. This reads them until they are. An experimental's key is never a key of a
-    /// kind of node.
-    pub(crate) fn index_experimental_items(
-        &mut self,
-        file_id: usize,
-        key: &'static str,
-        value: Value,
-        cx: &IndexCx<'_>,
-    ) -> FsResult<()> {
-        /// An entry under `experimental:`, read only for its name.
-        #[derive(Deserialize)]
-        struct MinimalExperimentalEntryValue {
-            name: String,
-            __additional_properties__: Verbatim<BTreeMap<String, Value>>,
-        }
-
-        let file = &mut self.files[file_id];
-        let items = match value {
-            Value::Null(..) => return Ok(()),
-            Value::Sequence(items, ..) => items,
-            _ => {
-                return Err(fs_err!(
-                    code => ErrorCode::InvalidConfig,
-                    loc => file.path.clone(),
-                    "`experimental: {}` must be a list",
-                    key
-                ));
-            }
-        };
-        for (item_id, item) in items.iter().enumerate() {
-            let entry: MinimalExperimentalEntryValue = cx.typed(item)?;
-            let location = PropertiesLocation {
-                file: file_id,
-                key,
-                item: item_id,
-                part: 0,
-            };
-            self.index.insert(
-                IndexedName::new(key, validate_resource_name(&entry.name)?),
-                location,
-            );
-        }
-        file.items.insert(key.to_string(), items);
         Ok(())
     }
 
@@ -510,6 +481,9 @@ impl PackageProperties {
 ///
 /// A file that cannot be read is reported, and the others are still read. An item that its kind
 /// cannot index is the error.
+///
+/// `off_keys` are the top-level keys of the kinds whose feature flag is off, with the flag. What
+/// is under them is ignored, with one warning for each key the package has.
 pub(crate) async fn index_properties(
     kinds: &[&dyn ResolvableNode],
     arg: &ResolveArgs,
@@ -518,7 +492,7 @@ pub(crate) async fn index_properties(
     jinja_env: &Arc<JinjaEnv>,
     base_ctx: &Arc<BTreeMap<String, MinijinjaValue>>,
     token: &CancellationToken,
-    experimentals: &ActiveExperimentals,
+    off_keys: &BTreeMap<&'static str, &'static FlagDef>,
 ) -> FsResult<PackageProperties> {
     let mut properties = PackageProperties::default();
     let list_keys: Vec<&str> = kinds
@@ -528,9 +502,9 @@ pub(crate) async fn index_properties(
         .collect();
     let index_cx = IndexCx::new(jinja_env, base_ctx);
 
-    // Entries under `experimental:` for an experimental that is on are collected; any others are
-    // ignored.
-    let mut ignored_experimental_keys: BTreeSet<String> = BTreeSet::new();
+    let ignored_keys: Vec<&str> = off_keys.keys().copied().collect();
+    // The keys of kinds that are off, in any of the package's files.
+    let mut ignored_keys_found: BTreeSet<String> = BTreeSet::new();
 
     for dbt_asset in package.dbt_properties.iter().dedup() {
         token.check_cancellation()?;
@@ -564,21 +538,11 @@ pub(crate) async fn index_properties(
                 &absolute_path,
                 dependency_package_name,
                 &list_keys,
+                &ignored_keys,
             ) {
                 Ok(mut file) => {
-                    let experimental = file.experimental.take().unwrap_or_default();
-                    let file_id = properties.index_file(kinds, file, &index_cx).await?;
-
-                    for (key, value) in experimental {
-                        match experimentals.key_read(&key) {
-                            Some(key) => properties
-                                .index_experimental_items(file_id, key, value, &index_cx)?,
-                            None => {
-                                ignored_experimental_keys.insert(key);
-                            }
-                        }
-                    }
-
+                    ignored_keys_found.extend(std::mem::take(&mut file.ignored_keys));
+                    properties.index_file(kinds, file, &index_cx).await?;
                     Ok(())
                 }
                 Err(e) => Err(e),
@@ -595,22 +559,13 @@ pub(crate) async fn index_properties(
         .instrument(span.clone())
         .await?;
     }
-    for key in ignored_experimental_keys {
-        let package_name = &package.dbt_project.name;
-        if experimentals.is_reserved(&key) {
+    for key in ignored_keys_found {
+        if let Some(flag) = off_keys.get(key.as_str()) {
             emit_warn_log_message(
                 ErrorCode::ExperimentalNotEnabled,
                 format!(
-                    "Ignoring `experimental: {key}` in package '{package_name}': {}",
-                    experimentals.why_ignored(&key)
-                ),
-            );
-        } else {
-            emit_warn_log_message(
-                ErrorCode::UnknownExperimental,
-                format!(
-                    "Ignoring `experimental: {key}` in package '{package_name}': there is no \
-                     `{key}` experimental"
+                    "Ignoring `{key}` in package '{}': the `{}` feature flag is off",
+                    package.dbt_project.name, flag.name
                 ),
             );
         }
@@ -657,6 +612,7 @@ mod tests {
             Path::new("/project/models/schema.yml"),
             None,
             &["models", "seeds"],
+            &["evals"],
         )
     }
 
@@ -712,6 +668,7 @@ mod tests {
                 &Path::new("/project").join(path),
                 None,
                 &["widgets", "gadgets"],
+                &[],
             )?;
             properties.index_file(&[&Widgets], file, &cx).await?;
         }
@@ -803,41 +760,6 @@ mod tests {
     }
 
     #[dbt_runtime::test]
-    async fn the_items_under_experimental_are_entries_of_their_key() -> FsResult<()> {
-        let jinja_env = Arc::new(JinjaEnv::new(minijinja::Environment::new()));
-        let base_ctx = Arc::new(BTreeMap::new());
-        let cx = IndexCx::new(&jinja_env, &base_ctx);
-        let mut properties = PackageProperties::default();
-        for path in ["a.yml", "b.yml"] {
-            let mut file = PropertiesFile::read(
-                "experimental:\n  widget:\n    - name: one\n  part:\n  gadget: 1\n",
-                Path::new(path),
-                &Path::new("/project").join(path),
-                None,
-                &[],
-            )?;
-            let mut experimental = file.experimental.take().unwrap_or_default();
-            let file_id = properties.index_file(&[], file, &cx).await?;
-            let widgets = experimental.remove("widget").unwrap();
-            properties.index_experimental_items(file_id, "widget", widgets, &cx)?;
-            // A key without a value has no items.
-            let parts = experimental.remove("part").unwrap();
-            properties.index_experimental_items(file_id, "part", parts, &cx)?;
-            let gadgets = experimental.remove("gadget").unwrap();
-            let error = properties
-                .index_experimental_items(file_id, "gadget", gadgets, &cx)
-                .expect_err("the key holds no list");
-            assert_eq!(error.context, "`experimental: gadget` must be a list");
-        }
-        let widgets = properties.take_entries("widget");
-        assert_eq!(widgets["one"].relative_path, Path::new("a.yml"));
-        assert_eq!(widgets["one"].duplicate_paths, [PathBuf::from("b.yml")]);
-        assert!(widgets["one"].schema_value.is_mapping());
-        assert!(properties.take_entries("part").is_empty());
-        Ok(())
-    }
-
-    #[dbt_runtime::test]
     async fn a_package_has_a_key_that_one_of_its_files_has() -> FsResult<()> {
         let properties = index(&[
             ("a.yml", "widgets:\n  - name: one\n"),
@@ -866,7 +788,7 @@ mod tests {
         for input in ["", "# only a comment\n"] {
             let file = read(input).unwrap();
             assert!(!file.has_items("models"));
-            assert!(file.experimental.is_none());
+            assert!(file.ignored_keys.is_empty());
         }
     }
 
@@ -885,10 +807,6 @@ mod tests {
             error("version: [1]\n"),
             "YAML error: version: data did not match any variant of untagged enum FloatOrString"
         );
-        assert_eq!(
-            error("experimental: [1]\n"),
-            "YAML error: experimental: invalid type: sequence, expected a map"
-        );
     }
 
     #[test]
@@ -901,6 +819,15 @@ mod tests {
             error("1: 2\n"),
             "YAML error: invalid type: integer `1`, expected field identifier"
         );
+    }
+
+    #[test]
+    fn an_ignored_key_is_kept_and_not_read() {
+        // Whatever it holds: it is not typed.
+        let file = read("evals: 1\nmodels: []\n").unwrap();
+        assert_eq!(file.ignored_keys, ["evals"]);
+        assert!(!file.has_items("evals"));
+        assert!(file.has_items("models"));
     }
 
     #[test]

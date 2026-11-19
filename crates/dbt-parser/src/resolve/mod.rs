@@ -2,14 +2,12 @@
 pub(crate) mod primary_key_inference;
 /// The properties files of one package
 pub(crate) mod properties_index;
-/// What the kinds of node of one package resolve with
-pub(crate) mod resolvable_node;
+/// The kinds of node a project resolves with, and what they resolve with
+pub mod resolvable_node;
 /// Functions for resolving analyses
 pub mod resolve_analyses;
 /// Functions for resolving checks
 pub mod resolve_checks;
-/// Functions for resolving experimental nodes
-pub(crate) mod resolve_experimentals;
 /// Functions for resolving exposures
 pub(crate) mod resolve_exposures;
 /// Functions for resolving functions

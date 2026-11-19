@@ -196,6 +196,7 @@ mod tests {
                 &Path::new("/project").join(path),
                 None,
                 &["sources"],
+                &[],
             )?;
             properties
                 .index_file(&[&Sources], file, &IndexCx::new(&jinja_env, &base_ctx))

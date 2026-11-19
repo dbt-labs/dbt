@@ -39,7 +39,6 @@ use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{RootProjectConfigs, build_root_project_configs};
-use crate::experimental::{ActiveExperimentals, ResolveExperimentals};
 use crate::resolve::resolve_operations::resolve_operations;
 use crate::resolve::resolve_query_comment::resolve_query_comment;
 use crate::resolver_hooks::ResolverHooks;
@@ -61,7 +60,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::resolve::properties_index::{PropertiesEntry, index_properties};
-use crate::resolve::resolvable_node::{RESOLVABLE_NODES, ResolveCx};
+use crate::resolve::resolvable_node::{EnabledNodes, ResolvableNodes, ResolveCx};
 use crate::resolve::resolve_macros::apply_macro_patches;
 use crate::resolve::resolve_macros::probe_internal_macro_overrides;
 use crate::resolve::resolve_macros::resolve_docs_macros;
@@ -126,7 +125,7 @@ pub async fn resolve(
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     resolver_hooks: Arc<dyn ResolverHooks>,
-    experimentals: ResolveExperimentals,
+    resolvable_nodes: ResolvableNodes,
     jinja_factory: Arc<dyn JinjaFactory>,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     // Hand this invocation a fresh `graph` mapping before any Jinja renders.
@@ -307,7 +306,7 @@ pub async fn resolve(
         root_runtime_config.clone(),
         token,
         jinja_type_checking_event_listener_factory.clone(),
-        Arc::new(experimentals.turned_on(dbt_state.root_project().flags.as_ref())),
+        Arc::new(resolvable_nodes.enabled(dbt_state.root_project().flags.as_ref())),
     )
     .await?;
     nodes.extend(resolved_nodes);
@@ -979,7 +978,7 @@ pub async fn resolve_inner(
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    experimentals: &ActiveExperimentals,
+    kinds: &EnabledNodes,
 ) -> FsResult<(
     Nodes,
     Nodes,
@@ -1008,15 +1007,16 @@ pub async fn resolve_inner(
         Some(root_runtime_config.clone()),
     ));
     // Resolve the dbt properties (schema.yml) files
+    let nodes = kinds.on();
     let mut properties = index_properties(
-        &RESOLVABLE_NODES,
+        &nodes,
         arg,
         package,
         root_package_name,
         &jinja_env,
         &base_ctx,
         token,
-        experimentals,
+        kinds.off_keys(),
     )
     .await?;
     let semantic_layer_spec_is_legacy = uses_legacy_semantic_layer_spec(
@@ -1102,7 +1102,6 @@ pub async fn resolve_inner(
         root_runtime_config,
         token,
         jinja_type_checking_event_listener_factory,
-        experimentals,
         database,
         schema,
         package_name,
@@ -1122,7 +1121,7 @@ pub async fn resolve_inner(
     };
 
     // Each kind of node resolves in turn and adds its nodes to `cx`.
-    for node in RESOLVABLE_NODES {
+    for node in nodes {
         node.resolve(&mut cx).await?;
     }
 
@@ -1546,7 +1545,7 @@ async fn resolve_package(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    experimentals: &ActiveExperimentals,
+    kinds: &EnabledNodes,
 ) -> FsResult<(
     String,
     Nodes,
@@ -1602,7 +1601,7 @@ async fn resolve_package(
         &mut seen_generic_test_paths,
         token,
         jinja_type_checking_event_listener_factory.clone(),
-        experimentals,
+        kinds,
     )
     .await?;
 
@@ -1636,7 +1635,7 @@ async fn resolve_package_waves(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    experimentals: Arc<ActiveExperimentals>,
+    kinds: Arc<EnabledNodes>,
 ) -> FsResult<(
     Nodes,
     Nodes,
@@ -1676,7 +1675,7 @@ async fn resolve_package_waves(
         let token = token.clone();
         let jinja_type_checking_event_listener_factory =
             jinja_type_checking_event_listener_factory.clone();
-        let experimentals = experimentals.clone();
+        let kinds = kinds.clone();
         let parse_adapter_scopes = parse_adapter_scopes.clone();
 
         let results = crate::parallel::dispatch_maybe_parallel(
@@ -1695,7 +1694,7 @@ async fn resolve_package_waves(
                 let token = token.clone();
                 let jinja_type_checking_event_listener_factory =
                     jinja_type_checking_event_listener_factory.clone();
-                let experimentals = experimentals.clone();
+                let kinds = kinds.clone();
                 let parse_adapter_scopes = parse_adapter_scopes.clone();
 
                 async move {
@@ -1714,7 +1713,7 @@ async fn resolve_package_waves(
                         root_runtime_config,
                         &token,
                         jinja_type_checking_event_listener_factory,
-                        &experimentals,
+                        &kinds,
                     )
                     .await
                 }

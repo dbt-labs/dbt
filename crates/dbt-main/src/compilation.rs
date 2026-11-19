@@ -1481,10 +1481,7 @@ impl DbtProjectCompilation {
                     token,
                     jinja_type_checking_event_listener_factory.clone(),
                     feature_stack.resolver.hooks.clone(),
-                    feature_stack
-                        .experimentals
-                        .experimentals
-                        .resolve_experimentals(),
+                    feature_stack.experimentals.experimentals.resolvable_nodes(),
                 )
                 .await?
         };

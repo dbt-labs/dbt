@@ -66,9 +66,6 @@ pub struct DbtPropertiesFile {
     // semantic_models cannot be removed for backward compatibility
     // removal would result in many regression tests failing
     pub semantic_models: Option<Vec<dbt_yaml::Value>>,
-    /// Entries for experimentals, by experimental type. Experimentals are features in testing, off
-    /// unless their feature flag is on; each reads the entries under its own type.
-    pub experimental: Option<BTreeMap<String, Vec<dbt_yaml::Value>>>,
     pub version: Option<FloatOrString>,
     pub anchors: Verbatim<Option<dbt_yaml::Value>>,
 }

@@ -156,10 +156,6 @@ pub struct DbtProject {
     pub docs_paths: Option<Vec<String>>,
     #[serde(rename = "skill-paths")]
     pub skill_paths: Option<Vec<String>>,
-    /// Directories whose files belong to an experimental, by experimental type. There is no
-    /// default: an experimental reads only the paths a project names for it.
-    #[serde(rename = "experimental-paths")]
-    pub experimental_paths: Option<BTreeMap<String, Vec<String>>>,
     #[serde(rename = "target-path")]
     pub target_path: Option<TargetPath>,
     #[serde(rename = "log-path")]
@@ -235,7 +231,6 @@ impl Default for DbtProject {
             check_paths: None,
             docs_paths: None,
             skill_paths: None,
-            experimental_paths: None,
             target_path: None,
             log_path: None,
             packages_install_path: None,
@@ -311,17 +306,6 @@ impl DbtProject {
         .flatten()
         .cloned()
         .collect()
-    }
-
-    /// Every directory dbt itself reads files from: the resource paths, `check-paths`,
-    /// `docs-paths`, `asset-paths` and `skill-paths`.
-    pub fn all_dbt_paths(&self) -> Vec<String> {
-        let mut paths = self.all_source_paths();
-        for configured in [&self.check_paths, &self.docs_paths, &self.asset_paths] {
-            paths.extend(configured.iter().flatten().cloned());
-        }
-        paths.extend(self.skill_paths_or_default());
-        paths
     }
 
     /// `skill-paths`, falling back to the default of `skills/`.
@@ -542,7 +526,6 @@ mod tests {
             check_paths: Some(vec![]),
             docs_paths: Some(vec![]),
             skill_paths: Some(vec![]),
-            experimental_paths: None,
             target_path: Some(TargetPath::Target),
             log_path: Some(LogPath::Logs),
             packages_install_path: Some("packages".to_string()),

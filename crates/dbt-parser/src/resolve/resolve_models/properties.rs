@@ -263,6 +263,7 @@ mod tests {
                 &Path::new("/project").join(path),
                 None,
                 &["models"],
+                &[],
             )?;
             properties.index_file(&[&Models], file, &cx).await?;
         }
