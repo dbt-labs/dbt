@@ -303,8 +303,8 @@ impl ResolveCx<'_> {
         let package_name = self.package_name;
         for (def, data) in defs {
             let unique_id = format!("{experimental_type}.{package_name}.{}", def.name);
-            if self.nodes.experimentals.contains_key(&unique_id)
-                || self.disabled_nodes.experimentals.contains_key(&unique_id)
+            if self.nodes.injected.contains_key(&unique_id)
+                || self.disabled_nodes.injected.contains_key(&unique_id)
             {
                 emit_error_log_from_fs_error(*fs_err!(
                     code => ErrorCode::InvalidConfig,
@@ -326,7 +326,7 @@ impl ResolveCx<'_> {
                 &mut self.disabled_nodes
             };
             nodes
-                .experimentals
+                .injected
                 .insert(unique_id, Arc::new(node(common, base, data)));
         }
         Ok(())

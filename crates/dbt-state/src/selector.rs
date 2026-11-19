@@ -89,7 +89,7 @@ pub async fn evaluate_state_selector(
     let mut node_data_list = Vec::new();
     for (unique_id, node) in nodes.iter() {
         // Experimental nodes are not in the manifest, and `state:` never selects them.
-        if nodes.experimentals.contains_key(unique_id) {
+        if nodes.injected.contains_key(unique_id) {
             continue;
         }
         let runtime_vars = resolve_compare_unrendered_code(node, args.compare_unrendered_code)
@@ -394,7 +394,7 @@ mod tests {
         experimental.__common_attr__.unique_id = "widget.pkg.widget_0".to_string();
         let nodes = Nodes {
             models: BTreeMap::from([("model.pkg.model_0".to_string(), Arc::new(model))]),
-            experimentals: BTreeMap::from([(
+            injected: BTreeMap::from([(
                 "widget.pkg.widget_0".to_string(),
                 Arc::new(experimental) as Arc<dyn InjectedNode>,
             )]),

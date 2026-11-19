@@ -158,7 +158,7 @@ pub fn filter_select_criteria_with_state_selector_results(
         };
         // Experimental nodes are not written to the manifest, so every one of them would compare as
         // new. `state:` never selects them.
-        selected.retain(|unique_id| !nodes.experimentals.contains_key(unique_id));
+        selected.retain(|unique_id| !nodes.injected.contains_key(unique_id));
         return Ok(selected);
     }
 
@@ -282,7 +282,7 @@ fn match_resource_type(pattern: &str, node: &dyn InternalDbtNode) -> FsResult<bo
     } else {
         // An experimental node is also its own experimental type: `resource_type:widget`.
         Ok(pattern == node.resource_type().as_static_ref()
-            || node.experimental_type().is_some_and(|kind| pattern == kind))
+            || node.injected_kind().is_some_and(|kind| pattern == kind))
     }
 }
 

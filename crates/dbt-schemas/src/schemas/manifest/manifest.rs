@@ -2348,7 +2348,7 @@ mod tests {
             functions: BTreeMap::new(),
             checks: BTreeMap::new(),
             macros: BTreeMap::new(),
-            experimentals: BTreeMap::new(),
+            injected: BTreeMap::new(),
             project_name: None,
         }
     }

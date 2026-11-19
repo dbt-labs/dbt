@@ -831,8 +831,8 @@ impl ExperimentalRuns {
                 .sorted_nodes
                 .iter()
                 .filter(|unique_id| schedule.selected_nodes.contains(*unique_id))
-                .filter_map(|unique_id| nodes.experimentals.get(unique_id))
-                .filter(|node| node.experimental_type() == Some(experimental_type))
+                .filter_map(|unique_id| nodes.injected.get(unique_id))
+                .filter(|node| node.injected_kind() == Some(experimental_type))
                 .map(|node| ExperimentalNodeRef::new(node, nodes))
                 .collect();
             if selected.is_empty() {
@@ -870,8 +870,7 @@ impl ExperimentalRuns {
 
     /// The task for an experimental node, if its experimental is running.
     pub fn task(&self, node: &Arc<dyn InjectedNode>, nodes: &Nodes) -> Option<Arc<dyn Task>> {
-        let (experimental_type, run) =
-            self.started.runs.get_key_value(node.experimental_type()?)?;
+        let (experimental_type, run) = self.started.runs.get_key_value(node.injected_kind()?)?;
         Some(Arc::new(ExperimentalTask {
             experimental_type,
             node: Arc::clone(node),
@@ -1165,9 +1164,7 @@ mod tests {
             };
             node.__common_attr__.unique_id = format!("{experimental_type}.p.n");
             let unique_id = node.__common_attr__.unique_id.clone();
-            nodes
-                .experimentals
-                .insert(unique_id.clone(), Arc::new(node));
+            nodes.injected.insert(unique_id.clone(), Arc::new(node));
             schedule.sorted_nodes.push(unique_id.clone());
             schedule.selected_nodes.insert(unique_id);
         }
@@ -1241,14 +1238,8 @@ mod tests {
             true,
         ))
         .unwrap();
-        assert!(
-            runs.task(&nodes.experimentals["widget.p.n"], &nodes)
-                .is_some()
-        );
-        assert!(
-            runs.task(&nodes.experimentals["gadget.p.n"], &nodes)
-                .is_none()
-        );
+        assert!(runs.task(&nodes.injected["widget.p.n"], &nodes).is_some());
+        assert!(runs.task(&nodes.injected["gadget.p.n"], &nodes).is_none());
         runs.finish();
     }
 

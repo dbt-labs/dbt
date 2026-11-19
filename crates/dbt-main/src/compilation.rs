@@ -2468,7 +2468,7 @@ impl DbtProjectCompilation {
             }
             // An experimental node is graph work only while its experimental runs.
             if node
-                .experimental_type()
+                .injected_kind()
                 .is_some_and(|experimental_type| !experimental_runs.is_running(experimental_type))
             {
                 return;

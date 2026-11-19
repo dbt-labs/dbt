@@ -1351,9 +1351,9 @@ fn selection_children(
     nodes: &Nodes,
 ) -> BTreeMap<String, BTreeSet<String>> {
     let mut children = reverse(deps);
-    if !nodes.experimentals.is_empty() {
+    if !nodes.injected.is_empty() {
         for kids in children.values_mut() {
-            kids.retain(|id| !nodes.experimentals.contains_key(id));
+            kids.retain(|id| !nodes.injected.contains_key(id));
         }
     }
     children
@@ -5518,9 +5518,7 @@ mod experimental_selection_tests {
             ..Default::default()
         };
         widget.__base_attr__.depends_on.nodes = vec!["b".to_string()];
-        nodes
-            .experimentals
-            .insert(WIDGET.to_string(), Arc::new(widget));
+        nodes.injected.insert(WIDGET.to_string(), Arc::new(widget));
 
         let deps = BTreeMap::from([
             ("a".to_string(), BTreeSet::new()),

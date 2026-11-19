@@ -263,8 +263,9 @@ pub trait InternalDbtNode:
         None
     }
     fn resource_type(&self) -> NodeType;
-    /// For a node of type [`NodeType::Experimental`], the kind of node the experimental added.
-    fn experimental_type(&self) -> Option<&str> {
+    /// For a node of a kind that a feature adds, the kind ([`InjectedNodeType::kind`]). Its
+    /// [`resource_type`](Self::resource_type) is [`NodeType::Experimental`], whatever its kind.
+    fn injected_kind(&self) -> Option<&str> {
         None
     }
     fn as_any(&self) -> &dyn Any;
@@ -634,7 +635,7 @@ pub trait InternalDbtNode:
         if multi_adapter_enabled() {
             event.adapter = Some(base.adapter.as_ref().to_string());
         }
-        event.experimental_type = self.experimental_type().map(str::to_string);
+        event.experimental_type = self.injected_kind().map(str::to_string);
         if let Some(language) = &common.language {
             event.set_language(node_language(language));
         }
@@ -3593,7 +3594,7 @@ impl<T: InjectedNodeType> InternalDbtNode for T {
     fn resource_type(&self) -> NodeType {
         NodeType::Experimental
     }
-    fn experimental_type(&self) -> Option<&str> {
+    fn injected_kind(&self) -> Option<&str> {
         Some(self.kind())
     }
     fn as_any(&self) -> &dyn Any {
@@ -4542,7 +4543,7 @@ pub struct Nodes {
     pub macros: BTreeMap<String, Arc<DbtMacro>>,
     /// The nodes of the kinds that features add, of any type. Not in
     /// [`Nodes::materializable_keys`]: such a node runs only when it is selected directly.
-    pub experimentals: BTreeMap<String, Arc<dyn InjectedNode>>,
+    pub injected: BTreeMap<String, Arc<dyn InjectedNode>>,
     /// The root project name. Used to resolve the `package:this` selector.
     pub project_name: Option<String>,
 }
@@ -4630,8 +4631,8 @@ impl Nodes {
             .iter()
             .map(|(id, node)| (id.clone(), Arc::new((**node).clone())))
             .collect();
-        let experimentals = self
-            .experimentals
+        let injected = self
+            .injected
             .iter()
             .map(|(id, node)| (id.clone(), node.clone_arc()))
             .collect();
@@ -4651,7 +4652,7 @@ impl Nodes {
             functions,
             checks,
             macros,
-            experimentals,
+            injected,
             project_name: self.project_name.clone(),
         }
     }
@@ -4744,7 +4745,7 @@ impl Nodes {
                     .map(|n| Arc::as_ref(n) as &dyn InternalDbtNodeAttributes)
             })
             .or_else(|| {
-                self.experimentals
+                self.injected
                     .get(unique_id)
                     .map(|n| Arc::as_ref(n) as &dyn InternalDbtNodeAttributes)
             })
@@ -4815,7 +4816,7 @@ impl Nodes {
                     .map(|n| n.clone() as Arc<dyn InternalDbtNodeAttributes>)
             })
             .or_else(|| {
-                self.experimentals
+                self.injected
                     .get(unique_id)
                     .map(|n| n.clone() as Arc<dyn InternalDbtNodeAttributes>)
             })
@@ -4838,7 +4839,7 @@ impl Nodes {
             || self.functions.contains_key(unique_id)
             || self.checks.contains_key(unique_id)
             || self.saved_queries.contains_key(unique_id)
-            || self.experimentals.contains_key(unique_id)
+            || self.injected.contains_key(unique_id)
     }
 
     /// Number of nodes yielded by [`Self::iter`].
@@ -4856,7 +4857,7 @@ impl Nodes {
             + self.semantic_models.len()
             + self.metrics.len()
             + self.saved_queries.len()
-            + self.experimentals.len()
+            + self.injected.len()
     }
 
     /// Every node with its unique id.
@@ -4928,7 +4929,7 @@ impl Nodes {
                     .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes)),
             )
             .chain(
-                self.experimentals
+                self.injected
                     .iter()
                     .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes)),
             );
@@ -4961,8 +4962,8 @@ impl IntoIterator for Nodes {
         let semantic_models = self.semantic_models.into_iter().map(f);
         let metrics = self.metrics.into_iter().map(f);
         let saved_queries = self.saved_queries.into_iter().map(f);
-        let experimentals = self
-            .experimentals
+        let injected = self
+            .injected
             .into_iter()
             .map(|(id, node)| (id, node as Arc<dyn InternalDbtNodeAttributes>));
 
@@ -4979,7 +4980,7 @@ impl IntoIterator for Nodes {
             .chain(semantic_models)
             .chain(metrics)
             .chain(saved_queries)
-            .chain(experimentals);
+            .chain(injected);
         Box::new(iter)
     }
 }
@@ -5041,8 +5042,8 @@ impl Nodes {
             .saved_queries
             .values_mut()
             .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes);
-        let map_experimentals = self
-            .experimentals
+        let map_injected = self
+            .injected
             .values_mut()
             .map(|arc| make_injected_mut(arc) as &mut dyn InternalDbtNodeAttributes);
 
@@ -5059,7 +5060,7 @@ impl Nodes {
             .chain(map_semantic_models)
             .chain(map_metrics)
             .chain(map_saved_queries)
-            .chain(map_experimentals);
+            .chain(map_injected);
         Box::new(iter)
     }
 
@@ -5128,7 +5129,7 @@ impl Nodes {
                     .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes)
             })
             .or_else(|| {
-                self.experimentals
+                self.injected
                     .get_mut(unique_id)
                     .map(|arc| make_injected_mut(arc) as &mut dyn InternalDbtNodeAttributes)
             })
@@ -5238,7 +5239,7 @@ impl Nodes {
         self.groups.extend(other.groups);
         self.functions.extend(other.functions);
         self.checks.extend(other.checks);
-        self.experimentals.extend(other.experimentals);
+        self.injected.extend(other.injected);
     }
 
     pub fn warn_on_custom_materializations(&self) -> FsResult<()> {
@@ -9771,7 +9772,7 @@ mod injected_node_tests {
         node.__common_attr__.unique_id = "widget.shop.orders_widget".to_string();
         let mut nodes = Nodes::default();
         nodes
-            .experimentals
+            .injected
             .insert(node.__common_attr__.unique_id.clone(), Arc::new(node));
         nodes
     }
@@ -9790,7 +9791,7 @@ mod injected_node_tests {
             .get_node(id)
             .expect("an injected node is found by unique id");
         assert_eq!(node.resource_type(), NodeType::Experimental);
-        assert_eq!(node.experimental_type(), Some("widget"));
+        assert_eq!(node.injected_kind(), Some("widget"));
         assert!(nodes.get_node_owned(id).is_some());
         assert_eq!(nodes.materializable_keys().count(), 0);
     }
@@ -9826,7 +9827,7 @@ mod injected_node_tests {
                 .push("model.shop.orders".to_string());
         }
         let depends_on = |nodes: &Nodes| {
-            nodes.experimentals["widget.shop.orders_widget"]
+            nodes.injected["widget.shop.orders_widget"]
                 .base()
                 .depends_on
                 .nodes
@@ -9848,11 +9849,8 @@ mod injected_node_tests {
         let nodes = nodes_with_a_widget();
         let clone = nodes.deep_clone();
         let id = "widget.shop.orders_widget";
-        assert!(!Arc::ptr_eq(
-            &nodes.experimentals[id],
-            &clone.experimentals[id]
-        ));
-        assert_eq!(clone.experimentals[id].experimental_type(), Some("widget"));
+        assert!(!Arc::ptr_eq(&nodes.injected[id], &clone.injected[id]));
+        assert_eq!(clone.injected[id].injected_kind(), Some("widget"));
     }
 }
 
@@ -9884,7 +9882,7 @@ mod iter_tests {
         insert_two(&mut nodes.metrics, "metric");
         insert_two(&mut nodes.saved_queries, "saved_query");
         for name in ["b", "a"] {
-            nodes.experimentals.insert(
+            nodes.injected.insert(
                 format!("widget.p.{name}"),
                 Arc::new(injected_node_tests::Widget::default()),
             );
