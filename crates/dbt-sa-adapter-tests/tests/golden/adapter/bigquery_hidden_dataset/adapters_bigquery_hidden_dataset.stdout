@@ -1,0 +1,8 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/incremental_hidden_schema.sql
+   Parsing models/materialized_view_hidden_schema.sql
+   Parsing models/table_hidden_schema.sql
+   Parsing models/view_hidden_schema.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'bigquery' [duration]

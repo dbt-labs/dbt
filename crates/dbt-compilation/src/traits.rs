@@ -1,6 +1,7 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::fmt;
 use std::time::SystemTime;
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
@@ -83,6 +84,77 @@ pub trait CompilationDriver: Send + Sync {
 #[allow(clippy::type_complexity)]
 pub type RunTasksResult = (Arc<RunTasksArgs>, RunTaskResults, Arc<dyn CompilationCache>);
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum MetadataOutputFamily {
+    Metadata,
+    Index,
+    InfoSchema,
+}
+
+impl fmt::Display for MetadataOutputFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Metadata => "metadata",
+            Self::Index => "index",
+            Self::InfoSchema => "info_schema",
+        };
+
+        f.write_str(value)
+    }
+}
+
+#[derive(Debug)]
+pub struct MetadataWriteFailure {
+    pub message: String,
+}
+
+#[derive(Debug)]
+pub enum MetadataWriteOutcome {
+    Written,
+    Failed(MetadataWriteFailure),
+}
+
+#[derive(Debug)]
+pub struct MetadataWriteReport {
+    pub outputs: BTreeMap<MetadataOutputFamily, (PathBuf, MetadataWriteOutcome)>,
+}
+
+impl MetadataWriteReport {
+    pub fn new() -> Self {
+        Self {
+            outputs: BTreeMap::new(),
+        }
+    }
+
+    pub fn mark_written(&mut self, family: MetadataOutputFamily, root: PathBuf) {
+        self.outputs
+            .insert(family, (root, MetadataWriteOutcome::Written));
+    }
+
+    pub fn mark_failed(
+        &mut self,
+        family: MetadataOutputFamily,
+        root: PathBuf,
+        message: impl Into<String>,
+    ) {
+        self.outputs.insert(
+            family,
+            (
+                root,
+                MetadataWriteOutcome::Failed(MetadataWriteFailure {
+                    message: message.into(),
+                }),
+            ),
+        );
+    }
+}
+
+impl Default for MetadataWriteReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Runs tasks (static analysis, execution) against a compiled project.
 #[async_trait]
 pub trait TaskExecutionDriver: Send + Sync {
@@ -101,4 +173,22 @@ pub trait TaskExecutionDriver: Send + Sync {
         task_runner_hooks_factory: &dyn TaskRunnerHooksFactory,
         token: &CancellationToken,
     ) -> FsResult<RunTasksResult>;
+
+    async fn write_metadata(
+        &self,
+        arg: &EvalArgs,
+        run_task_results: &RunTaskResults,
+        compilation_cache_state: &dyn CompilationCache,
+    ) -> FsResult<()>;
+
+    async fn write_metadata_with_report(
+        &self,
+        arg: &EvalArgs,
+        run_task_results: &RunTaskResults,
+        compilation_cache_state: &dyn CompilationCache,
+    ) -> FsResult<Option<MetadataWriteReport>> {
+        self.write_metadata(arg, run_task_results, compilation_cache_state)
+            .await?;
+        Ok(None)
+    }
 }

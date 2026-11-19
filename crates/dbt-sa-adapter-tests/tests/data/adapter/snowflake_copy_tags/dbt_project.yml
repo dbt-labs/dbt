@@ -1,0 +1,4 @@
+flags:
+  send_anonymous_usage_stats: false
+name: snowflake_copy_tags
+profile: fusion_tests

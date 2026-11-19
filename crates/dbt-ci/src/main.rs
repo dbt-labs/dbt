@@ -22,6 +22,9 @@ enum Cmd {
     #[command(name = "bump-cargo-version")]
     BumpCargoVersion(BumpCargoVersionArgs),
 
+    /// Fetch and stage optional runtime packages for a release target.
+    Packages(dbt_ci::packages::PackagesArgs),
+
     /// Homebrew formula commands.
     #[command(subcommand)]
     Homebrew(HomebrewCmd),
@@ -51,6 +54,7 @@ enum HomebrewCmd {
 
 fn main() -> ExitCode {
     match Cli::parse().cmd {
+        Cmd::Packages(args) => dbt_ci::packages::execute(args),
         Cmd::BumpCargoVersion(args) => dbt_ci::bump_cargo_version::execute(args),
         Cmd::Homebrew(HomebrewCmd::Render(args)) => dbt_ci::homebrew::render::execute(args),
         Cmd::Homebrew(HomebrewCmd::Publish(args)) => dbt_ci::homebrew::publish::execute(args),

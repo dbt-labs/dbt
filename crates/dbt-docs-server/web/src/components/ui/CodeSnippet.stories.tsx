@@ -73,44 +73,6 @@ export const WithCopyButton: Story = {
   },
 };
 
-/** The dbt commands the empty states suggest — short, one-line, with a copy button, and
- *  the single most common use of this component outside the code tab. */
-export const ShellCommand: Story = {
-  args: {
-    language: 'bash',
-    code: 'dbt compile --write-index --static-analysis strict && dbt docs generate',
-    includeCopyButton: true,
-  },
-};
-
-/** YAML, for a schema file or a project config. */
-export const Yaml: Story = {
-  args: {
-    language: 'yaml',
-    code: `models:
-  - name: customers
-    description: One row per customer.
-    columns:
-      - name: customer_id
-        tests:
-          - unique
-          - not_null`,
-  },
-};
-
-/** JSON, for a manifest excerpt or an artifact payload. */
-export const Json: Story = {
-  args: {
-    language: 'json',
-    code: `{
-  "unique_id": "model.jaffle_shop.customers",
-  "resource_type": "model",
-  "config": { "materialized": "table" },
-  "depends_on": ["model.jaffle_shop.stg_customers"]
-}`,
-  },
-};
-
 /** Python, for a dbt Python model. */
 export const Python: Story = {
   args: {

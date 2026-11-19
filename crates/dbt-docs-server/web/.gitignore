@@ -1,6 +1,7 @@
 # The SPA source lives here, alongside a committed `dist/` so that every build of
 # `dbt-docs-server` embeds a working bundle without needing a JS toolchain.
-# Rebuild with `pnpm build` and commit `dist/` in the same change as any source edit.
+# Rebuild with `pnpm build` (here or from the workspace root) and commit `dist/` in the
+# same change as any source edit, here or in `../dbt-docs-lib/`.
 node_modules/
 .vite/
 

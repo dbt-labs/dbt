@@ -31,7 +31,7 @@
         model['database'],
         model['schema'],
         model['alias'],
-        model['project_root'] | string ~ model['original_file_path'] | string,
+        adapter.get_seed_file_path(model),
         agate_table,
         column_override,
         delimiter,

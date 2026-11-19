@@ -205,6 +205,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::hint;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -212,8 +213,6 @@ use serde::ser::{Serialize, Serializer};
 
 use crate::error::{Error, ErrorKind};
 use crate::listener::RenderingEventListener;
-use crate::utils::OnDrop;
-use crate::value::ops::as_f64;
 use crate::value::serialize::transform;
 use crate::vm::State;
 use crate::{functions, UndefinedBehavior};
@@ -235,6 +234,7 @@ pub(crate) mod merge_object;
 pub(crate) mod namespace_object;
 mod object;
 pub(crate) mod ops;
+mod overlay_map;
 mod serialize;
 #[cfg(feature = "key_interning")]
 mod string_interning;
@@ -242,6 +242,7 @@ mod string_interning;
 #[cfg(feature = "deserialization")]
 pub use self::deserialize::ViaDeserialize;
 use self::mutable_map::MutableMap;
+pub use self::overlay_map::OverlayMap;
 
 // We use in-band signalling to roundtrip some internal values.  This is
 // not ideal but unfortunately there is no better system in serde today.
@@ -322,21 +323,35 @@ pub(crate) fn value_optimization() -> impl Drop {
     }
     #[cfg(not(feature = "key_interning"))]
     {
-        OnDrop::new(|| {})
+        crate::utils::OnDrop::new(|| {})
     }
 }
 
-fn mark_internal_serialization() -> impl Drop {
+/// Restores the internal serialization flag on drop.
+///
+/// The guard and its drop are kept out of line so they are not copied into
+/// every `Value::from_serialize` instantiation.
+struct InternalSerializationGuard {
+    old: bool,
+}
+
+impl Drop for InternalSerializationGuard {
+    #[inline(never)]
+    fn drop(&mut self) {
+        if !self.old {
+            INTERNAL_SERIALIZATION.with(|flag| flag.set(false));
+        }
+    }
+}
+
+#[inline(never)]
+fn mark_internal_serialization() -> InternalSerializationGuard {
     let old = INTERNAL_SERIALIZATION.with(|flag| {
         let old = flag.get();
         flag.set(true);
         old
     });
-    OnDrop::new(move || {
-        if !old {
-            INTERNAL_SERIALIZATION.with(|flag| flag.set(false));
-        }
-    })
+    InternalSerializationGuard { old }
 }
 
 /// Describes the kind of value.
@@ -402,7 +417,7 @@ pub(crate) enum StringType {
 /// This is used for `i128`/`u128` in the value repr to avoid
 /// the excessive 16 byte alignment.
 #[derive(Copy)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub(crate) struct Packed<T: Copy>(pub T);
 
 impl<T: Copy> Clone for Packed<T> {
@@ -415,7 +430,7 @@ impl<T: Copy> Clone for Packed<T> {
 ///
 /// Logic: Value is 24 bytes. 1 byte is for the discriminant. One byte is
 /// needed for the small str length.
-const SMALL_STR_CAP: usize = 22;
+pub(crate) const SMALL_STR_CAP: usize = 22;
 
 /// Helper to store string data inline.
 #[derive(Clone)]
@@ -428,20 +443,36 @@ impl SmallStr {
     pub fn try_new(s: &str) -> Option<SmallStr> {
         let len = s.len();
         if len <= SMALL_STR_CAP {
-            let mut buf = [0u8; SMALL_STR_CAP];
-            buf[..len].copy_from_slice(s.as_bytes());
-            Some(SmallStr {
-                len: len as u8,
-                buf,
-            })
+            // SAFETY: the length is checked above to be less than or equal to SMALL_STR_CAP
+            Some(unsafe { Self::new_unchecked(s) })
         } else {
             None
         }
     }
 
+    /// Builds a [SmallStr] from a previously validated small `&str`.
+    ///
+    /// # Safety
+    ///
+    /// The length of `s` must be less than or equal to `SMALL_STR_CAP`.
+    pub unsafe fn new_unchecked(s: &str) -> SmallStr {
+        let len = s.len();
+        let mut buf = [0u8; SMALL_STR_CAP];
+        hint::assert_unchecked(len <= SMALL_STR_CAP);
+        buf[..len].copy_from_slice(s.as_bytes());
+        SmallStr {
+            len: len as u8,
+            buf,
+        }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len as usize]
+    }
+
     pub fn as_str(&self) -> &str {
         // SAFETY: This is safe because we only place well-formed utf-8 strings
-        unsafe { std::str::from_utf8_unchecked(&self.buf[..self.len as usize]) }
+        unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -499,6 +530,7 @@ fn write_py_repr_str(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 }
 
 impl fmt::Debug for ValueRepr {
+    #[inline(never)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ValueRepr::Undefined(_) => f.write_str("undefined"),
@@ -528,28 +560,51 @@ impl fmt::Debug for ValueRepr {
     }
 }
 
-impl Hash for Value {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match &self.0 {
-            ValueRepr::None | ValueRepr::Undefined(_) => 0u8.hash(state),
-            ValueRepr::String(ref s, _) => s.hash(state),
-            ValueRepr::SmallStr(s) => s.as_str().hash(state),
-            ValueRepr::Bool(b) => b.hash(state),
-            ValueRepr::Invalid(ref e) => (e.kind(), e.detail()).hash(state),
-            ValueRepr::Bytes(b) => b.hash(state),
-            ValueRepr::Object(d) => d.hash(state),
-            ValueRepr::U64(_)
-            | ValueRepr::I64(_)
-            | ValueRepr::F64(_)
-            | ValueRepr::U128(_)
-            | ValueRepr::I128(_) => {
-                if let Ok(val) = i64::try_from(self.clone()) {
-                    val.hash(state)
-                } else {
-                    as_f64(self, true).map(|x| x.to_bits()).hash(state)
-                }
-            }
+/// Hash the less common value types in a separate non-inlined function.
+///
+/// # Safety
+///
+/// `repr` MUST NOT be `String`, `SmallStr`, or `I64` when this function is called.
+#[inline(never)]
+unsafe fn hash_fallback_noinline<H: Hasher>(repr: &ValueRepr, state: &mut H) {
+    let (integer, floating) = match repr {
+        ValueRepr::None | ValueRepr::Undefined(_) => return 0u8.hash(state),
+        ValueRepr::Bool(b) => return b.hash(state),
+        ValueRepr::Invalid(ref e) => return (e.kind(), e.detail()).hash(state),
+        ValueRepr::Bytes(b) => return b.hash(state),
+        ValueRepr::Object(d) => return d.hash(state),
+        ValueRepr::String(_, _) | ValueRepr::SmallStr(_) | ValueRepr::I64(_) => {
+            // SAFETY: the pre-condition of this function guarantees that `repr`
+            // is not `String`, `SmallStr`, or `I64`.
+            unsafe { hint::unreachable_unchecked() }
         }
+        // All the integer types are hashed as i64 if possible, otherwise as f64 through
+        // a lossy conversion. This means very large integers values can produce more
+        // collisions by the way they are being mapped.
+        ValueRepr::U64(u) => (i64::try_from(*u).ok(), *u as f64),
+        ValueRepr::F64(f) => ((*f as i64 as f64 == *f).then_some(*f as i64), *f),
+        ValueRepr::U128(u) => (i64::try_from(u.0).ok(), u.0 as f64),
+        ValueRepr::I128(i) => (i64::try_from(i.0).ok(), i.0 as f64),
+    };
+    if let Some(val) = integer {
+        val.hash(state)
+    } else {
+        Some(floating.to_bits()).hash(state)
+    }
+}
+
+impl Hash for Value {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let s = match &self.0 {
+            ValueRepr::String(ref s, _) => s,
+            ValueRepr::SmallStr(s) => s.as_str(),
+            ValueRepr::I64(i) => return i.hash(state),
+            // SAFETY: `String`, `SmallStr`, and `I64` are handled above, so it's safe
+            // to call `hash_fallback_noinline` for all other variants.
+            repr => return unsafe { hash_fallback_noinline(repr, state) },
+        };
+        s.hash(state)
     }
 }
 
@@ -709,6 +764,7 @@ impl Ord for Value {
 }
 
 impl fmt::Debug for Value {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         fmt::Debug::fmt(&self.0, f)
     }
@@ -1634,9 +1690,9 @@ impl Value {
 
         match self.0 {
             ValueRepr::Object(ref dy) => match dy.repr() {
-                ObjectRepr::Map | ObjectRepr::Plain => dy.get_value(key),
+                ObjectRepr::Map | ObjectRepr::Plain => dy.get_item(key),
                 ObjectRepr::Iterable => {
-                    if let Some(rv) = dy.get_value(key) {
+                    if let Some(rv) = dy.get_item(key) {
                         return Some(rv);
                     }
                     // The default behavior is to try to index into the iterable
@@ -1653,7 +1709,7 @@ impl Value {
                 }
                 ObjectRepr::Seq => {
                     let idx = index(key, || dy.enumerator_len()).map(Value::from);
-                    dy.get_value(idx.as_ref().unwrap_or(key))
+                    dy.get_item(idx.as_ref().unwrap_or(key))
                 }
             },
             ValueRepr::String(ref s, _) => {
@@ -1819,15 +1875,6 @@ impl Value {
             }
         }
         Ok(rv)
-    }
-
-    #[cfg(feature = "builtins")]
-    pub(crate) fn get_path_or_default(&self, path: &str, default: &Value) -> Value {
-        match self.get_path(path) {
-            Err(_) => default.clone(),
-            Ok(val) if val.is_undefined() => default.clone(),
-            Ok(val) => val,
-        }
     }
 
     /// Creates a value from a tuple.

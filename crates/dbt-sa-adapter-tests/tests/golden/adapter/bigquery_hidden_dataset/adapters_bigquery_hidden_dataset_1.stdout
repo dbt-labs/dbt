@@ -1,0 +1,24 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/incremental_hidden_schema.sql
+   Parsing models/materialized_view_hidden_schema.sql
+   Parsing models/table_hidden_schema.sql
+   Parsing models/view_hidden_schema.sql
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/view_hidden_schema.sql
+   Running models/view_hidden_schema.sql
+ Succeeded model _adapters_bigquery_hidden_dataset.view_hidden_schema (view) [1 of 4 in duration]
+ Rendering models/table_hidden_schema.sql
+   Running models/table_hidden_schema.sql
+ Succeeded model _adapters_bigquery_hidden_dataset.table_hidden_schema (table) [2 of 4 in duration]
+ Rendering models/materialized_view_hidden_schema.sql
+   Running models/materialized_view_hidden_schema.sql
+ Succeeded model _adapters_bigquery_hidden_dataset.materialized_view_hidden_schema (mat_view) [3 of 4 in duration]
+ Rendering models/incremental_hidden_schema.sql
+   Running models/incremental_hidden_schema.sql
+ Succeeded model _adapters_bigquery_hidden_dataset.incremental_hidden_schema (incremental) [4 of 4 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 4 models
+Summary: 4 total | 4 success

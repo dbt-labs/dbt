@@ -1,0 +1,30 @@
+models:
+  - name: model
+    description: |
+      my description
+      with multiple
+      lines
+    columns:
+      - name: my_array
+        description: my description
+      - name: id
+        description: this is the id
+    config:
+      persist_docs:
+        relation: true
+        columns: true
+
+  - name: view
+    description: |
+      my view description
+      with multiple
+      lines
+    columns:
+      - name: my_array
+        description: my description
+      - name: id
+        description: this is the id
+    config:
+      persist_docs:
+        relation: true
+        columns: true

@@ -1,0 +1,1 @@
+is_cool is true and department = 'finance'

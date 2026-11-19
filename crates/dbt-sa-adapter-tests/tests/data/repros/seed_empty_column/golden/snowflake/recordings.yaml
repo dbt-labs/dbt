@@ -1,0 +1,28 @@
+2c072fe8:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_repros_seed_empty_column
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+seed.hello_world.p:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_REPROS_SEED_EMPTY_COLUMN" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: create transient table development.adapters_snowflake_repros_seed_empty_column.p (ID integer,FIRST_NAME text,LAST_NAME text,EMPTY integer)
+- sequence: 2
+  type: execute
+  sql: BEGIN
+- sequence: 3
+  type: execute
+  sql: |-
+    insert overwrite into development.adapters_snowflake_repros_seed_empty_column.p (ID, FIRST_NAME, LAST_NAME, EMPTY) values
+    (2,'Arthur','last',NULL),(3,'Rachel','last',NULL)
+- sequence: 4
+  type: execute
+  sql: COMMIT

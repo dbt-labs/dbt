@@ -10,7 +10,6 @@ use crate::schemas::{
     macros::DbtDocsMacro,
     manifest::{
         DbtNode, ManifestMetadata,
-        manifest::serialize_with_resource_type,
         manifest_nodes::{
             ManifestExposure, ManifestFunction, ManifestMacro, ManifestMetric, ManifestSavedQuery,
             ManifestSemanticModel, ManifestSource, ManifestUnitTest,
@@ -34,8 +33,7 @@ where
     {
         let mut m = serializer.serialize_map(Some(self.map.len()))?;
         for (k, v) in self.map {
-            let yml = dbt_yaml::to_value(v).map_err(serde::ser::Error::custom)?;
-            m.serialize_entry(k, &yml)?;
+            m.serialize_entry(k, &dbt_yaml::AsValue(v))?;
         }
         m.end()
     }
@@ -56,9 +54,10 @@ where
     {
         let mut m = serializer.serialize_map(Some(self.map.len()))?;
         for (k, v) in self.map {
-            let yml = dbt_yaml::to_value(v).map_err(serde::ser::Error::custom)?;
-            let yml = serialize_with_resource_type(yml, self.resource_type);
-            m.serialize_entry(k, &yml)?;
+            m.serialize_entry(
+                k,
+                &dbt_yaml::AsValue(v).with_entry("resource_type", self.resource_type),
+            )?;
         }
         m.end()
     }
@@ -194,17 +193,11 @@ impl Serialize for DbtManifestV12 {
             },
         )?;
 
-        let child_map = dbt_yaml::to_value(&self.child_map).map_err(serde::ser::Error::custom)?;
-        let parent_map = dbt_yaml::to_value(&self.parent_map).map_err(serde::ser::Error::custom)?;
-        let group_map = dbt_yaml::to_value(&self.group_map).map_err(serde::ser::Error::custom)?;
-        let disabled = dbt_yaml::to_value(&self.disabled).map_err(serde::ser::Error::custom)?;
-        let selectors = dbt_yaml::to_value(&self.selectors).map_err(serde::ser::Error::custom)?;
-
-        m.serialize_entry("child_map", &child_map)?;
-        m.serialize_entry("parent_map", &parent_map)?;
-        m.serialize_entry("group_map", &group_map)?;
-        m.serialize_entry("disabled", &disabled)?;
-        m.serialize_entry("selectors", &selectors)?;
+        m.serialize_entry("child_map", &dbt_yaml::AsValue(&self.child_map))?;
+        m.serialize_entry("parent_map", &dbt_yaml::AsValue(&self.parent_map))?;
+        m.serialize_entry("group_map", &dbt_yaml::AsValue(&self.group_map))?;
+        m.serialize_entry("disabled", &dbt_yaml::AsValue(&self.disabled))?;
+        m.serialize_entry("selectors", &dbt_yaml::AsValue(&self.selectors))?;
         m.serialize_entry(
             "groups",
             &StreamingYamlMapWithResourceType {

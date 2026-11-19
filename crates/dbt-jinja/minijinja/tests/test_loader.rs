@@ -24,7 +24,7 @@ fn test_dynamic() {
     let template = String::from("Hello World 2!");
     env.add_template_owned("hello2", template, None).unwrap();
     env.set_loader(|name| match name {
-        "hello" => Ok(Some("Hello World!".into())),
+        "hello" => Ok(Some("Hello World!".to_string())),
         _ => Ok(None),
     });
     let t = env.get_template("hello").unwrap();
@@ -42,8 +42,8 @@ fn test_dynamic() {
 fn test_dynamic_loader_filename() {
     let mut env = Environment::new();
     env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
-    env.set_loader_with_filename(|name| match name {
-        "broken" => Ok(Some(("{%".into(), Some("broken.sql".into())))),
+    env.set_loader(|name| match name {
+        "broken" => Ok(Some(("{%".to_string(), Some("broken.sql".into())))),
         _ => Ok(None),
     });
     let err = env.get_template("broken").unwrap_err();
@@ -65,7 +65,7 @@ fn test_source_replace_dynamic() {
     let mut env = Environment::new();
     env.add_template("a", "1").unwrap();
     env.add_template("a", "2").unwrap();
-    env.set_loader(|_| Ok(None));
+    env.set_loader(|_| Ok(None::<String>));
     let rv = env.get_template("a").unwrap().render((), &[]).unwrap();
     assert_eq!(rv, "2");
 }

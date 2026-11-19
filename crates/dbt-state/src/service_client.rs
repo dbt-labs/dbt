@@ -17,13 +17,14 @@ use crate::auth::OAuthTokenSource;
 use crate::auth::browser_flow::is_retryable_token_error;
 use crate::proto::query_cache::{
     CloneRequest, CloneResponse, ConfirmExecutionRequest, ConfirmExecutionResponse,
-    GetExplainMessagesRequest, GetExplainMessagesResponse, RecordExecutionsRequest,
-    RecordExecutionsResponse, ResolveDeferredRelationsRequest, SelectorRequest, SelectorResponse,
-    SubmitEnrichedSqlRequest, SubmitSqlResponse, SubmitSqlSpeculativeResponse,
-    SubmitTelemetryBatchRequest, SubmitTelemetryBatchResponse, SubmitValuesRequest,
-    ValidateClientVersionRequest, client_validation_client::ClientValidationClient,
-    execution_client::ExecutionClient, explain_client::ExplainClient,
-    selector_service_client::SelectorServiceClient, sql_client::SqlClient,
+    GetExplainMessagesRequest, GetExplainMessagesResponse, GetUpstreamDependencyChangesRequest,
+    GetUpstreamDependencyChangesResponse, RecordExecutionsRequest, RecordExecutionsResponse,
+    ResolveDeferredRelationsRequest, SelectorRequest, SelectorResponse, SubmitEnrichedSqlRequest,
+    SubmitSqlResponse, SubmitSqlSpeculativeResponse, SubmitTelemetryBatchRequest,
+    SubmitTelemetryBatchResponse, SubmitValuesRequest, ValidateClientVersionRequest,
+    client_validation_client::ClientValidationClient, execution_client::ExecutionClient,
+    explain_client::ExplainClient, selector_service_client::SelectorServiceClient,
+    sql_client::SqlClient,
 };
 use crate::proto::query_cache::{client_telemetry_client::ClientTelemetryClient, clone_client};
 use crate::service_config::{RunCacheServiceConfig, RunCacheServiceConfigError};
@@ -379,6 +380,12 @@ pub trait RunCacheServiceClient: Send + Sync {
     ) -> Result<GetExplainMessagesResponse, RunCacheServiceError> {
         Err(RunCacheServiceError::Disabled)
     }
+    async fn get_upstream_dependency_changes(
+        &self,
+        _request: GetUpstreamDependencyChangesRequest,
+    ) -> Result<GetUpstreamDependencyChangesResponse, RunCacheServiceError> {
+        Err(RunCacheServiceError::Disabled)
+    }
     async fn get_state_selection(
         &self,
         _request: SelectorRequest,
@@ -658,6 +665,22 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         self.with_retry(|| async {
             let request = self.attach(Request::new(request.clone())).await?;
             self.response(self.explain.clone().get_explain_messages(request).await)
+        })
+        .await
+    }
+
+    async fn get_upstream_dependency_changes(
+        &self,
+        request: GetUpstreamDependencyChangesRequest,
+    ) -> Result<GetUpstreamDependencyChangesResponse, RunCacheServiceError> {
+        self.with_retry(|| async {
+            let request = self.attach(Request::new(request.clone())).await?;
+            self.response(
+                self.explain
+                    .clone()
+                    .get_upstream_dependency_changes(request)
+                    .await,
+            )
         })
         .await
     }

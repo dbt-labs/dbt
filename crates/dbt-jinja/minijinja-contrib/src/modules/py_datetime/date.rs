@@ -9,8 +9,8 @@ use minijinja::{
     Error, ErrorKind, Value,
 };
 
-use super::find_microsecond_directive;
 use super::timedelta::PyTimeDelta;
+use super::{find_microsecond_directive, now_local};
 
 #[derive(Debug)]
 enum DateCmp {
@@ -60,7 +60,7 @@ impl PyDateClass {
     // ------------------
     fn date_today(_args: &[Value]) -> Result<PyDate, Error> {
         // Return a new PyDate for today's local date
-        let today = Local::now().naive_local().date();
+        let today = now_local().naive_local().date();
         Ok(PyDate::new(today))
     }
 

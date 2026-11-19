@@ -1,0 +1,43 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/c.sql
+ Rendering models/c.sql
+{'name': 'NUMBER_COL', 'dtype': 'NUMBER', 'char_size': None, 'column': 'NUMBER_COL', 'quoted': '"NUMBER_COL"', 'numeric_precision': 38, 'numeric_scale': 0}
+{'name': 'INT_COL', 'dtype': 'NUMBER', 'char_size': None, 'column': 'INT_COL', 'quoted': '"INT_COL"', 'numeric_precision': 38, 'numeric_scale': 0}
+{'name': 'INTEGER_COL', 'dtype': 'NUMBER', 'char_size': None, 'column': 'INTEGER_COL', 'quoted': '"INTEGER_COL"', 'numeric_precision': 38, 'numeric_scale': 0}
+{'name': 'BIGINT_COL', 'dtype': 'NUMBER', 'char_size': None, 'column': 'BIGINT_COL', 'quoted': '"BIGINT_COL"', 'numeric_precision': 38, 'numeric_scale': 0}
+{'name': 'SMALLINT_COL', 'dtype': 'NUMBER', 'char_size': None, 'column': 'SMALLINT_COL', 'quoted': '"SMALLINT_COL"', 'numeric_precision': 38, 'numeric_scale': 0}
+{'name': 'TINYINT_COL', 'dtype': 'NUMBER', 'char_size': None, 'column': 'TINYINT_COL', 'quoted': '"TINYINT_COL"', 'numeric_precision': 38, 'numeric_scale': 0}
+{'name': 'BYTEINT_COL', 'dtype': 'NUMBER', 'char_size': None, 'column': 'BYTEINT_COL', 'quoted': '"BYTEINT_COL"', 'numeric_precision': 38, 'numeric_scale': 0}
+{'name': 'DECIMAL_COL', 'dtype': 'NUMBER', 'char_size': None, 'column': 'DECIMAL_COL', 'quoted': '"DECIMAL_COL"', 'numeric_precision': 10, 'numeric_scale': 2}
+{'name': 'NUMERIC_COL', 'dtype': 'NUMBER', 'char_size': None, 'column': 'NUMERIC_COL', 'quoted': '"NUMERIC_COL"', 'numeric_precision': 10, 'numeric_scale': 2}
+{'name': 'FLOAT_COL', 'dtype': 'FLOAT', 'char_size': None, 'column': 'FLOAT_COL', 'quoted': '"FLOAT_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'FLOAT4_COL', 'dtype': 'FLOAT', 'char_size': None, 'column': 'FLOAT4_COL', 'quoted': '"FLOAT4_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'FLOAT8_COL', 'dtype': 'FLOAT', 'char_size': None, 'column': 'FLOAT8_COL', 'quoted': '"FLOAT8_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'DOUBLE_COL', 'dtype': 'FLOAT', 'char_size': None, 'column': 'DOUBLE_COL', 'quoted': '"DOUBLE_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'REAL_COL', 'dtype': 'FLOAT', 'char_size': None, 'column': 'REAL_COL', 'quoted': '"REAL_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'VARCHAR_COL', 'dtype': 'VARCHAR', 'char_size': 100, 'column': 'VARCHAR_COL', 'quoted': '"VARCHAR_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'CHAR_COL', 'dtype': 'VARCHAR', 'char_size': 10, 'column': 'CHAR_COL', 'quoted': '"CHAR_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'STRING_COL', 'dtype': 'VARCHAR', 'char_size': 16777216, 'column': 'STRING_COL', 'quoted': '"STRING_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'TEXT_COL', 'dtype': 'VARCHAR', 'char_size': 16777216, 'column': 'TEXT_COL', 'quoted': '"TEXT_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'BINARY_COL', 'dtype': 'BINARY', 'char_size': 8388608, 'column': 'BINARY_COL', 'quoted': '"BINARY_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'VARBINARY_COL', 'dtype': 'BINARY', 'char_size': 8388608, 'column': 'VARBINARY_COL', 'quoted': '"VARBINARY_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'BOOLEAN_COL', 'dtype': 'BOOLEAN', 'char_size': None, 'column': 'BOOLEAN_COL', 'quoted': '"BOOLEAN_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'DATE_COL', 'dtype': 'DATE', 'char_size': None, 'column': 'DATE_COL', 'quoted': '"DATE_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'TIME_COL', 'dtype': 'TIME', 'char_size': 9, 'column': 'TIME_COL', 'quoted': '"TIME_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'TIMESTAMP_COL', 'dtype': 'TIMESTAMP_NTZ', 'char_size': 9, 'column': 'TIMESTAMP_COL', 'quoted': '"TIMESTAMP_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'TIMESTAMP_LTZ_COL', 'dtype': 'TIMESTAMP_LTZ', 'char_size': 9, 'column': 'TIMESTAMP_LTZ_COL', 'quoted': '"TIMESTAMP_LTZ_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'TIMESTAMP_NTZ_COL', 'dtype': 'TIMESTAMP_NTZ', 'char_size': 9, 'column': 'TIMESTAMP_NTZ_COL', 'quoted': '"TIMESTAMP_NTZ_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'TIMESTAMP_TZ_COL', 'dtype': 'TIMESTAMP_TZ', 'char_size': 9, 'column': 'TIMESTAMP_TZ_COL', 'quoted': '"TIMESTAMP_TZ_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'GEOGRAPHY_COL', 'dtype': 'GEOGRAPHY', 'char_size': None, 'column': 'GEOGRAPHY_COL', 'quoted': '"GEOGRAPHY_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'GEOMETRY_COL', 'dtype': 'GEOMETRY', 'char_size': None, 'column': 'GEOMETRY_COL', 'quoted': '"GEOMETRY_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'VARIANT_COL', 'dtype': 'VARIANT', 'char_size': None, 'column': 'VARIANT_COL', 'quoted': '"VARIANT_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'OBJECT_COL', 'dtype': 'OBJECT', 'char_size': None, 'column': 'OBJECT_COL', 'quoted': '"OBJECT_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'ARRAY_COL', 'dtype': 'ARRAY', 'char_size': None, 'column': 'ARRAY_COL', 'quoted': '"ARRAY_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'NESTED_OBJECT_COL', 'dtype': 'OBJECT', 'char_size': None, 'column': 'NESTED_OBJECT_COL', 'quoted': '"NESTED_OBJECT_COL"', 'numeric_precision': None, 'numeric_scale': None}
+{'name': 'ARRAY_OBJECT_COL', 'dtype': 'ARRAY', 'char_size': None, 'column': 'ARRAY_OBJECT_COL', 'quoted': '"ARRAY_OBJECT_COL"', 'numeric_precision': None, 'numeric_scale': None}
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

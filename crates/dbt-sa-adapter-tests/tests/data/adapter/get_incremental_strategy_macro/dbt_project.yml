@@ -1,0 +1,6 @@
+# This is just for sanity checking since the actual usage of this method is complex
+# we should better test it in compile/run tests from the CLI
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests

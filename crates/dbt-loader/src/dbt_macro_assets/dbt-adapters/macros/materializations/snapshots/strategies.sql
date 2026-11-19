@@ -135,13 +135,18 @@
 
     {%- set intersection = [] -%}
     {%- for col in query_columns -%}
-        {%- if col in existing_cols -%}
+        {%- if adapter.dispatch('snapshot_check_column_exists', 'dbt')(col, existing_cols) -%}
             {%- do intersection.append(adapter.quote(col)) -%}
         {%- else -%}
             {% set ns.column_added = true %}
         {%- endif -%}
     {%- endfor -%}
     {{ return((ns.column_added, intersection)) }}
+{%- endmacro %}
+
+
+{% macro default__snapshot_check_column_exists(column_name, existing_columns) -%}
+    {{ return(column_name in existing_columns) }}
 {%- endmacro %}
 
 

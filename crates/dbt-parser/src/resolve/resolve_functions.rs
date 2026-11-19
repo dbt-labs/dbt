@@ -10,9 +10,9 @@ use dbt_common::static_analysis::{
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_jinja_utils::{jinja_environment::JinjaEnv, node_resolver::NodeResolver};
-use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::{Access, DbtMaterialization, DbtQuoting};
 use dbt_schemas::schemas::project::FunctionConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
@@ -28,20 +28,17 @@ use dbt_schemas::{
         },
         ref_and_source::{DbtRef, DbtSourceWrapper},
     },
-    state::{DbtPackage, DbtRuntimeConfig, NodeResolverTracker},
+    state::{DbtPackage, DbtRuntimeConfig, ModelStatus, NodeResolverTracker},
 };
 use indexmap::IndexMap;
-use minijinja::MacroSpans;
 
-use crate::dbt_project_config::{
-    ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
-};
+use crate::dbt_project_config::{ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::{RenderCtx, RenderCtxInner};
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, extract_config_map, validate_node_adapter,
+    RawProjectConfigsByAdapter, extract_config_map, resolve_node_quoting, select_node_adapter,
 };
 use crate::utils::{
-    RelationComponents, extract_resource_config_from_raw_project, update_node_relation_components,
+    RelationComponents, node_starting_database_and_schema, update_node_relation_components,
 };
 use crate::{
     args::ResolveArgs,
@@ -64,6 +61,7 @@ struct CapturedOverload {
     refs: Vec<DbtRef>,
     functions: Vec<DbtRef>,
     sources: Vec<DbtSourceWrapper>,
+    macros: Vec<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -76,48 +74,50 @@ pub async fn resolve_functions(
     function_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     package_name: &str,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     node_resolver: &mut NodeResolver,
     token: &CancellationToken,
 ) -> FsResult<(
     HashMap<String, Arc<DbtFunction>>,
-    HashMap<String, (String, MacroSpans)>,
+    HashMap<String, Arc<DbtFunction>>,
+    HashMap<String, String>,
 )> {
     let mut functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
+    let mut disabled_functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
+    let mut function_bodies: HashMap<String, String> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
-    let config_resolver = ProjectConfigResolver::build(
+    let config_resolver = ProjectConfigResolver::per_adapter(
         root_project_configs.functions.clone(),
-        dependency_package_name.is_some(),
-        || {
-            init_project_config(
-                &package.dbt_project.functions,
-                DbtQuoting::default(),
-                dependency_package_name,
-                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
-                default_adapter,
-            )
-        },
+        |root| &root.functions,
+        root_project_configs,
+        &package.dbt_project.functions,
+        dependency_package_name,
+        arg.unconfigured_static_analysis(),
         default_adapter,
-    )?
-    .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+        arg.adapter_override,
+    )?;
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
+            adapter_layer: None,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: false,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -141,20 +141,12 @@ pub async fn resolve_functions(
     // prerequisite — the Stage-1 wholesale comparison requires a fully populated
     // `unrendered_config`).
     let is_dependency = dependency_package_name.is_some();
-    let raw_local_project_config = extract_resource_config_from_raw_project(
+    let mut raw_project_configs_by_adapter = RawProjectConfigsByAdapter::new(
         &package.raw_project_yml,
+        is_dependency.then_some(&root_package.raw_project_yml),
         "functions",
         default_adapter,
     )?;
-    let raw_root_project_functions_cfg = if is_dependency {
-        Some(extract_resource_config_from_raw_project(
-            &root_package.raw_project_yml,
-            "functions",
-            default_adapter,
-        )?)
-    } else {
-        None
-    };
 
     // Snapshot raw schema.yml `config:` blocks before render_unresolved_sql_files nulls out
     // schema_value entries via std::mem::replace. Keyed by function name.
@@ -237,13 +229,15 @@ pub async fn resolve_functions(
         asset: dbt_asset,
         sql_file_info,
         config: mut model_config,
+        adapter,
+        alias_adapter,
         raw_code,
         rendered_sql,
-        macro_spans,
         properties: maybe_properties,
         status,
         patch_path,
         raw_config_call_dict,
+        macro_dependencies,
         ..
     } in function_sql_resources_map.into_iter()
     {
@@ -294,6 +288,7 @@ pub async fn resolve_functions(
                     refs,
                     functions: function_refs,
                     sources,
+                    macros: macro_dependencies,
                 },
             );
             continue;
@@ -305,18 +300,16 @@ pub async fn resolve_functions(
         let unique_id = get_unique_id(function_name, package_name, None, "function");
         // See `resolve_models`: the flag overrides the config. A function selects
         // explicitly; it has no attached node to inherit from.
-        validate_node_adapter(model_config.adapter, &dbt_asset.path)?;
-        let resolved_node_adapter = arg.adapter_override.or(model_config.adapter);
+        let selected_adapter = select_node_adapter(
+            model_config.adapter,
+            adapter,
+            default_adapter,
+            &dbt_asset.path,
+        )?;
         // See `resolve_models`: both remaining quoting layers depend on which
         // adapter the node runs on, which is only known after the config merge.
-        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
-        model_config.quoting = resolve_package_quoting(
-            Some(match adapter_quoting.get(&selected_adapter) {
-                Some(authored) => model_config.quoting.filled_from(authored),
-                None => model_config.quoting,
-            }),
-            selected_adapter,
-        );
+        model_config.quoting =
+            resolve_node_quoting(model_config.quoting, adapter_quoting, selected_adapter);
         let static_analysis = model_config.static_analysis.clone();
         if let Some(spanned) = model_config.get_static_analysis() {
             let kind = spanned.into_inner();
@@ -348,14 +341,12 @@ pub async fn resolve_functions(
         // Merge the four raw sources (project < root < schema.yml < inline) into the node's
         // `unrendered_config`. Functions do not support pre_hook/post_hook, so hook-name
         // normalization is disabled.
-        let unrendered_config = build_unrendered_config(
+        let unrendered_config = raw_project_configs_by_adapter.unrendered_config(
+            alias_adapter,
             &fqn,
-            &raw_local_project_config,
-            raw_root_project_functions_cfg.as_ref(),
             raw_schema_yml_configs.get(function_name),
             raw_config_call_dict.as_ref(),
             false,
-            default_adapter,
         )?;
 
         let properties = if let Some(properties) = maybe_properties {
@@ -365,12 +356,22 @@ pub async fn resolve_functions(
         };
 
         let depends_on = NodeDependsOn {
-            macros: vec![],
+            macros: if selected_adapter != default_adapter {
+                macro_dependencies
+            } else {
+                vec![]
+            },
             nodes: vec![],
             nodes_with_ref_location: vec![],
         };
 
-        rendering_results.insert(unique_id.clone(), (rendered_sql.clone(), macro_spans));
+        let (node_database, node_schema) = node_starting_database_and_schema(
+            Some(parse_adapter_scopes),
+            selected_adapter,
+            database,
+            schema,
+            &dbt_asset.path,
+        )?;
 
         let mut function = DbtFunction {
             __common_attr__: CommonAttributes {
@@ -407,10 +408,10 @@ pub async fn resolve_functions(
                 // platform's catalog: no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: node_database.to_owned(), // will be updated below
+                schema: node_schema.to_owned(),     // will be updated below
+                alias: "".to_owned(),               // will be updated below
+                relation_name: None,                // will be updated below
                 materialized: DbtMaterialization::Function,
                 static_analysis,
                 static_analysis_off_reason: None,
@@ -495,6 +496,8 @@ pub async fn resolve_functions(
                 snowflake: model_config.snowflake.clone(),
                 pre_hook: model_config.pre_hook.clone(),
                 post_hook: model_config.post_hook.clone(),
+                docs: model_config.docs.clone(),
+                grants: model_config.grants.clone(),
                 ..Default::default()
             },
             __other__: BTreeMap::new(),
@@ -508,17 +511,17 @@ pub async fn resolve_functions(
         };
 
         // update model components using the generate_relation_components function
-        update_node_relation_components(
-            &mut function,
+        function = update_node_relation_components(
+            function,
             &env,
             &root_package.dbt_project.name,
             package_name,
             base_ctx,
             &components,
-            default_adapter,
+            Some(parse_adapter_scopes),
         )?;
 
-        match node_resolver.insert_function(&function, default_adapter, status) {
+        match node_resolver.insert_function(&function, status) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());
@@ -526,7 +529,17 @@ pub async fn resolve_functions(
             }
         }
 
-        functions.insert(unique_id, Arc::new(function));
+        match status {
+            ModelStatus::Enabled | ModelStatus::ParsingFailed => {
+                function_bodies.insert(unique_id.clone(), rendered_sql);
+                functions.insert(unique_id, Arc::new(function));
+            }
+            // A disabled function must not be part of the node set: it would otherwise still be
+            // rendered, compiled and run, and fail on references to other disabled nodes.
+            ModelStatus::Disabled => {
+                disabled_functions.insert(unique_id, Arc::new(function));
+            }
+        }
     }
 
     // Post-loop: absorb overloads into root functions
@@ -534,10 +547,12 @@ pub async fn resolve_functions(
     for (root_uid, overload_defs) in pending_overloads {
         let mut absorbed = Vec::new();
         let mut merged_refs: Vec<DbtRef> = Vec::new();
+        let mut merged_macros = Vec::new();
         let mut merged_functions: Vec<DbtRef> = Vec::new();
         let mut merged_sources: Vec<DbtSourceWrapper> = Vec::new();
         let root_name = functions
             .get(&root_uid)
+            .or_else(|| disabled_functions.get(&root_uid))
             .map(|f| f.__common_attr__.name.clone())
             .unwrap_or_default();
 
@@ -592,6 +607,7 @@ pub async fn resolve_functions(
             merged_refs.extend(captured.refs.iter().cloned());
             merged_functions.extend(captured.functions.iter().cloned());
             merged_sources.extend(captured.sources.iter().cloned());
+            merged_macros.extend(captured.macros.iter().cloned());
 
             absorbed.push(AbsorbedOverload {
                 defined_in: overload_def.defined_in.clone(),
@@ -606,13 +622,27 @@ pub async fn resolve_functions(
         // Add absorbed overloads to the root function, along with the deps their
         // SQL pulls in. Those edges must live on the root so the DAG is complete;
         // resolve_dependencies dedups against the root's own refs/sources later.
-        let root_func = functions.get_mut(&root_uid).unwrap();
+        // The root may be disabled; its overloads are still absorbed so the disabled node
+        // lands in the manifest complete.
+        let root_func = functions
+            .get_mut(&root_uid)
+            .or_else(|| disabled_functions.get_mut(&root_uid))
+            .expect("overload root must exist");
         let root_mut = Arc::make_mut(root_func);
         root_mut.__function_attr__.overloads = absorbed;
         root_mut.__base_attr__.refs.extend(merged_refs);
         root_mut.__base_attr__.functions.extend(merged_functions);
         root_mut.__base_attr__.sources.extend(merged_sources);
+        if root_mut.__base_attr__.adapter != default_adapter {
+            root_mut
+                .__base_attr__
+                .depends_on
+                .macros
+                .extend(merged_macros);
+            root_mut.__base_attr__.depends_on.macros.sort();
+            root_mut.__base_attr__.depends_on.macros.dedup();
+        }
     }
 
-    Ok((functions, rendering_results))
+    Ok((functions, disabled_functions, function_bodies))
 }

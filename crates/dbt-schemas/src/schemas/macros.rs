@@ -41,6 +41,7 @@ pub struct MacroConfig {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtMacro {
     pub name: String,
     pub package_name: String,

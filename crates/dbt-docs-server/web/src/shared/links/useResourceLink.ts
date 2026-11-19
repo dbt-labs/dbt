@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useLinkPrefixRequired } from 'dbt-docs-lib';
 
 import {
   homeLink,
@@ -6,7 +7,6 @@ import {
   resourceDetailsLink,
   resourceFilterLink,
 } from './linkGenerators';
-import { useLinkPrefixRequired } from './LinkPrefixContext';
 import type {
   PackageDetailsParams,
   ResourceDetailsParams,

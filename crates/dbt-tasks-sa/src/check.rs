@@ -182,6 +182,17 @@ pub struct Evaluation {
     /// Resource-type prefixes of the ids found in the scoping columns **before** filtering, so a
     /// zero-row result can be told apart from one whose scope held nothing of the right kind.
     pub reported_kinds: BTreeSet<String>,
+    /// Whether the selection filtered these rows. False with no selection, and also when the check
+    /// has nothing to scope by (`selection_filter_on: none`, or no `unique_id` under the default).
+    pub scoped: bool,
+}
+
+/// Why a check could not be evaluated: the message shown to the user, and a fixed `reason` that
+/// telemetry reports in its place.
+#[derive(Debug)]
+pub struct CheckError {
+    pub reason: &'static str,
+    pub message: String,
 }
 
 pub fn evaluate_batches(
@@ -189,14 +200,19 @@ pub fn evaluate_batches(
     filter: &SelectionFilter,
     selected: Option<&BTreeSet<String>>,
     max_rows: usize,
-) -> Result<Evaluation, String> {
+) -> Result<Evaluation, CheckError> {
     use arrow::util::display::ArrayFormatter;
     use dbt_index_core::format::FMT_OPTS;
+    let arrow_error = |e: arrow::error::ArrowError| CheckError {
+        reason: "evaluation_failed",
+        message: e.to_string(),
+    };
     let mut count: u64 = 0;
     let mut preview: Vec<String> = Vec::new();
     let mut reported_kinds: BTreeSet<String> = BTreeSet::new();
     let mut preview_slices: Vec<arrow::record_batch::RecordBatch> = Vec::new();
     let mut previewed = 0usize;
+    let mut scoped = false;
     for batch in batches {
         let Ok(formatters) = batch
             .columns()
@@ -225,15 +241,19 @@ pub fn evaluate_batches(
                     match schema.index_of(c) {
                         Ok(i) => idxs.push(i),
                         Err(_) => {
-                            return Err(format!(
-                                "selection_filter_on: column '{c}' is not in the check's output columns"
-                            ));
+                            return Err(CheckError {
+                                reason: "selection_filter_invalid",
+                                message: format!(
+                                    "selection_filter_on: column '{c}' is not in the check's output columns"
+                                ),
+                            });
                         }
                     }
                 }
                 idxs
             }
         };
+        scoped |= !filter_idxs.is_empty();
         let mut keep: Vec<u32> = Vec::new();
         for row in 0..batch.num_rows() {
             // Recorded before the row is filtered away: what the check reports on is a property of
@@ -276,10 +296,10 @@ pub fn evaluate_batches(
                 .iter()
                 .map(|c| arrow::compute::take(c.as_ref(), &idx, None))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
+                .map_err(arrow_error)?;
             preview_slices.push(
                 arrow::record_batch::RecordBatch::try_new(Arc::clone(&schema), cols)
-                    .map_err(|e| e.to_string())?,
+                    .map_err(arrow_error)?,
             );
         }
     }
@@ -292,6 +312,7 @@ pub fn evaluate_batches(
         preview,
         preview_rows,
         reported_kinds,
+        scoped,
     })
 }
 
@@ -302,6 +323,69 @@ pub fn evaluate_batches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── result severity ──────────────────────────────────────────────────────────
+
+    fn check_with_severity(
+        name: &str,
+        severity: Option<dbt_schemas::schemas::common::Severity>,
+    ) -> Arc<dbt_schemas::schemas::DbtCheck> {
+        let mut c = dbt_schemas::schemas::DbtCheck::default();
+        c.__common_attr__.unique_id = format!("check.p.{name}");
+        c.__common_attr__.name = name.to_string();
+        c.deprecated_config.severity = severity;
+        Arc::new(c)
+    }
+
+    /// Every result carries the check's configured severity (defaulting to `error`), even one
+    /// that could not be evaluated, so telemetry can report it alongside the status.
+    #[test]
+    fn results_carry_configured_severity() {
+        use dbt_schemas::schemas::common::Severity;
+        let checks = vec![
+            check_with_severity("unset", None),
+            check_with_severity("err", Some(Severity::Error)),
+            check_with_severity("warn", Some(Severity::Warn)),
+        ];
+        let missing = std::env::temp_dir().join("dbt-check-severity-test-no-such-dir");
+        let outcome = run_parse_time_checks(&checks, &missing, None, None, false);
+        let got: Vec<_> = outcome
+            .results
+            .iter()
+            .map(|r| (r.name.as_str(), r.status, r.severity))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("unset", "error", "error"),
+                ("err", "error", "error"),
+                ("warn", "error", "warn"),
+            ]
+        );
+    }
+
+    /// A check that never ran says why, and reports the selection as `unknown` rather than
+    /// guessing whether it would have scoped the check's rows.
+    #[test]
+    fn unevaluated_results_carry_a_reason() {
+        let checks = vec![check_with_severity("c", None)];
+        let missing = std::env::temp_dir().join("dbt-check-reason-test-no-such-dir");
+        let scope = BTreeSet::from(["model.p.a".to_string()]);
+
+        let r = &run_parse_time_checks(&checks, &missing, Some(&scope), None, false).results[0];
+        assert_eq!(
+            (r.status, r.reason, r.selection),
+            ("error", Some("metadata_unavailable"), "unknown")
+        );
+        let r = &run_parse_time_checks(&checks, &missing, None, None, false).results[0];
+        assert_eq!(r.selection, "none");
+
+        let r = &not_run_results(&checks, "skip_checks_flag", false)[0];
+        assert_eq!(
+            (r.status, r.severity, r.reason, r.selection),
+            ("skipped", "error", Some("skip_checks_flag"), "none")
+        );
+    }
 
     // ── scoping ──────────────────────────────────────────────────────────────────
 
@@ -457,6 +541,40 @@ mod tests {
         ));
     }
 
+    /// `scoped` is set only when the selection actually filtered the rows. A check left at the
+    /// default that outputs no `unique_id` has nothing to scope by, so a selector leaves it
+    /// reporting on the whole project, which telemetry reports as `ignored`.
+    #[test]
+    fn scoped_only_when_the_selection_filters_rows() {
+        let scope = BTreeSet::from(["model.p.a".to_string()]);
+        let with_id = preview_batch(&[("unique_id", &["model.p.a"])]);
+        let without_id = preview_batch(&[("name", &["a"])]);
+        let scoped = |batch: &arrow::record_batch::RecordBatch,
+                      filter: &SelectionFilter,
+                      scope: Option<&BTreeSet<String>>| {
+            evaluate_batches(std::slice::from_ref(batch), filter, scope, 5)
+                .unwrap()
+                .scoped
+        };
+        assert!(scoped(&with_id, &SelectionFilter::Auto, Some(&scope)));
+        assert!(!scoped(&without_id, &SelectionFilter::Auto, Some(&scope)));
+        assert!(!scoped(&with_id, &SelectionFilter::None, Some(&scope)));
+        assert!(!scoped(&with_id, &SelectionFilter::Auto, None));
+    }
+
+    /// A `selection_filter_on` column the check does not output is the check's own config error,
+    /// reported apart from a query that failed.
+    #[test]
+    fn a_missing_selection_filter_column_has_its_own_reason() {
+        let batch = preview_batch(&[("unique_id", &["model.p.a"])]);
+        let scope = BTreeSet::from(["model.p.a".to_string()]);
+        let filter = SelectionFilter::Columns(vec!["parent_id".to_string()]);
+        let error = evaluate_batches(&[batch], &filter, Some(&scope), 5)
+            .err()
+            .expect("parent_id is not in the check's output");
+        assert_eq!(error.reason, "selection_filter_invalid");
+    }
+
     #[test]
     fn preview_omits_name_and_message_when_unique_id_is_present() {
         let batch = preview_batch(&[
@@ -494,8 +612,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["unique_id", "name", "message"],
         );
-        let table = render_rows(&rows, eval.violations).expect("a table");
+        let table = render_rows(&rows, eval.violations, Some(5), true).expect("a table");
         assert!(table.contains("no description"), "{table}");
+        assert!(!table.contains("--limit"), "nothing was cut: {table}");
         assert!(table.contains("unique_id"), "header row missing: {table}");
     }
 
@@ -514,8 +633,22 @@ mod tests {
         assert_eq!(eval.violations, 2, "b and d are in scope");
         let rows = eval.preview_rows.expect("a violation row");
         assert_eq!(rows.num_rows(), 1, "capped at max_rows, not at violations");
-        let table = render_rows(&rows, eval.violations).expect("a table");
+        let table = render_rows(&rows, eval.violations, Some(1), true).expect("a table");
         assert!(table.contains("model.p.b"), "{table}");
+        assert!(
+            table.contains("2 rows, showing only 1 rows") && table.contains("--limit -1"),
+            "a cut table must say how to see the rest: {table}"
+        );
+        let quiet = render_rows(&rows, eval.violations, Some(1), false).expect("a table");
+        let exact = render_rows(&rows, 1, Some(1), true).expect("a table");
+        assert!(
+            !exact.contains("--limit"),
+            "nothing cut when rows == limit: {exact}"
+        );
+        assert!(
+            !quiet.contains("--limit"),
+            "no hint for commands without the flag: {quiet}"
+        );
         assert!(
             !table.contains("model.p.a") && !table.contains("model.p.c"),
             "out-of-scope rows must not appear: {table}"
@@ -543,6 +676,14 @@ pub struct CheckResult {
     pub name: String,
     /// `pass` | `fail` | `warn` | `error` | `skipped`.
     pub status: &'static str,
+    /// The check's configured severity: `error` | `warn`.
+    pub severity: &'static str,
+    /// Why the check was skipped or could not be evaluated, for telemetry. `None` for `pass` |
+    /// `fail` | `warn`.
+    pub reason: Option<&'static str>,
+    /// How the node selection bore on this check's rows, for telemetry: `none` | `applied` |
+    /// `ignored` | `unknown`.
+    pub selection: &'static str,
     pub message: Option<String>,
     pub violations: Option<u64>,
     /// Wall time for this check's query and evaluation, so the result line can
@@ -557,16 +698,76 @@ impl CheckResult {
     /// A check that could not be evaluated at all — the index was missing/stale, or the check has
     /// no rendered SQL to run. Never `pass`/`fail`/`warn`: we do not know what the check would have
     /// found, so reporting anything but `error` would be a guess.
-    fn error(unique_id: String, name: String, message: String) -> Self {
+    fn error(
+        unique_id: String,
+        name: String,
+        severity: &dbt_schemas::schemas::common::Severity,
+        error: CheckError,
+        selection_active: bool,
+    ) -> Self {
         Self {
             unique_id,
             name,
             status: "error",
-            message: Some(message),
+            severity: severity_str(severity),
+            reason: Some(error.reason),
+            selection: selection_label(selection_active, None),
+            message: Some(error.message),
             violations: None,
             execution_time: 0.0,
             rows: None,
         }
+    }
+}
+
+/// How the node selection bore on a check's rows. `scoped` is `None` for a check that never
+/// produced rows to scope, so whether the selection would have applied is `unknown`.
+fn selection_label(selection_active: bool, scoped: Option<bool>) -> &'static str {
+    match (selection_active, scoped) {
+        (false, _) => "none",
+        (true, Some(true)) => "applied",
+        (true, Some(false)) => "ignored",
+        (true, None) => "unknown",
+    }
+}
+
+/// Results for checks that did not run at all (`--skip-checks`, or no metadata to read), so
+/// telemetry can still report them as `skipped`. They are not logged or written to
+/// `run_results.json`.
+pub fn not_run_results(
+    checks: &[Arc<dbt_schemas::schemas::DbtCheck>],
+    reason: &'static str,
+    selection_active: bool,
+) -> Vec<CheckResult> {
+    checks
+        .iter()
+        .map(|c| CheckResult {
+            unique_id: c.__common_attr__.unique_id.clone(),
+            name: c.__common_attr__.name.clone(),
+            status: "skipped",
+            severity: severity_str(&severity_of(c)),
+            reason: Some(reason),
+            selection: selection_label(selection_active, None),
+            message: None,
+            violations: None,
+            execution_time: 0.0,
+            rows: None,
+        })
+        .collect()
+}
+
+/// A check's configured severity, defaulting to `error` when unset.
+fn severity_of(c: &dbt_schemas::schemas::DbtCheck) -> dbt_schemas::schemas::common::Severity {
+    c.deprecated_config
+        .severity
+        .clone()
+        .unwrap_or(dbt_schemas::schemas::common::Severity::Error)
+}
+
+fn severity_str(severity: &dbt_schemas::schemas::common::Severity) -> &'static str {
+    match severity {
+        dbt_schemas::schemas::common::Severity::Error => "error",
+        dbt_schemas::schemas::common::Severity::Warn => "warn",
     }
 }
 
@@ -578,10 +779,16 @@ impl CheckResult {
 /// is capped at the preview limit, and the width footer would otherwise report
 /// the cap as if it were the result size.
 ///
-/// No title, and no row-count footer: the log line above the table already names
-/// the check and counts the violations, and the footer's advice (`--limit -1`) is
-/// about `dbt show`, not about checks.
-fn render_rows(batch: &arrow::record_batch::RecordBatch, total: u64) -> Option<String> {
+/// No title. The footer appears only when rows were cut and `hint_limit` is set, so a
+/// reader who sees fewer rows than the log line counts is told how to see the rest.
+/// Callers whose command does not take `--limit` leave it off.
+fn render_rows(
+    batch: &arrow::record_batch::RecordBatch,
+    total: u64,
+    limit: Option<usize>,
+    hint_limit: bool,
+) -> Option<String> {
+    let truncated = hint_limit && limit.is_some_and(|l| total > l as u64);
     let names = dbt_pretty_table::make_column_names(batch.schema_ref());
     dbt_pretty_table::pretty_data_table(
         "",
@@ -589,7 +796,9 @@ fn render_rows(batch: &arrow::record_batch::RecordBatch, total: u64) -> Option<S
         &names,
         std::slice::from_ref(batch),
         dbt_pretty_table::DisplayFormat::Table,
-        None,
+        // The batch is already capped; the renderer prints its truncation footer
+        // whenever it is given a limit, so give it one only when rows were cut.
+        limit.filter(|_| truncated),
         false,
         Some(total as usize),
     )
@@ -616,12 +825,14 @@ pub fn run_parse_time_checks(
     checks: &[Arc<dbt_schemas::schemas::DbtCheck>],
     metadata_dir: &Path,
     selection: Option<&BTreeSet<String>>,
-    max_preview_rows: usize,
+    row_limit: Option<usize>,
+    hint_limit: bool,
 ) -> CheckRunOutcome {
     let mut outcome = CheckRunOutcome::default();
     if checks.is_empty() {
         return outcome;
     }
+    let selection_active = selection.is_some();
 
     // Checks read the metadata this invocation just parsed. With none there is nothing to query
     // — and every check must say so rather than return zero rows, which would read as a pass.
@@ -631,7 +842,12 @@ pub fn run_parse_time_checks(
             outcome.results.push(CheckResult::error(
                 c.__common_attr__.unique_id.clone(),
                 c.__common_attr__.name.clone(),
-                reason.clone(),
+                &severity_of(c),
+                CheckError {
+                    reason: "metadata_unavailable",
+                    message: reason.clone(),
+                },
+                selection_active,
             ));
         }
         return outcome;
@@ -648,7 +864,12 @@ pub fn run_parse_time_checks(
                 outcome.results.push(CheckResult::error(
                     c.__common_attr__.unique_id.clone(),
                     c.__common_attr__.name.clone(),
-                    e.clone(),
+                    &severity_of(c),
+                    CheckError {
+                        reason: "adapter_failed",
+                        message: e.clone(),
+                    },
+                    selection_active,
                 ));
             }
             return outcome;
@@ -658,11 +879,7 @@ pub fn run_parse_time_checks(
     for c in checks {
         let name = c.__common_attr__.name.clone();
         let unique_id = c.__common_attr__.unique_id.clone();
-        let severity = c
-            .deprecated_config
-            .severity
-            .clone()
-            .unwrap_or(dbt_schemas::schemas::common::Severity::Error);
+        let severity = severity_of(c);
         let filter = selection_filter_for(c.deprecated_config.selection_filter_on.as_ref());
 
         let Some(sql) = c.__check_attr__.compiled_sql.as_deref() else {
@@ -670,22 +887,38 @@ pub fn run_parse_time_checks(
             outcome.results.push(CheckResult::error(
                 unique_id,
                 name,
-                "check has no rendered SQL".to_string(),
+                &severity,
+                CheckError {
+                    reason: "no_compiled_sql",
+                    message: "check has no rendered SQL".to_string(),
+                },
+                selection_active,
             ));
             continue;
         };
 
         let started = std::time::Instant::now();
         let evaluated = crate::check_adapter::query_index(&adapter, sql)
-            .and_then(|batches| evaluate_batches(&batches, &filter, selection, max_preview_rows));
+            .map_err(|message| CheckError {
+                reason: "query_failed",
+                message,
+            })
+            .and_then(|batches| {
+                evaluate_batches(
+                    &batches,
+                    &filter,
+                    selection,
+                    row_limit.unwrap_or(usize::MAX),
+                )
+            });
         let execution_time = started.elapsed().as_secs_f64();
 
         match evaluated {
             // An execution error is hard whatever the severity: we do not know whether the check
             // would have passed, so reporting a pass would be a lie.
-            Err(message) => {
+            Err(error) => {
                 outcome.failed += 1;
-                let mut r = CheckResult::error(unique_id, name, message);
+                let mut r = CheckResult::error(unique_id, name, &severity, error, selection_active);
                 r.execution_time = execution_time;
                 outcome.results.push(r);
             }
@@ -697,6 +930,9 @@ pub fn run_parse_time_checks(
                     unique_id,
                     name,
                     status: "skipped",
+                    severity: severity_str(&severity),
+                    reason: Some("empty_selection"),
+                    selection: selection_label(selection_active, Some(eval.scoped)),
                     message: Some(
                         "selection matched no nodes this check can report on".to_string(),
                     ),
@@ -709,6 +945,9 @@ pub fn run_parse_time_checks(
                 unique_id,
                 name,
                 status: "pass",
+                severity: severity_str(&severity),
+                reason: None,
+                selection: selection_label(selection_active, Some(eval.scoped)),
                 message: None,
                 violations: Some(0),
                 execution_time,
@@ -724,7 +963,7 @@ pub fn run_parse_time_checks(
                 let rows = eval
                     .preview_rows
                     .as_ref()
-                    .and_then(|b| render_rows(b, violations));
+                    .and_then(|b| render_rows(b, violations, row_limit, hint_limit));
                 let hard = severity == dbt_schemas::schemas::common::Severity::Error;
                 if hard {
                     outcome.failed += 1;
@@ -733,6 +972,9 @@ pub fn run_parse_time_checks(
                     unique_id,
                     name,
                     status: if hard { "fail" } else { "warn" },
+                    severity: severity_str(&severity),
+                    reason: None,
+                    selection: selection_label(selection_active, Some(eval.scoped)),
                     message: detail,
                     violations: Some(violations),
                     execution_time,

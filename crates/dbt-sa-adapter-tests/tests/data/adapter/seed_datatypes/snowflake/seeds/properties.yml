@@ -1,0 +1,26 @@
+version: 2
+
+seeds:
+  - name: mixed_dtypes
+    description: Mixed data types test with an implicit schema
+  - name: mixed_dtypes_w_schema
+    # Note: discount_pct CSV values omit the % sign (unlike mixed_dtypes.csv)
+    # because the w_schema seed sends raw strings to Snowflake, which cannot parse '%'.
+    config:
+      column_types:
+        id: INT
+        first_name: TEXT
+        last_name: VARCHAR(50)
+        created_at: TIMESTAMP_NTZ(8)
+        birth_date: TIMESTAMP_NTZ(7)
+        is_cool: BOOLEAN
+        net_worth: NUMBER
+        num_employees: INT
+        revenue: FLOAT
+        discount_pct: INT
+        score: FLOAT
+  - name: timestamps
+    config:
+      column_types:
+        timestamp_without_timezone: TIMESTAMP_NTZ
+        timestamp_text: TIMESTAMP_LTZ

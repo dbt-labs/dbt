@@ -30,7 +30,7 @@ use dbt_yaml::Spanned;
 use minijinja::{
     MacroSpans, Value, Value as MinijinjaValue,
     constants::{CURRENT_PATH, CURRENT_SPAN, TARGET_PACKAGE_NAME},
-    value::Kwargs,
+    value::{Kwargs, OverlayMap},
 };
 use minijinja_contrib::modules::py_datetime::datetime::PyDateTime;
 
@@ -44,7 +44,7 @@ pub async fn run_operation_inline_sql(
     sql: &str,
     resolver_state: &Arc<ResolverState>,
     jinja_env: &Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Arc<BTreeMap<String, Value>>,
     io_args: &IoArgs,
 ) -> FsResult<String> {
     if sql.trim().is_empty() {
@@ -54,7 +54,7 @@ pub async fn run_operation_inline_sql(
         ));
     }
 
-    let mut ctx = base_context.clone();
+    let mut ctx = OverlayMap::new(Value::from_dyn_object(Arc::clone(base_context)));
     ctx.insert(
         TARGET_PACKAGE_NAME.to_string(),
         Value::from(resolver_state.root_project_name.clone()),
@@ -106,7 +106,7 @@ pub async fn run_operation_inline_sql(
         {
             let resolver_state = Arc::clone(resolver_state);
             let jinja_env = Arc::clone(jinja_env);
-            let base_context = base_context.clone();
+            let base_context = Arc::clone(base_context);
             let io_args = io_args.clone();
             dbt_runtime::spawn_blocking(move || {
                 precompile_ephemeral_models(&resolver_state, &jinja_env, &base_context, &io_args)
@@ -161,9 +161,10 @@ pub async fn run_operation_inline_sql(
 fn precompile_ephemeral_models(
     resolver_state: &ResolverState,
     jinja_env: &JinjaEnv,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Arc<BTreeMap<String, Value>>,
     io_args: &IoArgs,
 ) -> FsResult<()> {
+    let base_context = &Value::from_dyn_object(Arc::clone(base_context));
     // Collect ephemeral models keyed by unique_id.
     let ephemerals: BTreeMap<String, Arc<dbt_schemas::schemas::DbtModel>> = resolver_state
         .nodes
@@ -202,7 +203,7 @@ fn precompile_ephemeral_models(
         // Build the per-node compile context — this binds `this`, the ref-graph,
         // adapter dispatch, etc. exactly as the normal pipeline does.
         let (compile_ctx, _) = build_compile_node_context(
-            model.as_ref(),
+            model.clone(),
             resolver_state,
             base_context,
             DependencyValidationConfig::new_unvalidated(),
@@ -246,7 +247,7 @@ pub async fn run_operation_on_run(
     database_schemas: &Option<Value>,
     listener_factory: Option<Arc<dyn RenderingEventListenerFactory>>,
     jinja_env: &Arc<JinjaEnv>,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
     results: Value,
 ) -> FsResult<String> {
     if operation
@@ -259,7 +260,7 @@ pub async fn run_operation_on_run(
     }
 
     // Get the base context
-    let mut operation_ctx = base_context.clone();
+    let mut operation_ctx = OverlayMap::extending(base_context);
     operation_ctx.insert(
         TARGET_PACKAGE_NAME.to_string(),
         Value::from(operation.__common_attr__.package_name.clone()),
@@ -433,8 +434,12 @@ pub async fn run_operation_on_run_with_ctx(
     // Build operation-specific context with static_analysis=unsafe
     // This ensures refs/sources in operations use deferred relations
     let (mut operation_ctx, _) = ctx.build_compile_node_context(
-        &**operation,
-        &ctx.inner.base_context,
+        // We are forced to clone here, cause jinja engine requires an owned (static) object as value,
+        // while operations are coming from shared resolver state and thus by reference.
+        // We accept the clone cost here under assumption that number of operations are very small
+        // in practice and doesn't (yet) worth the cost of building workarounds
+        Arc::new((**operation).clone()),
+        &Value::from_dyn_object(Arc::clone(&ctx.inner.base_context)),
         DependencyValidationConfig::new_unvalidated(),
     )?;
 
@@ -469,7 +474,7 @@ pub async fn run_operation_on_run_with_ctx(
         &database_schemas,
         Some(Arc::clone(&ctx.rendering_listener_factory)),
         &ctx.env,
-        &operation_ctx,
+        &Value::from(operation_ctx),
         results_value,
     )
     .await

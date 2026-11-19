@@ -1,0 +1,29 @@
+d64d1ef0:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_equals
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.equals:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_EQUALS" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace   view development.adapters_snowflake_equals.equals
+    
+    
+    
+    
+    as (
+    select
+    (1 = 1) as literal_eq_true,
+    (1 = 2) as literal_eq_false,
+    (null = null) as null_eq_null,
+    (1 = null) as literal_eq_null
+    )

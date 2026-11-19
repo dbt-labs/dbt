@@ -1,0 +1,1 @@
+SELECT * FROM TABLE({{ target.database }}.{{target.schema }}.sample_table_function())

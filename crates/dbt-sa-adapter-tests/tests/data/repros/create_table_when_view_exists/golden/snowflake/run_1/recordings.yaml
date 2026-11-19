@@ -1,0 +1,25 @@
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.create_table_when_view_exists.source_view:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CREATE_TABLE_WHEN_VIEW_EXISTS" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: drop view if exists "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_CREATE_TABLE_WHEN_VIEW_EXISTS"."SOURCE_VIEW" cascade
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_create_table_when_view_exists.source_view
+    
+    
+    
+    
+    as (
+    
+    select 1 as a
+    )

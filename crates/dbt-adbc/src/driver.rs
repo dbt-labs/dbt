@@ -16,6 +16,7 @@ use parking_lot::RwLockUpgradableReadGuard;
 use std::hash;
 use std::{
     collections::HashMap, env, ffi::c_int, fmt, mem, path::Path, path::PathBuf, sync::LazyLock,
+    sync::OnceLock,
 };
 
 #[cfg(debug_assertions)]
@@ -40,14 +41,14 @@ pub enum LoadStrategy {
     System(Option<String>),
     /// Try loading from system paths first; if not found, fall back to CDN cache.
     SystemThenCdnCache,
-    /// Load the driver from the sibling lib/ folder.
+    /// Load the driver from the sibling lib/dbt/ folder.
     Bundled,
-    /// Load the `flock` driver that proxies all ADBC calls to a service multiplexing
+    /// Load the `bridge` driver that proxies all ADBC calls to a service multiplexing
     /// different ADBC drivers.
     ///
-    /// In this strategy, we load the "adbc_driver_flock" driver and configure it
+    /// In this strategy, we load the "adbc_driver_bridge" driver and configure it
     /// to make calls to the server that loads the actual drivers.
-    Remote,
+    Bridge,
 }
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
@@ -83,6 +84,10 @@ pub enum Backend {
     ClickHouse,
     /// Exasol driver implementation (ADBC).
     Exasol,
+    /// Trino driver implementation (ADBC).
+    Trino,
+    /// MotherDuck driver implementation (ADBC).
+    MotherDuck,
     /// Generic ADBC driver implementation.
     ///
     /// This variant is fully dynamic and experimental. Features might not work reliably and fail
@@ -115,6 +120,8 @@ impl fmt::Display for Backend {
             Backend::Athena => write!(f, "Athena"),
             Backend::ClickHouse => write!(f, "ClickHouse"),
             Backend::Exasol => write!(f, "Exasol"),
+            Backend::Trino => write!(f, "Trino"),
+            Backend::MotherDuck => write!(f, "MotherDuck"),
             Backend::Generic { library_name, .. } => write!(f, "Generic({library_name})"),
         }
     }
@@ -136,6 +143,8 @@ impl Backend {
             Backend::Athena => Some("adbc_driver_athena"),
             Backend::ClickHouse => Some("adbc_clickhouse"),
             Backend::Exasol => Some("adbc_driver_exasol"),
+            Backend::Trino => Some("adbc_driver_trino"),
+            Backend::MotherDuck => Some("adbc_driver_motherduck"),
             Backend::Generic { library_name, .. } => Some(library_name),
         }
     }
@@ -145,6 +154,7 @@ impl Backend {
             Backend::Snowflake => Some(b"SnowflakeDriverInit"),
             Backend::DuckDB | Backend::DuckDBExtended => Some(b"duckdb_adbc_init"),
             Backend::LakeCompute => Some(b"AdbcDriverDbtInit"),
+            Backend::Trino => Some(b"AdbcDriverTrinoInit"),
             Backend::Generic {
                 library_name: _,
                 entrypoint,
@@ -259,13 +269,19 @@ fn find_upward_dir(start: &Path, subpath: &Path, max_hops: usize) -> Option<Path
     None
 }
 
-/// Like [find_upward_dir], but starting from the directory of the running executable.
+/// Like [find_upward_dir], but starting from the canonicalized executable's directory.
 fn find_upward_dir_from_exe(subpath: &Path, max_hops: usize) -> Option<PathBuf> {
     let exe_path = env::current_exe().ok().or_else(|| {
         env::var_os("DBT_DB_RUNNER_PATH")
             .filter(|path| !path.is_empty())
             .map(PathBuf::from)
     })?;
+    #[cfg(target_os = "windows")]
+    let exe_path = dunce::canonicalize(&exe_path).unwrap_or(exe_path);
+    // Disallowed only for its Windows paths.
+    #[cfg(not(target_os = "windows"))]
+    #[allow(clippy::disallowed_methods)]
+    let exe_path = std::fs::canonicalize(&exe_path).unwrap_or(exe_path);
     let starting_dir = exe_path.parent()?;
     find_upward_dir(starting_dir, subpath, max_hops)
 }
@@ -284,7 +300,12 @@ fn find_bundled_drivers_cache_dir() -> Option<PathBuf> {
 static BUNDLED_DRIVERS_CACHE_DIR: LazyLock<Option<PathBuf>> =
     LazyLock::new(find_bundled_drivers_cache_dir);
 
-/// Climb up the directory tree and returns the first lib/ directory found.
+/// Climb up the directory tree and returns the first lib/dbt/ directory found.
+///
+/// This is the `~/.local/lib/dbt/` layout adopted by the installer that bundles
+/// drivers with the dbt distribution. We assume that the dbt/ subdir exists and
+/// let loading fail in case it doesn't.
+#[cold]
 fn find_adbc_libs_directory() -> Option<PathBuf> {
     // No. of dirs to walk is chosen for `dbt` to operate when the invoked dbt project is:
     // * a subdir of the fusion root but not past the crate level
@@ -320,11 +341,41 @@ fn find_adbc_libs_directory() -> Option<PathBuf> {
         }
     }
 
-    find_upward_dir_from_exe(Path::new("lib"), LIB_HEIGHT_MAX)
+    find_upward_dir_from_exe(Path::new("lib"), LIB_HEIGHT_MAX).map(|lib_dir| {
+        let mut dbt_dir = lib_dir;
+        dbt_dir.push("dbt");
+        dbt_dir
+    })
 }
 
 /// Directory used by [`AdbcDriver::load_dynamic_from_name`].
-static ADBC_LIBS_DIRECTORY: LazyLock<Option<PathBuf>> = LazyLock::new(find_adbc_libs_directory);
+static ADBC_LIBS_DIRECTORY: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Sets the `lib/dbt/` directory, or `None` for none. Must be called before the first load.
+pub fn set_libs_directory(dir: Option<PathBuf>) {
+    let previous = ADBC_LIBS_DIRECTORY.set(dir);
+    debug_assert!(
+        previous.is_ok(),
+        "set_libs_directory called after the first driver load"
+    );
+}
+
+#[inline]
+fn adbc_libs_directory() -> Option<&'static PathBuf> {
+    ADBC_LIBS_DIRECTORY
+        .get_or_init(find_adbc_libs_directory)
+        .as_ref()
+}
+
+/// Whether `dir` is an install's `lib/dbt/` (not an arrow-adbc checkout) holding
+/// `backend`'s driver library.
+fn has_installed_driver(dir: &Path, backend: Backend) -> bool {
+    dir.ends_with("lib/dbt")
+        && backend.adbc_library_name().is_some_and(|name| {
+            let path = dir.join(libloading::library_filename(name));
+            path.is_absolute() && path.is_file()
+        })
+}
 
 /// All loaded ADBC drivers are cached in `LOADED_ADBC_DRIVERS`, no matter the loading strategy used.
 static LOADED_ADBC_DRIVERS: LazyLock<
@@ -389,17 +440,23 @@ impl AdbcDriver {
         use Backend::*;
         use LoadStrategy::*;
         let final_strategy = match (load_strategy, backend) {
+            // Drivers installed with dbt take precedence.
+            (CdnCache | SystemThenCdnCache, _)
+                if adbc_libs_directory().is_some_and(|dir| has_installed_driver(dir, backend)) =>
+            {
+                Bundled
+            }
             // CDN strategy for drivers published to the dbt Labs CDN.
             (
                 load_strategy @ (CdnCache | SystemThenCdnCache),
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
-                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
+                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse | MotherDuck,
             ) => {
                 #[cfg(debug_assertions)]
                 {
                     // This option is only used during development of ADBC drivers to make sure
                     // the drivers are not downloaded from the CDN and are instead loaded from
-                    // either the repo root lib/ directory or an arrow-adbc repo whose root is
+                    // either the repo root lib/dbt/ directory or an arrow-adbc repo whose root is
                     // a sibling to this fs repo.
                     let disable_cdn_driver_cache =
                         env_var_bool("DISABLE_CDN_DRIVER_CACHE")?.unwrap_or(false);
@@ -407,7 +464,7 @@ impl AdbcDriver {
                         eprintln!(
                             "WARNING: {} ADBC driver is being loaded from {} in debug mode.",
                             backend,
-                            ADBC_LIBS_DIRECTORY.as_ref().unwrap().display()
+                            adbc_libs_directory().unwrap().display()
                         );
                         Bundled
                     } else {
@@ -420,20 +477,20 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Remote, Athena | Exasol) => System(None),
+            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol | Trino) => System(None),
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
-            (CdnCache | SystemThenCdnCache | Remote, Generic { library_name, .. }) => {
+            (CdnCache | SystemThenCdnCache | Bridge, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))
             }
             // System strategy: load from a provided library name (e.g. "adbc_driver_snowflake").
             (load_strategy @ System(_), _) => load_strategy,
             // Bundled strategy doesn't change for any backend.
             (Bundled, _) => Bundled,
-            // Remote drivers are used via the "adbc_driver_flock" library
+            // Remote drivers are used via the "adbc_driver_bridge" library
             (
-                load_strategy @ Remote,
+                load_strategy @ Bridge,
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
-                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
+                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse | MotherDuck,
             ) => load_strategy,
         };
 
@@ -468,11 +525,11 @@ Second error:\n\
                             })
                     })
             }
-            Remote => Self::prepare_for_remote_driver(backend, adbc_version),
+            Bridge => Self::prepare_for_bridge_driver(backend, adbc_version),
             Bundled => {
                 let name = backend.adbc_library_name().unwrap();
                 // don't search system paths, only the provided
-                // additional paths (e.g. sibling lib/ directory)
+                // additional paths (e.g. sibling lib/dbt/ directory)
                 let load_flags = 0;
                 Self::try_load_driver_from_name(backend, name, load_flags, adbc_version)
             }
@@ -488,10 +545,10 @@ Second error:\n\
     ) -> Result<ManagedAdbcDriver> {
         let entrypoint = backend.adbc_driver_entrypoint();
         let mut additional_search_paths: Vec<PathBuf> = Vec::new();
-        // Climb up the directory tree and choose the first lib/ directory we can
+        // Climb up the directory tree and choose the first lib/dbt/ directory we can
         // find. The result of that search is cached in LIBS_DIRECTORY. We use as
         // as an additional search path for the driver library.
-        if let Some(libs_dir) = ADBC_LIBS_DIRECTORY.as_ref() {
+        if let Some(libs_dir) = adbc_libs_directory() {
             additional_search_paths.push(libs_dir.clone());
         }
         // Add Homebrew library path on macOS (Apple Silicon).
@@ -553,12 +610,12 @@ Second error:\n\
     }
 
     /// Load the driver virtually using the [LoadStrategy::Remote] strategy.
-    fn prepare_for_remote_driver(
+    fn prepare_for_bridge_driver(
         backend: Backend,
         adbc_version: AdbcVersion,
     ) -> Result<ManagedAdbcDriver> {
         let mut additional_search_paths: Vec<PathBuf> = Vec::new();
-        if let Some(libs_dir) = ADBC_LIBS_DIRECTORY.as_ref() {
+        if let Some(libs_dir) = adbc_libs_directory() {
             additional_search_paths.push(libs_dir.clone());
             let load_flags = LOAD_FLAG_SEARCH_ENV
                 | LOAD_FLAG_SEARCH_USER
@@ -566,7 +623,7 @@ Second error:\n\
                 | LOAD_FLAG_ALLOW_RELATIVE_PATHS;
             return ManagedAdbcDriver::load_from_name(
                 backend,
-                "adbc_driver_flock",
+                "adbc_driver_bridge",
                 None, // entrypoint
                 adbc_version,
                 load_flags,
@@ -575,8 +632,8 @@ Second error:\n\
         }
 
         Err(Error::with_message_and_status(
-            "Remote driver strategy requires the `adbc_driver_flock` driver to be \
-located in a `lib/` directory next to the executable, but no such directory could \
+            "Remote driver strategy requires the `adbc_driver_bridge` driver to be \
+located in a `lib/dbt/` directory next to the executable, but no such directory could \
 be found."
                 .to_string(),
             Status::Internal,
@@ -613,6 +670,23 @@ mod tests {
     }
 
     #[test]
+    fn has_installed_driver_requires_the_file_in_the_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("lib").join("dbt");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!has_installed_driver(&dir, Backend::Postgres));
+        let filename = libloading::library_filename("adbc_driver_postgresql");
+        std::fs::write(dir.join(&filename), b"").unwrap();
+        assert!(has_installed_driver(&dir, Backend::Postgres));
+        std::fs::write(root.path().join(&filename), b"").unwrap();
+        assert!(!has_installed_driver(root.path(), Backend::Postgres));
+        assert!(!has_installed_driver(
+            Path::new("lib/dbt"),
+            Backend::Postgres
+        ));
+    }
+
+    #[test]
     fn backend_library_and_protocol_metadata_are_stable() {
         let generic = Backend::Generic {
             library_name: "adbc_driver_sqlite",
@@ -628,6 +702,11 @@ mod tests {
             Backend::ClickHouse.adbc_library_name(),
             Some("adbc_clickhouse")
         );
+        assert_eq!(
+            Backend::MotherDuck.adbc_library_name(),
+            Some("adbc_driver_motherduck")
+        );
+        assert_eq!(Backend::MotherDuck.to_string(), "MotherDuck");
         assert_eq!(generic.adbc_library_name(), Some("adbc_driver_sqlite"));
     }
 
@@ -651,6 +730,7 @@ mod tests {
             Some(&b"duckdb_adbc_init"[..])
         );
         assert_eq!(Backend::Postgres.adbc_driver_entrypoint(), None);
+        assert_eq!(Backend::MotherDuck.adbc_driver_entrypoint(), None);
         assert_eq!(
             generic.adbc_driver_entrypoint(),
             Some(&b"SqliteDriverInit"[..])
@@ -773,9 +853,9 @@ mod tests {
         Ok(())
     }
 
-    #[test_with::env(FLOCK_DRIVER_TESTS)]
+    #[test_with::env(BRIDGE_DRIVER_TESTS)]
     #[test]
-    fn load_flock_driver() -> Result<()> {
+    fn load_bridge_driver() -> Result<()> {
         for backend in [
             Backend::Snowflake,
             Backend::BigQuery,
@@ -787,7 +867,7 @@ mod tests {
             Backend::Salesforce,
             Backend::SQLServer,
         ] {
-            AdbcDriver::try_load_dynamic(backend, AdbcVersion::default(), LoadStrategy::Remote)?;
+            AdbcDriver::try_load_dynamic(backend, AdbcVersion::default(), LoadStrategy::Bridge)?;
         }
         Ok(())
     }

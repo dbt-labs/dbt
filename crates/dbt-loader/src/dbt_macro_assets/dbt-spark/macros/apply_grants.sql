@@ -16,12 +16,12 @@
 
 
 {%- macro spark__get_grant_sql(relation, privilege, grantees) -%}
-    grant {{ privilege }} on {{ relation }} to {{ adapter.quote(grantees[0]) }}
+    grant {{ privilege }} on {{ get_grant_object_sql(relation) }} to {{ adapter.quote(grantees[0]) }}
 {%- endmacro %}
 
 
 {%- macro spark__get_revoke_sql(relation, privilege, grantees) -%}
-    revoke {{ privilege }} on {{ relation }} from {{ adapter.quote(grantees[0]) }}
+    revoke {{ privilege }} on {{ get_grant_object_sql(relation) }} from {{ adapter.quote(grantees[0]) }}
 {%- endmacro %}
 
 

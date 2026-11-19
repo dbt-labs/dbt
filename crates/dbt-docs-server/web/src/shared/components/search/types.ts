@@ -1,5 +1,6 @@
+import type { MatchedField } from 'dbt-docs-lib/domain';
+
 import type { ResourceTypeExplorer } from '../../../lib/resourceType';
-import type { MatchedField } from '../../typings/domain/search';
 
 /**
  * The matched-field vocabulary for a single search hit. Canonical definition

@@ -4,7 +4,7 @@ use std::{
     fmt::Debug,
     hash::Hash,
     ops::Deref,
-    path::{Component, Display, Path, PathBuf},
+    path::{Component, Display, Path, PathBuf, Prefix},
 };
 
 /// Compute the `target/compiled` or `target/run` output path for a snapshot node.
@@ -157,6 +157,11 @@ enum PrefixDoubleSlash {
 #[allow(unused)]
 impl DbtPath {
     fn normalize(value: &Path) -> DbtPath {
+        // A UNC prefix already starts with `//`, so it must not get the extra `/` below.
+        let is_unc = matches!(
+            value.components().next(),
+            Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::UNC(..))
+        );
         let mut collapse_parent_depth = 0;
         let mut ret = PathBuf::new();
 
@@ -170,7 +175,7 @@ impl DbtPath {
             && value_string.rmatches(":/").count() == 1
         {
             PrefixDoubleSlash::Colon
-        } else if value_string.starts_with("//") {
+        } else if value_string.starts_with("//") && !is_unc {
             PrefixDoubleSlash::StartsWith
         } else {
             PrefixDoubleSlash::None
@@ -818,5 +823,44 @@ mod tests {
     fn custom_prefix_should_have_expected_forward_slahses_3() {
         let path = DbtPath::from("//models//schema.yml");
         assert_eq!("//models/schema.yml", path.to_string_lossy());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_unc_prefix_stays_absolute() {
+        for raw in [
+            r"\\server\share\proj\models\one.sql",
+            "//server/share/proj/models/one.sql",
+        ] {
+            let path = DbtPath::from(raw);
+            assert_eq!("//server/share/proj/models/one.sql", path.to_string_lossy());
+            assert!(path.is_absolute());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn unc_path_is_relative_to_unc_package_root() {
+        // The first attempt of `stdfs::diff_paths`, which the loader uses to relativize files.
+        let file = DbtPath::from(r"\\server\share\proj\models\one.sql");
+        let rel = pathdiff::diff_paths(&file, Path::new(r"\\server\share\proj")).unwrap();
+        assert_eq!("models/one.sql", DbtPath::from(rel).to_string_lossy());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn target_write_path_under_unc_root_does_not_escape() {
+        let in_dir = Path::new(r"\\server\share\proj");
+        let out = get_target_write_path(
+            in_dir,
+            &in_dir.join(r"target\compiled"),
+            "pkg",
+            Path::new("generic_tests/foo.sql"),
+            Path::new("models/schema.yml"),
+        );
+        assert_eq!(
+            in_dir.join(r"target\compiled\pkg\models\schema.yml\generic_tests\foo.sql"),
+            out
+        );
     }
 }

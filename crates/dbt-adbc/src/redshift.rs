@@ -31,6 +31,12 @@ pub const AUTH_ISSUER_URL: &str = "redshift.auth.issuer_url";
 
 pub const AUTH_TOKEN_TYPE: &str = "redshift.auth.token_type";
 pub const AUTH_TOKEN: &str = "redshift.auth.token";
+
+pub const AUTH_TOKEN_ENDPOINT_REQUEST_URL: &str = "redshift.auth.token_endpoint.request_url";
+pub const AUTH_TOKEN_ENDPOINT_REQUEST_DATA: &str = "redshift.auth.token_endpoint.request_data";
+pub const AUTH_TOKEN_ENDPOINT_REQUEST_HEADERS: &str =
+    "redshift.auth.token_endpoint.request_headers";
+
 pub const AUTH_IDP_LISTEN_PORT: &str = "redshift.auth.listen_port";
 pub const AUTH_IDP_RESPONSE_TIMEOUT: &str = "redshift.auth.idp_response_timeout_seconds";
 pub const AUTH_IDC_CLIENT_DISPLAY_NAME: &str = "redshift.auth.idc_client_display_name";

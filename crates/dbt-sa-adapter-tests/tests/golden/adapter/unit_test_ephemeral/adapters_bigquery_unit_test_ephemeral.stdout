@@ -1,0 +1,17 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/macros_unit_tests/_unit_tests.yml
+   Parsing models/macros_unit_tests/ephemeral_macro_under_test.sql
+   Parsing models/stg_input.sql
+ Rendering models/stg_input.sql
+   Running models/stg_input.sql
+ Succeeded model adapters_bigquery_unit_test_ephemeral.stg_input (view) [1 of 2 in duration]
+ Rendering models/macros_unit_tests/ephemeral_macro_under_test.sql
+ Rendering models/macros_unit_tests/_unit_tests.yml:4:11 (test_ephemeral_macro_under_test)
+   Running ../scratch/target/run/test/models/macros_unit_tests/test_ephemeral_macro_under_test.sql
+    Passed unit_test adapters_bigquery_unit_test_ephemeral_macros_unit_tests_dbt_test__audit.test_ephemeral_macro_under_test [2 of 2 in duration]
+   Running models/macros_unit_tests/ephemeral_macro_under_test.sql
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'bigquery' [duration]
+Processed: 2 models | 1 unit test
+Summary: 3 total | 2 success | 1 no-op

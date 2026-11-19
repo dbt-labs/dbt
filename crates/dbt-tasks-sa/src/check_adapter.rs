@@ -36,24 +36,30 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
 
-/// Build a DuckDB adapter over an in-memory database.
+/// Build a DuckDB adapter over an in-memory database that can read files under `readable_dir`
+/// and nothing else.
 ///
 /// The config is deliberately minimal and hand-rolled rather than inherited from the project:
 /// `AdapterFactoryImpl` silently returns a *mock* adapter when the config carries
 /// `execute: sidecar|service` or `user: mock_test_user`, so reusing a project's mapping would hand
-/// back something that never executes.
+/// back something that never executes. `attach_catalogs: false` keeps the project's catalogs out
+/// of it, since the SQL this runs is not the project's to vouch for (see `lock_down`).
 ///
 /// `AdapterType::DuckDB` maps to vanilla `Backend::DuckDB` in the factory, which is the point.
 ///
 /// Public because rendering needs an adapter too, for a different reason: a check's Render task wants
 /// one purely so macros and utilities *dispatch* on duckdb and emit duckdb SQL. That use needs no
 /// views registered, so it takes this rather than [`open_metadata_adapter`].
-pub fn in_memory_duckdb_adapter(token: CancellationToken) -> Result<Arc<Adapter>, String> {
+pub fn in_memory_duckdb_adapter(
+    readable_dir: &Path,
+    token: CancellationToken,
+) -> Result<Arc<Adapter>, String> {
     let mut config = dbt_yaml::Mapping::new();
     config.insert("type".into(), "duckdb".into());
     config.insert("path".into(), ":memory:".into());
+    config.insert("attach_catalogs".into(), false.into());
 
-    DefaultAdapterFactory
+    let adapter = DefaultAdapterFactory
         .create_adapter(
             AdapterType::DuckDB,
             config,
@@ -67,7 +73,46 @@ pub fn in_memory_duckdb_adapter(token: CancellationToken) -> Result<Arc<Adapter>
             None,
             None,
         )
-        .map_err(|e| format!("could not open an in-memory duckdb adapter: {e}"))
+        .map_err(|e| format!("could not open an in-memory duckdb adapter: {e}"))?;
+    lock_down(&adapter, readable_dir)?;
+    Ok(adapter)
+}
+
+/// Confine the database to reading under `readable_dir`, then freeze its configuration.
+///
+/// The SQL this adapter runs comes from check files that any package in the project can ship,
+/// dependencies included, and from `dbt show --inline`. It runs in the dbt process, so at
+/// DuckDB's defaults it could read any file that process can (`read_text('~/.dbt/profiles.yml')`),
+/// reach the network (`read_text('https://…')` installs httpfs on demand), and install
+/// extensions. After this, every path outside `readable_dir` and every URL is refused, nothing
+/// can be installed, and no setting can be changed back.
+///
+/// Order matters: `allowed_directories` cannot be set once external access is off, and
+/// `lock_configuration` has to come last. The settings are global, so they hold on every later
+/// connection, which matters because the adapter opens a fresh one per call.
+///
+/// The path needs no normalizing here beyond what the view generator does to the paths it
+/// embeds (`std::path::absolute`). DuckDB canonicalizes the allowed directory and every path it
+/// opens the same way before comparing prefixes: `realpath` on Unix, `GetFinalPathNameByHandleW`
+/// on Windows (resolving 8.3 short names and junctions, dropping `\\?\`), then `\` becomes `/`.
+/// Only `'` needs escaping, as `\` is literal in a SQL string.
+fn lock_down(adapter: &Adapter, readable_dir: &Path) -> Result<(), String> {
+    let dir = std::path::absolute(readable_dir)
+        .map_err(|e| format!("could not resolve {}: {e}", readable_dir.display()))?;
+    let dir = dir.to_string_lossy().replace('\'', "''");
+    let statements = [
+        format!("set global allowed_directories = ['{dir}']"),
+        "set global autoinstall_known_extensions = false".to_string(),
+        "set global allow_community_extensions = false".to_string(),
+        "set global enable_external_access = false".to_string(),
+        "set global lock_configuration = true".to_string(),
+    ];
+    for stmt in &statements {
+        adapter
+            .execute_without_state(None, stmt, false, None)
+            .map_err(|e| format!("could not restrict the metadata database: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Register every `dbt*.*.parquet` in `dir` as a view.
@@ -192,7 +237,7 @@ fn open_epoch_views(
             metadata_dir.display()
         )
     })?;
-    let adapter = in_memory_duckdb_adapter(token)?;
+    let adapter = in_memory_duckdb_adapter(metadata_dir, token)?;
     for stmt in &statements {
         adapter
             .execute_without_state(None, stmt, false, None)
@@ -202,12 +247,18 @@ fn open_epoch_views(
 }
 
 /// Open `target/info_schema/v<n>/` through a DuckDB adapter.
+///
+/// The directory is absolutized first: the views embed the paths they read, and a relative one
+/// would neither resolve independently of the CWD nor fall inside the directory `lock_down`
+/// allows.
 pub fn open_info_schema_adapter(
     info_schema_dir: &Path,
     token: CancellationToken,
 ) -> Result<Arc<Adapter>, String> {
-    let adapter = in_memory_duckdb_adapter(token)?;
-    register_info_schema_views(&adapter, info_schema_dir)?;
+    let info_schema_dir = std::path::absolute(info_schema_dir)
+        .map_err(|e| format!("could not resolve {}: {e}", info_schema_dir.display()))?;
+    let adapter = in_memory_duckdb_adapter(&info_schema_dir, token)?;
+    register_info_schema_views(&adapter, &info_schema_dir)?;
     Ok(adapter)
 }
 
@@ -410,6 +461,68 @@ mod tests {
                 .is_err(),
             "dbt_internal must not be reachable, gate or no gate"
         );
+    }
+
+    /// Check SQL comes from packages, so the adapter must read its own directory and nothing else
+    /// — no other file, no URL, no extension install, no writing out — and the SQL must not be
+    /// able to switch that off. Every statement runs on its own call, so this also shows the
+    /// restriction holds on connections opened after it was applied.
+    #[dbt_runtime::worker_test]
+    fn the_information_schema_adapter_reads_only_its_own_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("info_schema");
+        std::fs::create_dir(&dir).unwrap();
+        write_parquet(&dir, "dbt.models.parquet");
+        let secret = tmp.path().join("profiles.yml");
+        std::fs::write(&secret, "password: hunter2").unwrap();
+
+        let adapter = super::open_info_schema_adapter(&dir, never_cancels())
+            .expect("the information schema adapter should open");
+        adapter
+            .execute_without_state(None, "select n from dbt.models", true, None)
+            .expect("the views over the allowed directory should still be queryable");
+
+        let secret = secret.display();
+        let traversal = dir.join("..").join("profiles.yml");
+        let traversal = traversal.display();
+        let out = tmp.path().join("out.parquet");
+        let out = out.display();
+        for (sql, expected) in [
+            (
+                format!("select * from read_text('{secret}')"),
+                "Permission Error",
+            ),
+            (
+                format!("select * from read_text('{traversal}')"),
+                "Permission Error",
+            ),
+            (
+                "select * from read_text('https://example.com/')".to_string(),
+                "Permission Error",
+            ),
+            (
+                format!("copy (select 1 as n) to '{out}'"),
+                "Permission Error",
+            ),
+            ("install spatial".to_string(), "Permission Error"),
+            (
+                "set global enable_external_access = true".to_string(),
+                "configuration has been locked",
+            ),
+            (
+                "reset global lock_configuration".to_string(),
+                "configuration has been locked",
+            ),
+        ] {
+            let err = match adapter.execute_without_state(None, &sql, true, None) {
+                Ok(_) => panic!("`{sql}` should have been refused"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                err.contains(expected),
+                "`{sql}` should fail with {expected:?}, got: {err}"
+            );
+        }
     }
 
     /// One unreadable file must not take down the view the user actually asked for: an

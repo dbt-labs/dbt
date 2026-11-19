@@ -24,8 +24,7 @@ use crate::machinery::Span;
 use crate::output::Output;
 use crate::template::{CompiledTemplate, CompiledTemplateRef, Template, TemplateConfig};
 use crate::utils::{AutoEscape, BTreeMapKeysDebug, UndefinedBehavior};
-use crate::value::mutable_map::MutableMap;
-use crate::value::{FunctionArgs, FunctionResult, Value, ValueMap};
+use crate::value::{FunctionArgs, FunctionResult, OverlayMap, Value, ValueMap};
 use crate::vm::{Context, Frame, State};
 use crate::{defaults, filters, functions, tests};
 
@@ -229,6 +228,10 @@ impl<'source> Environment<'source> {
     /// it's stored on the environment.  This means the loader is only invoked
     /// once per template name.
     ///
+    /// The returned source can be a plain [`String`], or a
+    /// `(source, Some(filename))` tuple to attach the file the source was
+    /// loaded from.  The filename is used in error spans.
+    ///
     /// For loading templates from the file system, you can use the
     /// [`path_loader`](crate::path_loader) function.
     ///
@@ -240,7 +243,7 @@ impl<'source> Environment<'source> {
     ///     let mut env = Environment::new();
     ///     env.set_loader(|name| {
     ///         if name == "layout.html" {
-    ///             Ok(Some("...".into()))
+    ///             Ok(Some("...".to_string()))
     ///         } else {
     ///             Ok(None)
     ///         }
@@ -250,21 +253,12 @@ impl<'source> Environment<'source> {
     /// ```
     #[cfg(feature = "loader")]
     #[cfg_attr(docsrs, doc(cfg(feature = "loader")))]
-    pub fn set_loader<F>(&mut self, f: F)
+    pub fn set_loader<F, R>(&mut self, f: F)
     where
-        F: Fn(&str) -> Result<Option<String>, Error> + Send + Sync + 'static,
+        F: Fn(&str) -> Result<Option<R>, Error> + Send + Sync + 'static,
+        R: Into<crate::LoadedTemplateSource>,
     {
         self.templates.set_loader(f);
-    }
-
-    /// Registers a loader that returns template source and an optional source filename.
-    #[cfg(feature = "loader")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "loader")))]
-    pub fn set_loader_with_filename<F>(&mut self, f: F)
-    where
-        F: Fn(&str) -> Result<Option<(String, Option<String>)>, Error> + Send + Sync + 'static,
-    {
-        self.templates.set_loader_with_filename(f);
     }
 
     /// Preserve the trailing newline when rendering templates.
@@ -952,8 +946,9 @@ impl<'source> Environment<'source> {
         State::new_for_env(self)
     }
 
-    /// Returns state with initialized first frame
-    pub fn new_state_with_context(&self, ctx: MutableMap) -> State<'_, '_> {
+    /// Returns state whose first frame is `ctx`, which layers over its base
+    /// without copying it.
+    pub fn new_state_with_context(&self, ctx: OverlayMap) -> State<'_, '_> {
         let frame = Frame::new(Value::from_object(ctx));
         State::new(
             self,

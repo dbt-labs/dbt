@@ -20,6 +20,12 @@ export default defineConfig(({ mode }) => ({
     // generated site, since there is no REST fallback to develop against.
     devSite(),
     react({
+      // dbt-docs-lib arrives built, with its dependencies (Radix, floating-ui, ...)
+      // bundled in and their hooks renamed by the minifier. The compiler cannot tell
+      // those are hooks, so it memoizes some of their calls away and React throws on
+      // the next render. The plugin skips `node_modules/` by default, but the lib is
+      // linked from the workspace and resolves to its real path outside it.
+      exclude: /\/dbt-docs-lib\/dist\//,
       babel: {
         plugins: [['babel-plugin-react-compiler']],
       },

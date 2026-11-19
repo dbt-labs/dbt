@@ -421,6 +421,11 @@ impl RecordingHeader {
         }
     }
 
+    /// `recorded_at` parsed as an instant.
+    pub fn recorded_at_utc(&self) -> Result<chrono::DateTime<chrono::Utc>, chrono::ParseError> {
+        chrono::DateTime::parse_from_rfc3339(&self.recorded_at).map(|at| at.to_utc())
+    }
+
     /// Set the invocation command for this recording header.
     pub fn with_invocation_command(mut self, command: impl Into<String>) -> Self {
         self.invocation_command = Some(command.into());

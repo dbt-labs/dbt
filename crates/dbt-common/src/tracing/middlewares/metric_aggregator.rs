@@ -1,7 +1,7 @@
 use dbt_telemetry::{
-    ConnectionLimitWait, HookProcessed, Invocation, InvocationMetrics, NodeEvaluated, NodeEvent,
-    NodeOutcome, NodeProcessed, NodeSkipReason, SourceFreshnessOutcome, has_node_warning,
-    node_processed::NodeOutcomeDetail,
+    HookProcessed, Invocation, InvocationMetrics, MicrobatchEvaluated, NodeEvaluated, NodeEvent,
+    NodeOutcome, NodeProcessed, NodeSkipReason, SourceFreshnessOutcome, ThreadPoolWait,
+    has_node_warning, node_processed::NodeOutcomeDetail,
 };
 use dbt_tracing::{LogRecordInfo, SeverityNumber, SpanEndInfo};
 
@@ -123,21 +123,32 @@ impl TelemetryMiddleware for TelemetryMetricAggregator {
                 no_op,
             );
 
-            // Build node_type_counts hashmap from NodeCounts metrics
+            // Build node_type_counts and probe_counts in one pass over the metrics
             #[allow(clippy::disallowed_types)]
-            let node_type_counts: std::collections::HashMap<String, u64> = data_provider
-                .get_all_metrics()
-                .iter()
-                .filter_map(|(key, count)| match FusionMetricKey::try_from(*key).ok() {
-                    Some(FusionMetricKey::NodeCounts(node_type)) if *count > 0 => {
-                        Some((node_type.as_static_ref().to_string(), *count))
+            let (node_type_counts, probe_counts) = data_provider.get_all_metrics().iter().fold(
+                (
+                    std::collections::HashMap::<String, u64>::new(),
+                    std::collections::HashMap::<String, u64>::new(),
+                ),
+                |(mut node_type_counts, mut probe_counts), (key, count)| {
+                    if *count > 0 {
+                        match FusionMetricKey::try_from(*key).ok() {
+                            Some(FusionMetricKey::NodeCounts(node_type)) => {
+                                node_type_counts
+                                    .insert(node_type.as_static_ref().to_string(), *count);
+                            }
+                            Some(FusionMetricKey::HookCounts) => {
+                                node_type_counts.insert("hook".to_string(), *count);
+                            }
+                            Some(FusionMetricKey::CompatibilityProbe(probe)) => {
+                                probe_counts.insert(probe.name().to_string(), *count);
+                            }
+                            _ => {}
+                        }
                     }
-                    Some(FusionMetricKey::HookCounts) if *count > 0 => {
-                        Some(("hook".to_string(), *count))
-                    }
-                    _ => None,
-                })
-                .collect();
+                    (node_type_counts, probe_counts)
+                },
+            );
 
             // Build status_counts hashmap from aggregated node outcome totals
             #[allow(clippy::disallowed_types)]
@@ -172,24 +183,32 @@ impl TelemetryMiddleware for TelemetryMetricAggregator {
                 )),
                 node_type_counts,
                 status_counts,
+                probe_counts,
             });
         }
 
-        if span.attributes.is::<ConnectionLimitWait>() {
+        if let Some(wait) = span.attributes.downcast_ref::<ThreadPoolWait>() {
             let wait_ms = span
                 .end_time_unix_nano
                 .duration_since(span.start_time_unix_nano)
                 .unwrap_or_default()
                 .as_millis()
                 .min(u64::MAX as u128) as u64;
-
-            data_provider.with_ancestor_attrs_mut::<NodeEvaluated>(|node| {
-                node.idle_time_ms = Some(
-                    node.idle_time_ms
-                        .unwrap_or_default()
-                        .saturating_add(wait_ms),
-                );
-            });
+            // A batch wait belongs to its batch only. Concurrent batch waits may
+            // overlap, so the model evaluation accounts its own waits instead.
+            if wait.batch_id.is_some() {
+                data_provider.with_ancestor_attrs_mut::<MicrobatchEvaluated>(|batch| {
+                    batch.idle_time_ms = batch.idle_time_ms.saturating_add(wait_ms);
+                });
+            } else {
+                data_provider.with_ancestor_attrs_mut::<NodeEvaluated>(|node| {
+                    node.idle_time_ms = Some(
+                        node.idle_time_ms
+                            .unwrap_or_default()
+                            .saturating_add(wait_ms),
+                    );
+                });
+            }
         }
 
         // Count node processed spans

@@ -1,0 +1,5 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/source_view.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

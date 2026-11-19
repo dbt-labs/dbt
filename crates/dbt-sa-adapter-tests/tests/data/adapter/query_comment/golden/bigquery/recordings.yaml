@@ -1,0 +1,16 @@
+f012167b:
+- sequence: 0
+  type: execute
+  sql: |-
+    create schema if not exists `dbt-test-env`.`adapters_bigquery_query_comment`
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "bigquery"} */
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_query_comment`.`a`
+    OPTIONS()
+    as select 1 as id;
+    
+    
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "bigquery"} */

@@ -1,54 +1,33 @@
 use crate::compiler::typecheck::FunctionRegistry;
+use crate::constants::{
+    DBT_AND_ADAPTERS_NAMESPACE, DIALECT, MACRO_DISPATCH_ORDER, MACRO_NAMESPACE_REGISTRY,
+    ROOT_PACKAGE_NAME,
+};
+use crate::dispatch_object::{dispatch_search_packages, get_adapter_prefixes};
 use crate::types::function::{ArgSpec, FunctionType};
 use crate::types::Type;
-use crate::TypecheckingEventListener;
+use crate::vm::typemeta::macro_namespace_template_resolver;
+use crate::{TypecheckingEventListener, Value};
+use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
-#[derive(Clone)]
-/// AdapterDispatchFunction is a singleton that type check adapter.dispatch
+/// Typechecks dispatch against one template's dialect and macro registry.
+#[derive(Clone, Default)]
 pub struct AdapterDispatchFunction {
-    adapter_type: Arc<Mutex<Option<String>>>,
-    function_registry: Arc<Mutex<Option<Arc<FunctionRegistry>>>>,
+    context: BTreeMap<String, Value>,
+    function_registry: Arc<FunctionRegistry>,
 }
 
-// Singleton instance storage
-static ADAPTER_DISPATCH_INSTANCE: OnceLock<AdapterDispatchFunction> = OnceLock::new();
-
 impl AdapterDispatchFunction {
-    fn new(
-        adapter_type: Arc<Mutex<Option<String>>>,
-        function_registry: Arc<Mutex<Option<Arc<FunctionRegistry>>>>,
+    pub(crate) fn new(
+        context: BTreeMap<String, Value>,
+        function_registry: Arc<FunctionRegistry>,
     ) -> Self {
         Self {
-            adapter_type,
+            context,
             function_registry,
         }
-    }
-
-    /// Get the singleton instance of AdapterDispatchFunction
-    pub fn instance() -> Self {
-        ADAPTER_DISPATCH_INSTANCE
-            .get_or_init(|| {
-                AdapterDispatchFunction::new(Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)))
-            })
-            .clone()
-    }
-
-    /// Get a reference to the function registry
-    pub fn function_registry(&self) -> &Arc<Mutex<Option<Arc<FunctionRegistry>>>> {
-        &self.function_registry
-    }
-
-    /// Set the function registry
-    pub fn set_function_registry(&self, new_registry: Arc<FunctionRegistry>) {
-        let mut registry = self.function_registry.lock().unwrap();
-        *registry = Some(new_registry);
-    }
-
-    /// Set the adapter type
-    pub fn set_adapter_type(&self, new_adapter_type: &Option<String>) {
-        *self.adapter_type.lock().unwrap() = new_adapter_type.clone();
     }
 }
 
@@ -64,37 +43,83 @@ impl FunctionType for AdapterDispatchFunction {
         args: &[Type],
         listener: Rc<dyn TypecheckingEventListener>,
     ) -> Result<Type, crate::Error> {
-        if let Some(Type::String(Some(name))) = args.get(0) {
-            if let Ok(registry_opt) = self.function_registry.lock() {
-                if let Some(ref registry) = *registry_opt {
-                    if let Some(adapter_type) = self.adapter_type.lock().unwrap().as_ref() {
-                        let key = format!("{adapter_type}__{name}");
-                        if let Some(func) = registry.get(&key) {
-                            return Ok(Type::Object(func.clone()));
-                        }
+        if let Some(Type::String(Some(name))) = args.first() {
+            let dialect = self
+                .context
+                .get(DIALECT)
+                .and_then(Value::as_str)
+                .unwrap_or("postgres");
+            let namespace = match args.get(1) {
+                Some(Type::String(Some(namespace))) => Some(namespace.as_str()),
+                Some(Type::None) | None => None,
+                _ => return Ok(Type::Any { hard: false }),
+            };
+            let root = self
+                .context
+                .get(ROOT_PACKAGE_NAME)
+                .and_then(Value::as_str)
+                .unwrap_or("dbt");
+            let packages = dispatch_search_packages(
+                namespace,
+                root,
+                self.context
+                    .get(MACRO_DISPATCH_ORDER)
+                    .unwrap_or(&Value::UNDEFINED),
+                |namespace| {
+                    self.context
+                        .get(MACRO_NAMESPACE_REGISTRY)
+                        .and_then(|registry| registry.get_item(&Value::from(namespace)).ok())
+                        .is_some_and(|value| !value.is_undefined())
+                },
+            );
+            for package in packages {
+                for prefix in get_adapter_prefixes(dialect) {
+                    let search_name = format!("{prefix}__{name}");
+                    let qualified = match package.as_deref() {
+                        Some("dbt") => self
+                            .context
+                            .get(DBT_AND_ADAPTERS_NAMESPACE)
+                            .and_then(|map| map.get_item(&Value::from(dialect)).ok())
+                            .and_then(|map| map.get_item(&Value::from(search_name.as_str())).ok())
+                            .and_then(|package| {
+                                package
+                                    .as_str()
+                                    .map(|package| format!("{package}.{search_name}"))
+                            }),
+                        Some(package) => Some(format!("{package}.{search_name}")),
+                        None => macro_namespace_template_resolver(
+                            &self.context,
+                            self.function_registry.clone(),
+                            &search_name,
+                            &mut Vec::new(),
+                        ),
+                    };
+                    if let Some(function) = qualified
+                        .as_ref()
+                        .and_then(|name| self.function_registry.get(name))
+                    {
+                        return Ok(Type::Object(function.clone()));
                     }
-                    // try default adapter
-                    let key = format!("default__{name}");
-                    if let Some(func) = registry.get(&key) {
-                        return Ok(Type::Object(func.clone()));
-                    }
-
-                    listener.warn(&format!(
-                        "Function {name} not found in any supported adapter"
-                    ));
-                    Ok(Type::Any { hard: false })
-                } else {
-                    Err(crate::Error::new(
-                        crate::error::ErrorKind::InvalidOperation,
-                        "Function registry not initialized",
-                    ))
                 }
-            } else {
-                Err(crate::Error::new(
-                    crate::error::ErrorKind::InvalidOperation,
-                    "Failed to lock function registry",
-                ))
+                if package.is_none() {
+                    if let Some(function) = macro_namespace_template_resolver(
+                        &self.context,
+                        self.function_registry.clone(),
+                        name,
+                        &mut Vec::new(),
+                    )
+                    .as_ref()
+                    .and_then(|name| self.function_registry.get(name))
+                    {
+                        return Ok(Type::Object(function.clone()));
+                    }
+                }
             }
+
+            listener.warn(&format!(
+                "Function {name} not found in any supported adapter"
+            ));
+            Ok(Type::Any { hard: false })
         } else {
             listener.warn("Expected literal string for first argument of adapter.dispatch");
             Ok(Type::Any { hard: false })
@@ -102,6 +127,9 @@ impl FunctionType for AdapterDispatchFunction {
     }
 
     fn arg_specs(&self) -> Vec<ArgSpec> {
-        vec![ArgSpec::new("name", false)]
+        vec![
+            ArgSpec::new("macro_name", false),
+            ArgSpec::new("macro_namespace", true),
+        ]
     }
 }

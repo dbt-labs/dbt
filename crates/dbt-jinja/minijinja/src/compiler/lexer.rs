@@ -21,7 +21,7 @@ pub struct WhitespaceConfig {
 pub struct Tokenizer<'s> {
     stack: Vec<LexerState>,
     source: &'s str,
-    filename: String,
+    filename: &'s str,
     current_line: u32,
     current_col: u32,
     current_offset: usize,
@@ -291,7 +291,7 @@ impl<'s> Tokenizer<'s> {
     /// Creates a new tokenizer.
     pub fn new(
         input: &'s str,
-        filename: &str,
+        filename: &'s str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -309,7 +309,7 @@ impl<'s> Tokenizer<'s> {
     /// Creates a new tokenizer that notifies listeners as tokens are emitted.
     pub fn new_with_tokenizer_listeners(
         input: &'s str,
-        filename: &str,
+        filename: &'s str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -326,7 +326,7 @@ impl<'s> Tokenizer<'s> {
         }
         Tokenizer {
             source,
-            filename: filename.to_string(),
+            filename,
             stack: vec![if in_expr {
                 LexerState::Variable
             } else {
@@ -348,7 +348,7 @@ impl<'s> Tokenizer<'s> {
 
     /// Returns the current filename.
     pub fn filename(&self) -> &str {
-        &self.filename
+        self.filename
     }
 
     /// Produces the next token from the tokenizer.
@@ -474,7 +474,7 @@ impl<'s> Tokenizer<'s> {
             span.end_offset += 1;
         }
         let err = Error::new(ErrorKind::SyntaxError, msg);
-        err.with_span(Path::new(&self.filename), &span)
+        err.with_span(Path::new(self.filename), &span)
     }
 
     fn eat_number(&mut self) -> Result<(Token<'s>, Span), Error> {

@@ -1,0 +1,10 @@
+name: 'hello_world'
+
+config-version: 2
+version: '0.1'
+profile: 'fusion_tests'
+
+models:
+  hello_world:
+    +materialized: view
+

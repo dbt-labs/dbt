@@ -117,13 +117,13 @@ where
             remove_json_path(&mut actual_json, path);
         }
 
-        // Compare using pretty_assertions
+        // Compare using similar_asserts
         let error_msg = format!(
             "\n\nArtifact comparison failed for '{}'\nLeft (expected)   <\nRight (actual)    >",
             self.rel_artifact_path.display()
         );
 
-        pretty_assertions::assert_eq!(expected_json, actual_json, "{}", error_msg);
+        similar_asserts::assert_eq!(expected_json, actual_json, "{}", error_msg);
 
         Ok(())
     }

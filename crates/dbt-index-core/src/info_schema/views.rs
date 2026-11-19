@@ -135,6 +135,10 @@ pub fn derived_statements() -> Vec<(String, String)> {
     ]
 }
 
+/// The generated SQL file's name, written last by every materializer. Its
+/// presence is what marks an information schema directory as complete.
+pub const VIEWS_SQL_FILE_NAME: &str = "views.sql";
+
 /// Write `views.sql` next to the parquet files.
 pub fn write_views_sql(dir: &Path) -> Result<(), IndexError> {
     let mut sql = String::from(
@@ -163,6 +167,6 @@ pub fn write_views_sql(dir: &Path) -> Result<(), IndexError> {
         writeln!(sql, "{statement};\n").unwrap();
     }
 
-    std::fs::write(dir.join("views.sql"), sql)?;
+    std::fs::write(dir.join(VIEWS_SQL_FILE_NAME), sql)?;
     Ok(())
 }

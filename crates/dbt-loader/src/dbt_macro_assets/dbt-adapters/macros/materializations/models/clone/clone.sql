@@ -30,9 +30,12 @@
 
   {%- if other_existing_relation and other_existing_relation.type == 'table' and can_clone_table -%}
 
-      {%- set target_relation = this.incorporate(type='table') -%}
-      {% if existing_relation is not none and not existing_relation.is_table %}
-        {{ log("Dropping relation " ~ existing_relation.render() ~ " because it is of type " ~ existing_relation.type) }}
+      {# DIVERGENCE BEGIN: adapters shape the clone target and decide when (and why) to drop the existing relation. #}
+      {%- set target_relation = get_clone_target_relation(this, other_existing_relation) -%}
+      {%- set drop_reason = clone_target_drop_reason(existing_relation, target_relation) if existing_relation is not none else none -%}
+      {% if drop_reason %}
+        {{ log("Dropping relation " ~ existing_relation.render() ~ " because " ~ drop_reason) }}
+      {# DIVERGENCE END #}
         {{ drop_relation_if_exists(existing_relation) }}
       {% endif %}
 

@@ -8,11 +8,13 @@
   {% set tblproperties = changes.get("tblproperties") %}
   {% set query = changes.get("query") %}
 
+  {# Handle YAML definition changes via ALTER VIEW AS #}
   {% if query %}
     {% call statement('main') %}
       {{ get_alter_metric_view_as_sql(target_relation, query.query) }}
     {% endcall %}
   {% else %}
+    {# Ensure statement('main') is called for dbt to track the run #}
     {% call statement('main') %}
       select 1
     {% endcall %}

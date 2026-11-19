@@ -1,0 +1,17 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/custom_wh.sql
+   Parsing models/default_wh.sql
+ Rendering models/default_wh.sql
+   Running models/default_wh.sql
+ Succeeded model snowflake_config_warehouse.default_wh (table) [1 of 3 in duration]
+ Rendering models/custom_wh.sql
+   Running models/custom_wh.sql
+ Succeeded model snowflake_config_warehouse.custom_wh (table) [2 of 3 in duration]
+   Running ../scratch/target/run/hello_world/generic_tests/not_null_custom_wh_a.sql
+    Passed test  not_null_custom_wh_a [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'snowflake' [duration]
+Processed: 2 models | 1 test
+Summary: 3 total | 3 success

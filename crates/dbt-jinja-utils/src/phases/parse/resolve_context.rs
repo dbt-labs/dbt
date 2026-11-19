@@ -74,7 +74,7 @@ pub fn build_docs_jinja_environment(parse_env: &JinjaEnv) -> JinjaEnv {
     let mut docs_env = parse_env.clone();
     docs_env.env.clear_templates();
     // The loader survives clear_templates; disable it so docs cannot load project macros.
-    docs_env.env.set_loader(|_| Ok(None));
+    docs_env.env.set_loader(|_| Ok(None::<String>));
     docs_env.env.reset_globals_to_defaults();
     // `jinja2.ext.debug` is not enabled in dbt Core.
     docs_env.env.remove_global("debug");

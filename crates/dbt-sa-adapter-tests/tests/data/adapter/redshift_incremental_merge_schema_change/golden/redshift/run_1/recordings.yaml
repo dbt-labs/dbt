@@ -1,0 +1,612 @@
+17caa9c7:
+- sequence: 0
+  type: execute
+  sql: select distinct nspname from pg_namespace
+model.adapters_redshift_incremental_merge_schema_change.source:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    table_catalog as database,
+    table_name as name,
+    table_schema as schema,
+    'table' as type
+    from information_schema.tables
+    where table_schema ilike 'adapters_redshift_incremental_merge_schema_change'
+    and table_type = 'BASE TABLE'
+    union all
+    select
+    table_catalog as database,
+    table_name as name,
+    table_schema as schema,
+    case
+    when view_definition ilike '%create materialized view%'
+    then 'materialized_view'
+    else 'view'
+    end as type
+    from information_schema.views
+    where table_schema ilike 'adapters_redshift_incremental_merge_schema_change'
+- sequence: 1
+  type: execute
+  sql: |-
+    with relation as (
+    select
+    pg_class.oid as relation_id,
+    pg_class.relname as relation_name,
+    pg_class.relnamespace as schema_id,
+    pg_namespace.nspname as schema_name
+    from pg_class
+    join pg_namespace
+    on pg_class.relnamespace = pg_namespace.oid
+    where pg_namespace.nspname != 'information_schema'
+    and pg_namespace.nspname not like 'pg\_%'
+    ),
+    dependency as (
+    select distinct
+    coalesce(pg_rewrite.ev_class, pg_depend.objid) as dep_relation_id,
+    pg_depend.refobjid as ref_relation_id
+    from pg_depend
+    left join pg_rewrite
+    on pg_depend.objid = pg_rewrite.oid
+    where coalesce(pg_rewrite.ev_class, pg_depend.objid) != pg_depend.refobjid
+    )
+    select distinct
+    dep.schema_name as dependent_schema,
+    dep.relation_name as dependent_name,
+    ref.schema_name as referenced_schema,
+    ref.relation_name as referenced_name
+    from dependency
+    join relation ref
+    on dependency.ref_relation_id = ref.relation_id
+    join relation dep
+    on dependency.dep_relation_id = dep.relation_id
+- sequence: 2
+  type: execute
+  sql: |-
+    create  table
+    "ci"."adapters_redshift_incremental_merge_schema_change"."source__dbt_tmp"
+    
+    
+    
+    as (
+    
+    
+    select 1 as id, cast('alpha' as varchar(20)) as name
+    union all
+    select 2 as id, cast('beta' as varchar(20)) as name
+    )
+- sequence: 3
+  type: execute
+  sql: alter table "ci"."adapters_redshift_incremental_merge_schema_change"."source" rename to "source__dbt_backup"
+- sequence: 4
+  type: execute
+  sql: alter table "ci"."adapters_redshift_incremental_merge_schema_change"."source__dbt_tmp" rename to "source"
+- sequence: 5
+  type: execute
+  sql: drop table if exists "ci"."adapters_redshift_incremental_merge_schema_change"."source__dbt_backup" cascade
+model.adapters_redshift_incremental_merge_schema_change.target:
+- sequence: 0
+  type: execute
+  sql: |-
+    create temporary table
+    "target__dbt_tmp"
+    
+    as (
+    
+    
+    select
+    id,
+    cast(name as varchar(80)) as name,
+    cast(100 as decimal(10, 2)) as amount
+    from "ci"."adapters_redshift_incremental_merge_schema_change"."source"
+    )
+- sequence: 1
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'target__dbt_tmp'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'target__dbt_tmp'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'None'
+    and tablename = 'target__dbt_tmp'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    order by ordinal_position
+- sequence: 2
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'target'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'target'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'adapters_redshift_incremental_merge_schema_change'
+    and tablename = 'target'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    where table_schema = 'adapters_redshift_incremental_merge_schema_change'
+    
+    order by ordinal_position
+- sequence: 3
+  type: execute
+  sql: alter table "ci"."adapters_redshift_incremental_merge_schema_change"."target" add column "name__dbt_alter" character varying(80)
+- sequence: 4
+  type: execute
+  sql: |-
+    update "ci"."adapters_redshift_incremental_merge_schema_change"."target" set "name__dbt_alter" = "name"
+- sequence: 5
+  type: execute
+  sql: |-
+    alter table "ci"."adapters_redshift_incremental_merge_schema_change"."target" drop column "name" cascade
+- sequence: 6
+  type: execute
+  sql: |-
+    alter table "ci"."adapters_redshift_incremental_merge_schema_change"."target" rename column "name__dbt_alter" to "name"
+- sequence: 7
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'target__dbt_tmp'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'target__dbt_tmp'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'None'
+    and tablename = 'target__dbt_tmp'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    order by ordinal_position
+- sequence: 8
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'target'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'target'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'adapters_redshift_incremental_merge_schema_change'
+    and tablename = 'target'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    where table_schema = 'adapters_redshift_incremental_merge_schema_change'
+    
+    order by ordinal_position
+- sequence: 9
+  type: execute
+  sql: alter table "ci"."adapters_redshift_incremental_merge_schema_change"."target" add column "amount" numeric(10,2)
+- sequence: 10
+  type: execute
+  sql: |-
+    -- back compat for old kwarg name
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    merge into "ci"."adapters_redshift_incremental_merge_schema_change"."target"
+    using "target__dbt_tmp" as DBT_INTERNAL_SOURCE
+    on ("ci"."adapters_redshift_incremental_merge_schema_change"."target".id > 0) and (
+    DBT_INTERNAL_SOURCE.id = "ci"."adapters_redshift_incremental_merge_schema_change"."target".id
+    )
+    
+    
+    when matched then update set
+    "id" = DBT_INTERNAL_SOURCE."id", 
+    "name" = DBT_INTERNAL_SOURCE."name", 
+    "amount" = DBT_INTERNAL_SOURCE."amount"
+    
+    
+    
+    when not matched then insert (
+    "id", 
+    "name", 
+    "amount"
+    
+    )
+    values (
+    DBT_INTERNAL_SOURCE."id", 
+    DBT_INTERNAL_SOURCE."name", 
+    DBT_INTERNAL_SOURCE."amount"
+    
+    )

@@ -187,7 +187,7 @@ impl Db {
 
         let mut db_builder = database::Builder::new(Backend::DuckDBExtended);
         db_builder
-            .with_named_option("path", path.to_string_lossy().as_ref())
+            .with_named_option("path", path.to_string_lossy().into_owned())
             .map_err(|e| AdbcError::with_message_and_status(e.to_string(), Status::Internal))?;
 
         let database = db_builder.build(&mut driver)?;

@@ -1,10 +1,9 @@
 import type { ReactNode } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor } from '@testing-library/react';
+import type { MetadataDataSource } from 'dbt-docs-lib';
+import { MetadataDataProvider, QueryClient, QueryClientProvider } from 'dbt-docs-lib';
 import { describe, expect, it } from 'vitest';
 
-import { MetadataDataProvider } from '../context/MetadataDataProvider';
-import type { MetadataDataSource } from '../data-sources/MetadataDataSource';
 import { createFakeDataSource } from '../testing/createFakeDataSource';
 import { UNSUPPORTED_SURFACE_MESSAGE } from './unsupportedSurface';
 import { useAssetList } from './useAssetList';

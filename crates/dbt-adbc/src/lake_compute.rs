@@ -62,7 +62,7 @@ pub mod schema_metadata {
     /// `adbc_execute_with_options` (from [`super::LAST_QUERY_ID`]) so it can
     /// survive the trip through `adbc_execute_with_options`'s `RecordBatch`
     /// return value; read back by `AdapterResponse::from_record_batch` via
-    /// `query_id_from_record_batch`.
+    /// `RecordBatchExt::query_id`.
     pub const QUERY_ID: &str = "LAKE_COMPUTE_QUERY_ID";
 }
 

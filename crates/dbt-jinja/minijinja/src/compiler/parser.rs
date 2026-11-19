@@ -19,7 +19,6 @@ const RESERVED_NAMES: [&str; 10] = [
     "true", "True", "TRUE", "false", "False", "FALSE", "none", "None", "loop", "self",
 ];
 
-#[allow(clippy::incompatible_msrv)]
 static ENDBLOCK_IDENT: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let mut m = HashSet::new();
     m.insert("endfor");
@@ -136,7 +135,7 @@ impl<'a> TokenStream<'a> {
     /// Tokenize a template
     pub fn new(
         source: &'a str,
-        filename: &str,
+        filename: &'a str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -154,7 +153,7 @@ impl<'a> TokenStream<'a> {
     /// Tokenize a template and notify listeners.
     pub fn new_with_tokenizer_listeners(
         source: &'a str,
-        filename: &str,
+        filename: &'a str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -298,7 +297,7 @@ impl<'a> Parser<'a> {
     /// it must be `true`.
     pub fn new(
         source: &'a str,
-        filename: &str,
+        filename: &'a str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -316,7 +315,7 @@ impl<'a> Parser<'a> {
     /// Creates a new parser that notifies listeners as source tokens are emitted.
     pub fn new_with_tokenizer_listeners(
         source: &'a str,
-        filename: &str,
+        filename: &'a str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -2364,7 +2363,7 @@ impl<'a> Parser<'a> {
 /// Parses a template.
 pub fn parse<'source>(
     source: &'source str,
-    filename: &str,
+    filename: &'source str,
     syntax_config: SyntaxConfig,
     whitespace_config: WhitespaceConfig,
 ) -> Result<ast::Stmt<'source>, Error> {
@@ -2374,7 +2373,7 @@ pub fn parse<'source>(
 /// Parses a template and notifies listeners as source tokens are emitted.
 pub fn parse_with_listeners<'source>(
     source: &'source str,
-    filename: &str,
+    filename: &'source str,
     syntax_config: SyntaxConfig,
     whitespace_config: WhitespaceConfig,
     source_listeners: &[Rc<dyn TokenizerEventListener>],

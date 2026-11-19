@@ -124,6 +124,20 @@ function everyQuery(): { name: string; sql: string }[] {
     0,
   );
   if (typed) add('search:type-filtered', typed.sql);
+  const layered = buildSearchQuery(
+    '',
+    {
+      resourceTypes: ['source'],
+      modelingLayers: ['Marts'],
+      materializations: ['table'],
+    } as SearchFilter,
+    50,
+    0,
+  );
+  if (layered) {
+    add('search:layer-and-materialization', layered.sql);
+    add('search:layer-and-materialization/count', layered.countSql);
+  }
 
   return q;
 }

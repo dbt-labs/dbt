@@ -1,0 +1,8 @@
+5c07c4fa:
+- sequence: 0
+  type: execute
+  sql: SELECT trim(trailing from c.relname) AS table_name, MAX(i.endtime) AS last_modified FROM stl_insert i JOIN pg_class c ON c.oid = i.tbl JOIN pg_namespace ns ON ns.oid = c.relnamespace WHERE upper(ns.nspname) = upper('adapters_redshift_metadata_source_freshness') GROUP BY c.relname
+de89464d:
+- sequence: 0
+  type: execute
+  sql: SELECT trim(trailing from c.relname) AS table_name, pci.relcreationtime AS creation_time, CASE WHEN c.relkind = 'v' THEN 1 ELSE 0 END AS is_view FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace JOIN pg_class_info pci ON pci.reloid = c.oid WHERE upper(ns.nspname) = upper('adapters_redshift_metadata_source_freshness') AND pci.relcreationtime IS NOT NULL

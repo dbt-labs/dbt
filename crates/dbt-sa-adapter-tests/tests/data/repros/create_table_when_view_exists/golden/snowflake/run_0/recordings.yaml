@@ -1,0 +1,16 @@
+2c7a0f91:
+- sequence: 0
+  type: execute
+  sql: create view adapters_snowflake_create_table_when_view_exists.source_view as select * from adapters_snowflake_create_table_when_view_exists.source
+6a2a6617:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_create_table_when_view_exists
+6ed3a94a:
+- sequence: 0
+  type: execute
+  sql: create table adapters_snowflake_create_table_when_view_exists.source (id VARCHAR(255))
+e7983a3c:
+- sequence: 0
+  type: execute
+  sql: insert into adapters_snowflake_create_table_when_view_exists.source (id) values ('1')

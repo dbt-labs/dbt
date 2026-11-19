@@ -29,4 +29,6 @@ export const paths = {
     if (opts?.panel) p.set('panel', opts.panel);
     return `/lineage/?${p.toString()}`;
   },
+  /** Whole-project lineage: no root node, full depth up and down. */
+  projectLineage: () => '/lineage/?scope=project',
 };

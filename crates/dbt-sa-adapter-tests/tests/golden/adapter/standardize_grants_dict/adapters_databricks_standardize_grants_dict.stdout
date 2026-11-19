@@ -1,0 +1,29 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/c.sql
+default
+current_grants_table:
+current_grants_table:
+current_grants_dict:
+{}
+ Rendering models/a.sql
+   Running models/a.sql
+ Succeeded model adapters_databricks_standardize_grants_dict.a (view) [1 of 2 in duration]
+ Rendering models/c.sql
+default
+current_grants_table:
+|            Principal |     ActionType | ObjectType |            ObjectKey |
+| -------------------- | -------------- | ---------- | -------------------- |
+| account users        | ALL PRIVILEGES | CATALOG    | e2e                  |
+| christopher.hindm... | SELECT         | TABLE      | e2e.adapters_data... |
+current_grants_table:
+{<agate.Row: (account users, ALL PRIVILEGES, CATALOG, e2e)>: undefined, <agate.Row: (christopher.hindman@dbtlabs.com, SELECT, TABLE, e2e.adapters_databricks_standardize_grants_dict.a)>: undefined}
+current_grants_dict:
+{'SELECT': ['christopher.hindman@dbtlabs.com']}
+   Running models/c.sql
+ Succeeded model adapters_databricks_standardize_grants_dict.c (view) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

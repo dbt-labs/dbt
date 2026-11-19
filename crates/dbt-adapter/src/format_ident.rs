@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use dbt_adapter_core::{AdapterType, quote_char};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 pub fn format_ident(id: &str, adapter: AdapterType) -> String {
     if !need_quotes(id, adapter) {
@@ -73,7 +73,7 @@ fn is_valid_identifier_char(adapter: AdapterType, c: char) -> bool {
     }
 }
 
-static EMPTY_KEYWORDS: Lazy<HashSet<&'static str>> = Lazy::new(HashSet::new);
+static EMPTY_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(HashSet::new);
 
 pub fn reserved_keywords(adapter: AdapterType) -> &'static HashSet<&'static str> {
     match adapter {
@@ -87,7 +87,7 @@ pub fn reserved_keywords(adapter: AdapterType) -> &'static HashSet<&'static str>
 
 // Unquoted identifiers matching an Exasol reserved word fail to parse, so they
 // force quoting.
-static EXASOL_KEYWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+static EXASOL_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     dbt_sql_keywords::exasol::RESERVED_KEYWORDS
         .iter()
         .copied()
@@ -95,7 +95,7 @@ static EXASOL_KEYWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 //TODO: revisit after Dialect is added for TSQL
-static FABRIC_KEYWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+static FABRIC_KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
         "ADD",
         "EXTERNAL",

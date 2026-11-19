@@ -1,0 +1,1 @@
+desc table adapters_snowflake_rename_relation.b

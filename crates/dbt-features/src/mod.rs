@@ -9,6 +9,7 @@ pub mod feature_stack_builder;
 pub mod adapter;
 pub mod antlr_parser;
 pub mod cli;
+pub mod experimental;
 pub mod index;
 pub mod jinja;
 pub mod lake_compute;

@@ -7,5 +7,3 @@ pub struct ProfileTarget {
     pub target: String,
     pub outputs: HashMap<String, DbConfig>,
 }
-
-pub type Profiles = HashMap<String, ProfileTarget>;

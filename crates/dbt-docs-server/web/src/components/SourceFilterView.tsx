@@ -31,11 +31,11 @@ function sourceNameOf(s: SourceSummary): string | null {
   return s.sourceName ?? s.uniqueId.split('.')[2] ?? null;
 }
 
-interface Props {
+interface SourceFilterViewProps {
   project: Project;
 }
 
-export function SourceFilterView({ project }: Props) {
+export function SourceFilterView({ project }: SourceFilterViewProps) {
   const links = useResourceLink();
   const {
     data: sources,

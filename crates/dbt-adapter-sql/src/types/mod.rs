@@ -252,7 +252,7 @@ pub fn default_time_unit(backend: AdapterType) -> TimeUnit {
     match backend {
         Snowflake | Databricks | Spark => Nanosecond,
         Bigquery | Redshift => Microsecond,
-        Postgres | Salesforce | DuckDB => Microsecond,
+        Postgres | Salesforce | DuckDB | MotherDuck => Microsecond,
         Fabric => Microsecond,
         ClickHouse => Second,
         // Athena (Presto/Trino-based) uses millisecond precision for timestamps.
@@ -446,6 +446,8 @@ pub enum SqlType {
     Geography(Option<String>),
     /// ARRAY
     Array(Option<Box<SqlType>>),
+    /// RANGE<element_type> (BigQuery)
+    Range(Box<SqlType>),
     /// STRUCT, STRUCT<>, STRUCT<...>
     Struct(Option<Vec<StructField>>),
     /// MAP <key type, value type>
@@ -533,6 +535,53 @@ impl SqlType {
         let mut out = String::new();
         self.write(backend, &mut out).unwrap();
         out
+    }
+
+    /// Remove parameters that the backend does not allow in CAST targets.
+    pub fn normalize_for_cast(&mut self, backend: AdapterType) {
+        match (backend, self) {
+            // BigQuery permits decimal parameters in schemas, but not in CASTs:
+            // https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#parameterized_data_types
+            (AdapterType::Bigquery, Self::Numeric(parameters) | Self::BigNumeric(parameters)) => {
+                *parameters = None;
+            }
+            (AdapterType::Bigquery, Self::Array(Some(element)) | Self::Range(element)) => {
+                element.normalize_for_cast(backend)
+            }
+            (AdapterType::Bigquery, Self::Struct(Some(fields))) => {
+                for field in fields {
+                    field.sql_type.normalize_for_cast(backend);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether all nested types are known and have their required type arguments.
+    pub fn is_complete(&self) -> bool {
+        match self {
+            Self::Other(_) | Self::Array(None) | Self::Struct(None) | Self::Map(None) => false,
+            Self::Range(element) | Self::Array(Some(element)) => element.is_complete(),
+            Self::Struct(Some(fields)) => fields.iter().all(|field| field.sql_type.is_complete()),
+            Self::Map(Some((key, value))) => key.is_complete() && value.is_complete(),
+            _ => true,
+        }
+    }
+
+    fn write_array(backend: AdapterType, inner: Option<&SqlType>, out: &mut String) -> fmt::Result {
+        use fmt::Write as _;
+
+        let Some(inner) = inner else {
+            return write!(out, "ARRAY");
+        };
+        let (open, close) = match backend {
+            AdapterType::Snowflake => ("ARRAY(", ")"),
+            AdapterType::ClickHouse => ("Array(", ")"),
+            _ => ("ARRAY<", ">"),
+        };
+        write!(out, "{open}")?;
+        inner.write(backend, out)?;
+        write!(out, "{close}")
     }
 
     /// Render a SQL type string in the preferred syntax for a given backend.
@@ -644,7 +693,8 @@ impl SqlType {
             },
             (Postgres | Redshift, Float(_)) => write!(out, "REAL"),
             (Postgres | Redshift, Clob) => write!(out, "TEXT"),
-            (Postgres | Redshift | Salesforce, Array(Some(inner))) => {
+            // https://duckdb.org/docs/stable/sql/data_types/list
+            (Postgres | Redshift | Salesforce | DuckDB | MotherDuck, Array(Some(inner))) => {
                 inner.write(backend, out)?;
                 write!(out, "[]")
             }
@@ -891,6 +941,28 @@ impl SqlType {
                 time_zone_spec.write_with_leading_space(backend, out)
             }
             (_, DateTime) => write!(out, "DATETIME"),
+            // DuckDB's TIMESTAMPTZ takes no precision.
+            (
+                DuckDB | MotherDuck,
+                Timestamp {
+                    time_zone_spec: TimeZoneSpec::With,
+                    ..
+                },
+            ) => write!(out, "TIMESTAMP WITH TIME ZONE"),
+            // DuckDB spells the second, millisecond and nanosecond precisions as their own
+            // types; `TIMESTAMP(p)` also parses, but only as an alias for these.
+            (
+                DuckDB | MotherDuck,
+                Timestamp {
+                    precision,
+                    time_zone_spec: TimeZoneSpec::Without | TimeZoneSpec::Unspecified,
+                },
+            ) => match precision {
+                Some(0) => write!(out, "TIMESTAMP_S"),
+                Some(3) => write!(out, "TIMESTAMP_MS"),
+                Some(9) => write!(out, "TIMESTAMP_NS"),
+                _ => write!(out, "TIMESTAMP"),
+            },
             (
                 _,
                 Timestamp {
@@ -947,25 +1019,20 @@ impl SqlType {
                 }
                 Ok(())
             }
-            (_, Array(None)) => write!(out, "ARRAY"),
-            (backend, Array(Some(inner))) => {
-                match backend {
-                    Snowflake => write!(out, "ARRAY(")?,
-                    ClickHouse => write!(out, "Array(")?,
-                    _ => write!(out, "ARRAY<")?,
-                }
-                inner.write(backend, out)?;
-                match backend {
-                    Snowflake | ClickHouse => write!(out, ")"),
-                    _ => write!(out, ">"),
-                }
+            (_, Range(element)) => {
+                write!(out, "RANGE<")?;
+                element.write(backend, out)?;
+                write!(out, ">")
             }
+            (_, Array(inner)) => Self::write_array(backend, inner.as_deref(), out),
             (_, Struct(None)) => write!(out, "STRUCT"),
             (_, Struct(Some(fields))) => {
                 match backend {
                     Snowflake => write!(out, "OBJECT(")?,
+                    // https://duckdb.org/docs/stable/sql/data_types/struct
+                    DuckDB | MotherDuck => write!(out, "STRUCT(")?,
                     Bigquery | Databricks | Spark | Athena => write!(out, "STRUCT<")?,
-                    Postgres | Salesforce | DuckDB | ClickHouse | Exasol => write!(out, "(")?,
+                    Postgres | Salesforce | ClickHouse | Exasol => write!(out, "(")?,
                     // Redshift doesn't support object/struct types
                     Redshift => write!(out, "(")?,
                     Fabric => unimplemented!("SQL Server does't have a struct type"),
@@ -994,8 +1061,11 @@ impl SqlType {
                         }
                     )?;
                     sql_type.write(backend, out)?;
-                    if !nullable {
-                        write!(out, " NOT NULL")?;
+                    match (backend, nullable) {
+                        // DuckDB struct fields take no constraints.
+                        // https://duckdb.org/docs/stable/sql/data_types/struct
+                        (DuckDB | MotherDuck, _) | (_, true) => {}
+                        _ => write!(out, " NOT NULL")?,
                     }
                     if let Some(tok) = comment_tok {
                         write!(out, " COMMENT {tok}")?;
@@ -1006,7 +1076,9 @@ impl SqlType {
                     Bigquery | Databricks | Spark | Athena => {
                         write!(out, ">")
                     }
-                    Postgres | Salesforce | DuckDB | ClickHouse | Exasol => write!(out, ")"),
+                    Postgres | Salesforce | DuckDB | ClickHouse | Exasol | MotherDuck => {
+                        write!(out, ")")
+                    }
                     Redshift => write!(out, ")"),
                     Fabric => unimplemented!("SQL Server does't have a struct type"),
                     _ => write!(out, ">"),
@@ -1061,67 +1133,79 @@ impl SqlType {
     /// used in situations where the field metadata in an Arrow schema
     /// doesn't contain the SQL type string.
     pub fn from_arrow_type(backend: AdapterType, data_type: &DataType) -> SqlType {
-        match data_type {
-            DataType::Null => SqlType::Varchar(None, Default::default()),
-            DataType::Boolean => SqlType::Boolean,
-            DataType::Int8 | DataType::UInt8 | DataType::Int16 => SqlType::SmallInt,
-            DataType::UInt16 | DataType::Int32 => SqlType::Integer,
-            DataType::UInt32 | DataType::Int64 | DataType::UInt64 => SqlType::BigInt,
-            DataType::Float16 | DataType::Float32 => SqlType::Real,
-            DataType::Float64 => SqlType::Double,
-            DataType::Decimal32(p, s)
-            | DataType::Decimal64(p, s)
-            | DataType::Decimal128(p, s)
-            | DataType::Decimal256(p, s) => {
-                // XXX: make these more succinct by looking up the defaults
-                // for each different backend.
-                SqlType::Numeric(Some((*p, Some(*s))))
-            }
-            DataType::Utf8View | DataType::Utf8 => SqlType::Varchar(None, Default::default()),
-            DataType::LargeUtf8 => SqlType::Text,
-            DataType::Binary
-            | DataType::LargeBinary
-            | DataType::BinaryView
-            | DataType::FixedSizeBinary(_) => SqlType::Binary(None),
-            DataType::Date32 => SqlType::Date(Some(32)),
-            DataType::Date64 => SqlType::Date(Some(64)),
-            DataType::Time32(TimeUnit::Second) => SqlType::Time {
+        use AdapterType::*;
+        match (backend, data_type) {
+            (_, DataType::Null) => SqlType::Varchar(None, Default::default()),
+            (_, DataType::Boolean) => SqlType::Boolean,
+            // https://duckdb.org/docs/stable/sql/data_types/numeric
+            (DuckDB | MotherDuck, DataType::Int8) => SqlType::TinyInt,
+            (DuckDB | MotherDuck, DataType::UInt8) => SqlType::UTinyInt,
+            (DuckDB | MotherDuck, DataType::UInt16) => SqlType::USmallInt,
+            (DuckDB | MotherDuck, DataType::UInt32) => SqlType::UInteger,
+            (DuckDB | MotherDuck, DataType::UInt64) => SqlType::UBigInt,
+            (_, DataType::Int8 | DataType::UInt8 | DataType::Int16) => SqlType::SmallInt,
+            (_, DataType::UInt16 | DataType::Int32) => SqlType::Integer,
+            (_, DataType::UInt32 | DataType::Int64 | DataType::UInt64) => SqlType::BigInt,
+            (_, DataType::Float16 | DataType::Float32) => SqlType::Real,
+            (_, DataType::Float64) => SqlType::Double,
+            (
+                _,
+                DataType::Decimal32(p, s)
+                | DataType::Decimal64(p, s)
+                | DataType::Decimal128(p, s)
+                | DataType::Decimal256(p, s),
+            ) => SqlType::Numeric(Some((*p, Some(*s)))),
+            (_, DataType::Utf8View | DataType::Utf8) => SqlType::Varchar(None, Default::default()),
+            (_, DataType::LargeUtf8) => SqlType::Text,
+            (
+                _,
+                DataType::Binary
+                | DataType::LargeBinary
+                | DataType::BinaryView
+                | DataType::FixedSizeBinary(_),
+            ) => SqlType::Binary(None),
+            (_, DataType::Date32) => SqlType::Date(Some(32)),
+            (_, DataType::Date64) => SqlType::Date(Some(64)),
+            (_, DataType::Time32(TimeUnit::Second)) => SqlType::Time {
                 precision: None,
                 time_zone_spec: TimeZoneSpec::Without,
             },
-            DataType::Time32(TimeUnit::Millisecond) => SqlType::Time {
+            (_, DataType::Time32(TimeUnit::Millisecond)) => SqlType::Time {
                 precision: Some(3),
                 time_zone_spec: TimeZoneSpec::Without,
             },
-            DataType::Time64(TimeUnit::Microsecond) => SqlType::Time {
+            (_, DataType::Time64(TimeUnit::Microsecond)) => SqlType::Time {
                 precision: Some(6),
                 time_zone_spec: TimeZoneSpec::Without,
             },
-            DataType::Time64(TimeUnit::Nanosecond) => SqlType::Time {
+            (_, DataType::Time64(TimeUnit::Nanosecond)) => SqlType::Time {
                 precision: Some(9),
                 time_zone_spec: TimeZoneSpec::Without,
             },
-            DataType::Time32(_) | DataType::Time64(_) => {
+            (_, DataType::Time32(_) | DataType::Time64(_)) => {
                 unreachable!("unexpected time unit in Arrow data type: {data_type:?}")
             }
             // BigQuery TIMESTAMP represents an absolute instant without a
             // time-zone suffix in its SQL spelling. Arrow's time zone marks
             // that distinction from BigQuery DATETIME.
-            DataType::Timestamp(_, Some(_)) if backend == AdapterType::Bigquery => {
-                SqlType::Timestamp {
-                    precision: None,
-                    time_zone_spec: TimeZoneSpec::Unspecified,
-                }
-            }
-            DataType::Timestamp(TimeUnit::Second, tz) => SqlType::Timestamp {
+            (Bigquery, DataType::Timestamp(_, Some(_))) => SqlType::Timestamp {
                 precision: None,
+                time_zone_spec: TimeZoneSpec::Unspecified,
+            },
+            (_, DataType::Timestamp(TimeUnit::Second, tz)) => SqlType::Timestamp {
+                // `None` is the backend's default precision, microseconds on DuckDB, so
+                // seconds are spelled `Some(0)` there.
+                precision: match backend {
+                    DuckDB | MotherDuck => Some(0),
+                    _ => None,
+                },
                 time_zone_spec: if tz.is_some() {
                     TimeZoneSpec::With
                 } else {
                     TimeZoneSpec::Without
                 },
             },
-            DataType::Timestamp(TimeUnit::Millisecond, tz) => SqlType::Timestamp {
+            (_, DataType::Timestamp(TimeUnit::Millisecond, tz)) => SqlType::Timestamp {
                 precision: Some(3),
                 time_zone_spec: if tz.is_some() {
                     TimeZoneSpec::With
@@ -1129,7 +1213,7 @@ impl SqlType {
                     TimeZoneSpec::Without
                 },
             },
-            DataType::Timestamp(TimeUnit::Microsecond, tz) => SqlType::Timestamp {
+            (_, DataType::Timestamp(TimeUnit::Microsecond, tz)) => SqlType::Timestamp {
                 precision: Some(6),
                 time_zone_spec: if tz.is_some() {
                     TimeZoneSpec::With
@@ -1137,7 +1221,7 @@ impl SqlType {
                     TimeZoneSpec::Without
                 },
             },
-            DataType::Timestamp(TimeUnit::Nanosecond, tz) => SqlType::Timestamp {
+            (_, DataType::Timestamp(TimeUnit::Nanosecond, tz)) => SqlType::Timestamp {
                 precision: Some(9),
                 time_zone_spec: if tz.is_some() {
                     TimeZoneSpec::With
@@ -1146,13 +1230,13 @@ impl SqlType {
                 },
             },
             // TODO: think more carefully about this one
-            DataType::Duration(unit) => SqlType::Time {
+            (_, DataType::Duration(unit)) => SqlType::Time {
                 precision: Some(time_unit_to_precision(*unit)),
                 time_zone_spec: TimeZoneSpec::Without,
             },
             // Proposal for extending Arrow to support more SQL interval types:
             // https://docs.google.com/document/d/12ghQxWxyAhSQeZyy0IWiwJ02gTqFOgfYm8x851HZFLk/edit
-            DataType::Interval(interval_unit) => match interval_unit {
+            (_, DataType::Interval(interval_unit)) => match interval_unit {
                 IntervalUnit::YearMonth => {
                     SqlType::Interval(Some((DateTimeField::Year, Some(DateTimeField::Month))))
                 }
@@ -1199,13 +1283,36 @@ impl SqlType {
                 ))),
             },
 
-            // XXX: things get tricky here and conversions don't really work well yet
-            DataType::List(_)
-            | DataType::LargeList(_)
-            | DataType::ListView(_)
-            | DataType::LargeListView(_) => SqlType::Array(None), // XXX
-            DataType::FixedSizeList(_, _) => SqlType::Other("ARRAY".to_string()),
-            DataType::Struct(fields) => {
+            // DuckDB keeps the element type: an untyped `ARRAY` is not a DuckDB type.
+            // Other backends keep the untyped array until each one is checked.
+            (
+                DuckDB | MotherDuck,
+                DataType::List(item)
+                | DataType::LargeList(item)
+                | DataType::ListView(item)
+                | DataType::LargeListView(item),
+            ) => SqlType::Array(Some(Box::new(Self::from_arrow_type(
+                backend,
+                item.data_type(),
+            )))),
+            (
+                _,
+                DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::ListView(_)
+                | DataType::LargeListView(_),
+            ) => SqlType::Array(None), // XXX
+
+            (Bigquery, DataType::FixedSizeList(field, 1)) if field.name() == "range" => {
+                let element = match field.data_type() {
+                    DataType::Timestamp(_, None) => SqlType::DateTime,
+                    data_type => Self::from_arrow_type(backend, data_type),
+                };
+                SqlType::Range(Box::new(element))
+            }
+            (_, DataType::FixedSizeList(_, _)) => SqlType::Other("ARRAY".to_string()),
+
+            (_, DataType::Struct(fields)) => {
                 let mut sql_fields = Vec::with_capacity(fields.len());
                 for field in fields {
                     let sql_type = Self::from_arrow_type(backend, field.data_type());
@@ -1218,10 +1325,10 @@ impl SqlType {
                 }
                 SqlType::Struct(Some(sql_fields))
             }
-            DataType::Union(..) => SqlType::Other("UNION".to_string()),
-            DataType::Map(..) => SqlType::Map(None), // TODO: handle key/value types
-            DataType::Dictionary(_, value_type) => Self::from_arrow_type(backend, value_type),
-            DataType::RunEndEncoded(_, values) => {
+            (_, DataType::Union(..)) => SqlType::Other("UNION".to_string()),
+            (_, DataType::Map(..)) => SqlType::Map(None), // TODO: handle key/value types
+            (_, DataType::Dictionary(_, value_type)) => Self::from_arrow_type(backend, value_type),
+            (_, DataType::RunEndEncoded(_, values)) => {
                 Self::from_arrow_type(backend, values.as_ref().data_type())
             }
         }
@@ -1442,7 +1549,7 @@ impl SqlType {
             // }}}
 
             // DuckDB {{{
-            (DuckDB, Numeric(None) | BigNumeric(None)) => {
+            (DuckDB | MotherDuck, Numeric(None) | BigNumeric(None)) => {
                 // DuckDB's DECIMAL type without precision/scale defaults to DECIMAL(18, 3)
                 // https://duckdb.org/docs/sql/data_types/numeric
                 DataType::Decimal128(18, 3)
@@ -1568,7 +1675,7 @@ impl SqlType {
                     (Redshift, None) => TimeUnit::Microsecond,
                     // TIME's default precision on PostgreSQL is 6 (microseconds)
                     // https://www.postgresql.org/docs/current/datatype-datetime.html
-                    (Postgres | Salesforce | DuckDB, None) => TimeUnit::Microsecond,
+                    (Postgres | Salesforce | DuckDB | MotherDuck, None) => TimeUnit::Microsecond,
                     (Fabric, None) => {
                         // In SQL Server, the number enclosed in parenthesis is the fractional second scale, rather than precision.
                         //
@@ -1736,7 +1843,7 @@ impl SqlType {
                                 MonthDayNano,
                             )
                     }
-                    Bigquery | Postgres | DuckDB => MonthDayNano, // MonthDayNano is exactly what BQ and PG use internally
+                    Bigquery | Postgres | DuckDB | MotherDuck => MonthDayNano, // MonthDayNano is exactly what BQ and PG use internally
                     // FIXME: ClickHouse doesn't actually seem to support Arrow's Interval
                     ClickHouse => MonthDayNano,
                     Exasol => MonthDayNano,
@@ -1789,6 +1896,14 @@ impl SqlType {
                 let inner_field = Field::new("item", inner_ty, true).with_metadata(inner_metadata);
                 DataType::List(Arc::new(inner_field))
             }
+            (_, Range(element)) => DataType::FixedSizeList(
+                Arc::new(Field::new(
+                    "range",
+                    element.pick_best_arrow_type(backend),
+                    true,
+                )),
+                1,
+            ),
             (_, Array(None)) => DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
             (_, Struct(fields)) => {
                 let arrow_fields = match fields {
@@ -1915,7 +2030,7 @@ fn metadata_type_candidate_keys(backend: AdapterType) -> &'static [&'static str]
         AdapterType::Databricks => &DATABRICKS_KEYS,
         AdapterType::Spark => &SPARK_KEYS,
         AdapterType::Redshift => &REDSHIFT_KEYS,
-        AdapterType::DuckDB | AdapterType::LakeCompute => &DUCKDB_KEYS,
+        AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => &DUCKDB_KEYS,
         AdapterType::Fabric => &SQLSERVER_KEYS,
         AdapterType::ClickHouse => &CLICKHOUSE_KEYS,
         AdapterType::Athena => &ATHENA_KEYS,
@@ -2528,6 +2643,50 @@ impl<'source> Parser<'source> {
         Ok(sql_type)
     }
 
+    fn array_type(&mut self, backend: AdapterType) -> Result<SqlType, ParseError<'source>> {
+        let (left, right) = match backend {
+            AdapterType::Snowflake | AdapterType::ClickHouse => (Token::LParen, Token::RParen),
+            _ => (Token::LAngle, Token::RAngle),
+        };
+        if self.match_(left) {
+            let inner_type = self.parse_unconstrained_type(backend)?;
+            self.expect(right)?;
+            Ok(SqlType::Array(Some(Box::new(inner_type))))
+        } else {
+            Ok(SqlType::Array(None))
+        }
+    }
+
+    fn range_type(
+        &mut self,
+        backend: AdapterType,
+        word: &str,
+    ) -> Result<SqlType, ParseError<'source>> {
+        match backend {
+            AdapterType::Bigquery if self.match_(Token::LAngle) => {
+                let element = self.parse_unconstrained_type(backend)?;
+                self.expect(Token::RAngle)?;
+                Ok(SqlType::Range(Box::new(element)))
+            }
+            _ => Ok(self.other_type(word)),
+        }
+    }
+
+    fn other_type(&mut self, word: &str) -> SqlType {
+        let mut other = word.to_string();
+        while let Some(tok) = self.tokenizer.peek_and_then(|t| {
+            if t == Token::Word("NOT") || t == Token::Word("NULL") {
+                None
+            } else {
+                Some(t)
+            }
+        }) {
+            use fmt::Write as _;
+            write!(&mut other, " {tok}").unwrap();
+        }
+        SqlType::Other(other)
+    }
+
     /// Parse the SQL type string without consuming the entire string.
     ///
     /// The goal of this function is to create the `SqlType` instance that better represents
@@ -2711,8 +2870,9 @@ impl<'source> Parser<'source> {
                     }
                 } else if eqi(w, "STRING") {
                     // Bigquery uses STRING as an alias for VARCHAR
+                    let len = self.precision()?;
                     let attrs = self.string_attrs(backend)?;
-                    SqlType::Varchar(None, attrs)
+                    SqlType::Varchar(len, attrs)
                 } else if eqi(w, "FIXEDSTRING") {
                     // ClickHouse: FixedString(N) - fixed-length string
                     let len = self.precision()?;
@@ -2948,18 +3108,10 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "GEOGRAPHY") {
                     let srid = self.srid()?;
                     SqlType::Geography(srid.map(str::to_string))
+                } else if eqi(w, "RANGE") {
+                    self.range_type(backend, w)?
                 } else if eqi(w, "ARRAY") {
-                    let (left, right) = match backend {
-                        Snowflake | ClickHouse => (Token::LParen, Token::RParen),
-                        _ => (Token::LAngle, Token::RAngle),
-                    };
-                    if self.match_(left) {
-                        let inner_type = self.parse_unconstrained_type(backend)?;
-                        self.expect(right)?;
-                        SqlType::Array(Some(Box::new(inner_type)))
-                    } else {
-                        SqlType::Array(None)
-                    }
+                    self.array_type(backend)?
                 } else if eqi(w, "RECORD") {
                     // In some scenarios, we get "RECORD" as a type from Bigquery.
                     // That just means a generic struct.
@@ -3029,21 +3181,7 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "VOID") {
                     SqlType::Void
                 } else {
-                    // gather all tokens before "[NOT] NULL" and return Other(..)
-                    let mut other = w.to_string();
-                    while let Some(tok) = {
-                        self.tokenizer.peek_and_then(|t| {
-                            if t == Token::Word("NOT") || t == Token::Word("NULL") {
-                                None
-                            } else {
-                                Some(t)
-                            }
-                        })
-                    } {
-                        use fmt::Write as _;
-                        write!(&mut other, " {tok}").unwrap();
-                    }
-                    SqlType::Other(other)
+                    self.other_type(w)
                 }
             }
         };
