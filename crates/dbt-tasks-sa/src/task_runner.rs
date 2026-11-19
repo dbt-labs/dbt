@@ -80,20 +80,29 @@ pub fn summarize_task_runner_stats(
 /// `--infer-schemas` binds without a catalog and never executes against a
 /// real warehouse, so on-run-start hooks (arbitrary SQL, run for side
 /// effects on the target) have nothing meaningful to run against — skip
-/// them if there's nothing to run in the first place.
-fn should_run_on_run_start_hooks(infer_schemas_and_typeless: bool, has_hooks: bool) -> bool {
-    !infer_schemas_and_typeless && has_hooks
+/// them if there's nothing to run in the first place. `dbt check` runs no
+/// nodes, so it skips them too: they would only connect to the warehouse.
+fn should_run_on_run_start_hooks(
+    command: FsCommand,
+    infer_schemas_and_typeless: bool,
+    has_hooks: bool,
+) -> bool {
+    command != FsCommand::Check && !infer_schemas_and_typeless && has_hooks
 }
 
 /// Same reasoning as `should_run_on_run_start_hooks`, for the post-hooks
 /// phase (on-run-end hooks plus any other post-run bookkeeping gated behind
 /// remote execution).
 fn should_run_post_hooks(
+    command: FsCommand,
     execute: Execute,
     skip_post_hooks: bool,
     infer_schemas_and_typeless: bool,
 ) -> bool {
-    execute == Execute::Remote && !skip_post_hooks && !infer_schemas_and_typeless
+    command != FsCommand::Check
+        && execute == Execute::Remote
+        && !skip_post_hooks
+        && !infer_schemas_and_typeless
 }
 
 pub struct TaskRunner {
@@ -361,6 +370,7 @@ impl TaskRunner {
 
         // Create span for on-run-start phase if there are any hooks
         let on_run_start_span = if should_run_on_run_start_hooks(
+            run_task_args.command,
             run_task_args.infer_schemas_and_typeless || run_task_args.skip_on_run_start_hooks,
             !self.resolved_state.operations.on_run_start.is_empty(),
         ) {
@@ -481,6 +491,7 @@ impl TaskRunner {
 
         let execute = Execute::from_compute_flag(run_task_args.local_execution_backend);
         if should_run_post_hooks(
+            run_task_args.command,
             execute,
             run_task_args.skip_post_hooks,
             run_task_args.infer_schemas_and_typeless,
@@ -647,36 +658,79 @@ mod tests {
 
     #[test]
     fn on_run_start_hooks_run_when_there_are_hooks_and_infer_schemas_is_off() {
-        assert!(should_run_on_run_start_hooks(false, true));
+        assert!(should_run_on_run_start_hooks(FsCommand::Build, false, true));
     }
 
     #[test]
     fn on_run_start_hooks_skipped_under_infer_schemas() {
-        assert!(!should_run_on_run_start_hooks(true, true));
+        assert!(!should_run_on_run_start_hooks(FsCommand::Build, true, true));
     }
 
     #[test]
     fn on_run_start_hooks_skipped_when_there_are_none() {
-        assert!(!should_run_on_run_start_hooks(false, false));
+        assert!(!should_run_on_run_start_hooks(
+            FsCommand::Build,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn on_run_start_hooks_skipped_under_check() {
+        assert!(!should_run_on_run_start_hooks(
+            FsCommand::Check,
+            false,
+            true
+        ));
     }
 
     #[test]
     fn post_hooks_run_for_remote_execution_without_infer_schemas_or_skip() {
-        assert!(should_run_post_hooks(Execute::Remote, false, false));
+        assert!(should_run_post_hooks(
+            FsCommand::Build,
+            Execute::Remote,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn post_hooks_skipped_under_infer_schemas() {
-        assert!(!should_run_post_hooks(Execute::Remote, false, true));
+        assert!(!should_run_post_hooks(
+            FsCommand::Build,
+            Execute::Remote,
+            false,
+            true
+        ));
     }
 
     #[test]
     fn post_hooks_skipped_when_explicitly_requested() {
-        assert!(!should_run_post_hooks(Execute::Remote, true, false));
+        assert!(!should_run_post_hooks(
+            FsCommand::Build,
+            Execute::Remote,
+            true,
+            false
+        ));
     }
 
     #[test]
     fn post_hooks_skipped_for_non_remote_execution() {
-        assert!(!should_run_post_hooks(Execute::Sidecar, false, false));
+        assert!(!should_run_post_hooks(
+            FsCommand::Build,
+            Execute::Sidecar,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn post_hooks_skipped_under_check() {
+        assert!(!should_run_post_hooks(
+            FsCommand::Check,
+            Execute::Remote,
+            false,
+            false
+        ));
     }
 }
