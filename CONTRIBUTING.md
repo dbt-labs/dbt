@@ -45,7 +45,7 @@ dbt is developed through dbt Labs' internal build and review process, and this r
 
 2. **The changelog check runs.** If your PR doesn't include a changelog entry, a bot comments to let you know. See [Adding a CHANGELOG Entry](#adding-a-changelog-entry). If a changelog isn't needed, a maintainer can add the `Skip Changelog` label.
 
-3. **CI is approved (fork PRs only).** Because PRs from forks can't safely access repository secrets, a maintainer must add the `ci:approve-public-fork-ci` label before CI runs. **This label is automatically removed every time you push new commits**, so a maintainer will re-approve after each update. This is expected — it isn't a sign that anything is wrong with your change.
+3. **CI is approved (fork PRs only).** Because PRs from forks can't safely access repository secrets, a maintainer must add the `ci:approve-public-pr` label before CI runs. **This label is automatically removed every time you push new commits**, so a maintainer will re-approve after each update. This is expected — it isn't a sign that anything is wrong with your change.
 
 4. **CI results and sync status appear on your PR.** Build results surface as the **dbt Labs CI** status check. The review's progress is reflected through `review-status:` labels:
 

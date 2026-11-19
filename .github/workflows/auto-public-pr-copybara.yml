@@ -14,7 +14,7 @@ name: Copybara - Auto Public PR Migration
 # branches like `1.latest` have no copybara baseline, so the `branches` filter
 # below skips them. Draft PRs are skipped to avoid syncing work-in-progress;
 # the `ready_for_review` event re-triggers dispatch when a draft is marked
-# ready. PRs from public forks must carry the `ci:approve-public-fork-ci`
+# ready. PRs from public forks must carry the `ci:approve-public-pr`
 # label before the secret-bearing dispatch runs; it's stripped on each push
 # so updates require re-approval.
 # `labeled` is filtered down to that one label so unrelated labels don't
@@ -45,14 +45,14 @@ concurrency:
 permissions: {}
 
 env:
-  CI_LABEL: "ci:approve-public-fork-ci"
+  CI_LABEL: "ci:approve-public-pr"
 
 jobs:
   check_run_approval:
     # Job-level `if` cannot read `env`, so CI_LABEL is spelled out here.
     if: >-
       github.event.action != 'labeled'
-      || (github.event.label.name == 'ci:approve-public-fork-ci'
+      || (github.event.label.name == 'ci:approve-public-pr'
           && github.event.pull_request.head.repo.full_name != github.repository)
     permissions:
       pull-requests: write
