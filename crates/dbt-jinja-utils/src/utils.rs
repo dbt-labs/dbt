@@ -1067,3 +1067,80 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod issue_17192_regression {
+    use super::inject_and_persist_ephemeral_models;
+    use minijinja::MacroSpans;
+
+    #[test]
+    fn ephemeral_models_with_shared_alias_must_not_overwrite_each_other() {
+        let dir = std::env::temp_dir().join(format!(
+            "dbt-17192-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut spans = MacroSpans::default();
+
+        inject_and_persist_ephemeral_models(
+            "select 1 as id, 'x' as source".to_string(),
+            &mut spans,
+            &dbt_common::string_utils::ephemeral_cte_identifier("model.project.x_balance"),
+            true,
+            &dir,
+        )
+        .unwrap();
+
+        inject_and_persist_ephemeral_models(
+            "select 2 as id, 'y' as source".to_string(),
+            &mut spans,
+            &dbt_common::string_utils::ephemeral_cte_identifier("model.project.y_balance"),
+            true,
+            &dir,
+        )
+        .unwrap();
+
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+
+        assert_eq!(
+            entries.len(),
+            2,
+            "Distinct ephemeral models sharing an alias must not overwrite each other"
+        );
+
+        let x_id = dbt_common::string_utils::ephemeral_cte_identifier("model.project.x_balance");
+        let y_id = dbt_common::string_utils::ephemeral_cte_identifier("model.project.y_balance");
+
+        let mut x_spans = MacroSpans::default();
+        let x_sql = inject_and_persist_ephemeral_models(
+            format!("select * from __dbt__cte__{x_id}"),
+            &mut x_spans,
+            "x_out",
+            false,
+            &dir,
+        )
+        .unwrap();
+
+        let mut y_spans = MacroSpans::default();
+        let y_sql = inject_and_persist_ephemeral_models(
+            format!("select * from __dbt__cte__{y_id}"),
+            &mut y_spans,
+            "y_out",
+            false,
+            &dir,
+        )
+        .unwrap();
+
+        assert!(x_sql.contains("select 1 as id, 'x' as source"));
+        assert!(!x_sql.contains("select 2 as id, 'y' as source"));
+        assert!(y_sql.contains("select 2 as id, 'y' as source"));
+        assert!(!y_sql.contains("select 1 as id, 'x' as source"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

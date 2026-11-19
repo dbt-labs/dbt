@@ -135,7 +135,11 @@ fn render_default(
     let rendered_sql_maybe_with_cte = inject_and_persist_ephemeral_models(
         rendered_sql,
         &mut macro_spans,
-        &node.base().alias,
+        &if node.materialized() == DbtMaterialization::Ephemeral {
+            dbt_common::string_utils::ephemeral_cte_identifier(node.unique_id())
+        } else {
+            node.base().alias.clone()
+        },
         node.materialized() == DbtMaterialization::Ephemeral,
         &ctx.inner.arg.io.out_dir.join(DBT_EPHEMERAL_DIR_NAME),
     )
