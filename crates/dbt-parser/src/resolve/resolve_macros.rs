@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::resolve::properties_index::PropertiesEntry;
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use async_trait::async_trait;
 
 use crate::utils::parse_macro_statements;
@@ -49,8 +49,8 @@ impl ResolvableNode for MacroProperties {
         &["macros"]
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
-        cx.macro_properties = cx.properties.take_entries("macros");
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        ctx.macro_properties = ctx.properties.take_entries("macros");
         Ok(())
     }
 }

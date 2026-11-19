@@ -6,9 +6,9 @@ use crate::dbt_project_config::init_project_config;
 use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::properties_index::PropertiesEntry;
 use crate::resolve::properties_index::{
-    IndexCx, IndexedName, name_stripped, validate_resource_name,
+    IndexCtx, IndexedName, name_value, render_name, validate_resource_name,
 };
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::validate_unit_test_compute;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_path;
@@ -85,18 +85,6 @@ pub(crate) fn unit_test_jinja_join_error(
     )
 }
 
-/// The parts of a unit test's properties that are read when it is indexed.
-#[derive(Debug, serde::Deserialize)]
-struct MinimalUnitTestValue {
-    name: Spanned<String>,
-    // Typed so that a `model` or `versions` that doesn't render is an error here.
-    #[allow(dead_code)]
-    model: Option<String>,
-    #[allow(dead_code)]
-    versions: Option<dbt_yaml::Value>,
-    __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
-}
-
 /// How a package's unit tests resolve.
 pub(crate) struct UnitTests;
 
@@ -106,59 +94,51 @@ impl ResolvableNode for UnitTests {
         &["unit_tests"]
     }
 
-    /// A unit test keeps where its name is written. Its name, model and versions are rendered on
-    /// the runtime's blocking pool.
+    /// The name of a unit test is rendered on the runtime's blocking pool.
     async fn index_item(
         &self,
         key: &'static str,
         item: &dbt_yaml::Value,
-        cx: &IndexCx<'_>,
+        ctx: &IndexCtx<'_>,
     ) -> FsResult<Vec<IndexedName>> {
-        let value = name_stripped(item);
-        let env = Arc::clone(cx.jinja_env);
-        let context = Arc::clone(cx.base_ctx);
-        let dependency_package = cx.dependency_package_name.map(str::to_owned);
-        let unit_test = dbt_runtime::spawn_blocking(move || {
-            into_typed_with_jinja::<MinimalUnitTestValue, _>(
-                value,
-                false,
-                &env,
-                context.as_ref(),
-                &[],
-                dependency_package.as_deref(),
-                true,
-            )
+        let name = name_value(item)?;
+        let name_span = name.span().clone();
+        let env = Arc::clone(ctx.jinja_env);
+        let context = Arc::clone(ctx.base_ctx);
+        let dependency_package = ctx.dependency_package_name.map(str::to_owned);
+        let name = dbt_runtime::spawn_blocking(move || {
+            render_name(name, &env, context.as_ref(), dependency_package.as_deref())
         })
         .await
         .map_err(unit_test_jinja_join_error)??;
         Ok(vec![IndexedName {
             key,
-            name: validate_resource_name(unit_test.name.as_ref())?,
-            name_span: unit_test.name.span().clone(),
+            name: validate_resource_name(&name)?,
+            name_span,
         }])
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         let (unit_tests, disabled_unit_tests) = resolve_unit_tests(
-            cx.arg,
-            cx.properties.take_entries("unit_tests"),
-            cx.package,
-            cx.dbt_state.root_package(),
-            cx.package_quoting,
-            cx.root_project_configs,
-            cx.package_name,
-            &cx.jinja_env,
-            &cx.base_ctx,
-            &cx.model_properties,
-            &cx.nodes.models,
-            &cx.dbt_state.packages,
-            cx.adapter_type,
-            &cx.node_resolver,
+            ctx.arg,
+            ctx.properties.take_entries("unit_tests"),
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.package_quoting,
+            ctx.root_project_configs,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+            &ctx.model_properties,
+            &ctx.nodes.models,
+            &ctx.dbt_state.packages,
+            ctx.adapter_type,
+            &ctx.node_resolver,
         )
         .await?;
 
-        cx.nodes.unit_tests.extend(unit_tests);
-        cx.disabled_nodes.unit_tests.extend(disabled_unit_tests);
+        ctx.nodes.unit_tests.extend(unit_tests);
+        ctx.disabled_nodes.unit_tests.extend(disabled_unit_tests);
         Ok(())
     }
 }
@@ -1017,7 +997,7 @@ mod tests {
             .index_item(
                 "unit_tests",
                 &item,
-                &IndexCx::new(&env, &Arc::new(BTreeMap::new())),
+                &IndexCtx::new(&env, &Arc::new(BTreeMap::new())),
             )
             .await?;
         assert_eq!(names.len(), 1);

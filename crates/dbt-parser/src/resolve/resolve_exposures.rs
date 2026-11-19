@@ -2,7 +2,7 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
@@ -48,24 +48,24 @@ impl ResolvableNode for Exposures {
         &["exposures"]
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         let (exposures, disabled_exposures) = resolve_exposures(
-            cx.arg,
+            ctx.arg,
             // A later definition of an exposure replaces an earlier one.
-            &mut cx.properties.take_last_entries("exposures"),
-            cx.package,
-            cx.dbt_state.root_package(),
-            cx.root_project_configs,
-            cx.database,
-            cx.schema,
-            cx.adapter_type,
-            cx.package_name,
-            &cx.jinja_env,
-            &cx.base_ctx,
+            &mut ctx.properties.take_last_entries("exposures"),
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.database,
+            ctx.schema,
+            ctx.adapter_type,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
         )
         .await?;
-        cx.nodes.exposures.extend(exposures);
-        cx.disabled_nodes.exposures.extend(disabled_exposures);
+        ctx.nodes.exposures.extend(exposures);
+        ctx.disabled_nodes.exposures.extend(disabled_exposures);
         Ok(())
     }
 }

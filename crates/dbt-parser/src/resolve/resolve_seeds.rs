@@ -1,7 +1,7 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::strip_warehouse_keys_in_config_block;
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::{
     RawProjectConfigsByAdapter, err_resource_name_has_spaces, extract_config_map,
     node_effective_propagation_target, resolve_node_quoting, select_node_adapter,
@@ -58,30 +58,30 @@ impl ResolvableNode for Seeds {
         &["seeds"]
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         // Resolve seeds based on the dbt_state, database, schema, and project name
         let (seeds, disabled_seeds) = resolve_seeds(
-            cx.arg,
-            cx.properties.take_entries("seeds"),
-            cx.package,
-            &cx.root_project_configs.adapter_quoting,
-            cx.dbt_state.root_package(),
-            cx.root_project_configs,
-            cx.database,
-            cx.schema,
-            cx.parse_adapter_scopes,
-            cx.adapter_type,
-            cx.package_name,
-            &cx.jinja_env,
-            &cx.base_ctx,
-            &mut cx.collected_generic_tests,
-            cx.test_name_truncations,
-            cx.seen_generic_test_paths,
-            &mut cx.node_resolver,
+            ctx.arg,
+            ctx.properties.take_entries("seeds"),
+            ctx.package,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            &mut ctx.node_resolver,
         )
         .await?;
-        cx.nodes.seeds.extend(seeds);
-        cx.disabled_nodes.seeds.extend(disabled_seeds);
+        ctx.nodes.seeds.extend(seeds);
+        ctx.disabled_nodes.seeds.extend(disabled_seeds);
         Ok(())
     }
 }

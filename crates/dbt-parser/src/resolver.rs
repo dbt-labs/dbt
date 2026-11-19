@@ -60,7 +60,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::resolve::properties_index::{PropertiesEntry, index_properties};
-use crate::resolve::resolvable_node::{EnabledNodes, ResolvableNodes, ResolveCx};
+use crate::resolve::resolvable_node::{EnabledNodes, ResolvableNodes, ResolveCtx};
 use crate::resolve::resolve_macros::apply_macro_patches;
 use crate::resolve::resolve_macros::probe_internal_macro_overrides;
 use crate::resolve::resolve_macros::resolve_docs_macros;
@@ -1087,14 +1087,14 @@ pub async fn resolve_inner(
         }
     }
 
-    let mut cx = ResolveCx {
+    let mut ctx = ResolveCtx {
         arg,
         package,
-        dbt_state: &dbt_state,
+        dbt_state: Arc::clone(&dbt_state),
         root_package_name,
         root_project_configs,
         adapter_type,
-        parse_adapter_scopes,
+        parse_adapter_scopes: Arc::clone(parse_adapter_scopes),
         macros,
         jinja_env,
         base_ctx,
@@ -1120,24 +1120,24 @@ pub async fn resolve_inner(
         seen_generic_test_paths,
     };
 
-    // Each kind of node resolves in turn and adds its nodes to `cx`.
+    // Each kind of node resolves in turn and adds its nodes to `ctx`.
     for node in nodes {
-        node.resolve(&mut cx).await?;
+        node.resolve(&mut ctx).await?;
     }
 
-    if let Some(query_comment) = cx.package.dbt_project.query_comment.as_ref() {
-        resolve_query_comment(query_comment, &cx.jinja_env, &cx.base_ctx)?;
+    if let Some(query_comment) = ctx.package.dbt_project.query_comment.as_ref() {
+        resolve_query_comment(query_comment, &ctx.jinja_env, &ctx.base_ctx)?;
     }
 
-    clear_package_diagnostics(&cx.arg.io, cx.package);
+    clear_package_diagnostics(&ctx.arg.io, ctx.package);
 
     Ok((
-        cx.nodes,
-        cx.disabled_nodes,
-        cx.function_bodies,
-        cx.node_resolver,
-        cx.semantic_layer_spec_is_legacy,
-        cx.macro_properties,
+        ctx.nodes,
+        ctx.disabled_nodes,
+        ctx.function_bodies,
+        ctx.node_resolver,
+        ctx.semantic_layer_spec_is_legacy,
+        ctx.macro_properties,
     ))
 }
 

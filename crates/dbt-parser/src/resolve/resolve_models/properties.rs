@@ -5,7 +5,7 @@
 //! `defined_in` says), and one for the latest version, found under the model's name.
 
 use crate::resolve::properties_index::{
-    IndexCx, IndexedName, PackageProperties, PropertiesEntry, typed_again, validate_resource_name,
+    IndexCtx, IndexedName, PackageProperties, PropertiesEntry, typed_again, validate_resource_name,
 };
 use crate::resolve::resolve_utils::deep_merge_yaml;
 use dbt_common::FsResult;
@@ -21,9 +21,9 @@ use std::collections::btree_map::Entry;
 pub(crate) fn index_model(
     key: &'static str,
     item: &dbt_yaml::Value,
-    cx: &IndexCx<'_>,
+    ctx: &IndexCtx<'_>,
 ) -> FsResult<Vec<IndexedName>> {
-    let model: MinimalSchemaValue = cx.typed(item)?;
+    let model: MinimalSchemaValue = ctx.typed(item)?;
     validate_resource_name(&model.name)?;
     let name_span = item
         .get("name")
@@ -256,7 +256,7 @@ mod tests {
         let base_ctx = Arc::new(BTreeMap::new());
         let mut properties = PackageProperties::default();
         for (path, input) in files {
-            let cx = IndexCx::new(&jinja_env, &base_ctx);
+            let ctx = IndexCtx::new(&jinja_env, &base_ctx);
             let file = PropertiesFile::read(
                 input,
                 Path::new(path),
@@ -265,7 +265,7 @@ mod tests {
                 &["models"],
                 &[],
             )?;
-            properties.index_file(&[&Models], file, &cx).await?;
+            properties.index_file(&[&Models], file, &ctx).await?;
         }
         take_model_entries(&mut properties, &jinja_env, &base_ctx)
     }

@@ -6,8 +6,8 @@ use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::strip_warehouse_keys_in_config_block;
-use crate::resolve::properties_index::{IndexCx, IndexedName};
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::properties_index::{IndexCtx, IndexedName};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::{canonicalize_source_config_keys, extract_config_map};
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
 use crate::validation::check_node_static_analysis;
@@ -224,32 +224,36 @@ impl ResolvableNode for Sources {
         &self,
         key: &'static str,
         item: &dbt_yaml::Value,
-        cx: &IndexCx<'_>,
+        ctx: &IndexCtx<'_>,
     ) -> FsResult<Vec<IndexedName>> {
-        properties::index_source(key, item, cx)
+        properties::index_source(key, item, ctx)
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         // Resolve sources based on the dbt_state, database, schema, and project name
         let (sources, disabled_sources) = resolve_sources(
-            cx.arg,
-            cx.package,
-            cx.root_package_name,
-            cx.dbt_state.root_package(),
-            cx.root_project_configs,
-            properties::take_source_table_entries(&mut cx.properties, &cx.jinja_env, &cx.base_ctx),
-            cx.database,
-            cx.adapter_type,
-            &cx.base_ctx,
-            &cx.jinja_env,
-            &mut cx.collected_generic_tests,
-            cx.test_name_truncations,
-            cx.seen_generic_test_paths,
-            &mut cx.node_resolver,
+            ctx.arg,
+            ctx.package,
+            ctx.root_package_name,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            properties::take_source_table_entries(
+                &mut ctx.properties,
+                &ctx.jinja_env,
+                &ctx.base_ctx,
+            ),
+            ctx.database,
+            ctx.adapter_type,
+            &ctx.base_ctx,
+            &ctx.jinja_env,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            &mut ctx.node_resolver,
         )
         .await?;
-        cx.nodes.sources.extend(sources);
-        cx.disabled_nodes.sources.extend(disabled_sources);
+        ctx.nodes.sources.extend(sources);
+        ctx.disabled_nodes.sources.extend(disabled_sources);
         Ok(())
     }
 }

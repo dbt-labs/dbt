@@ -13,8 +13,8 @@
 //! ```
 //!
 //! When it resolves a package, it takes the entries under its keys
-//! ([`ResolveCx::experimental_package`]), decides what each one deserializes to, its `config:`
-//! included, and gives back the nodes they define ([`ResolveCx::add_experimental_nodes`]). dbt
+//! ([`ResolveCtx::experimental_package`]), decides what each one deserializes to, its `config:`
+//! included, and gives back the nodes they define ([`ResolveCtx::add_experimental_nodes`]). dbt
 //! resolves each node's `depends_on` with the project's own `ref()`, `source()` and `metric()`
 //! rules. The nodes are of the kind's own type
 //! ([`InjectedNodeType`](dbt_schemas::schemas::InjectedNodeType)): dbt reads only their common
@@ -41,7 +41,7 @@ use minijinja::value::Value as MinijinjaValue;
 use serde::de::DeserializeOwned;
 
 use crate::resolve::properties_index::PropertiesEntry;
-use crate::resolve::resolvable_node::ResolveCx;
+use crate::resolve::resolvable_node::ResolveCtx;
 use crate::resolve::resolve_exposures::resolve_yaml_depends_on;
 use crate::utils::get_node_fqn;
 
@@ -254,7 +254,7 @@ impl ExperimentalDiagnostics {
     }
 }
 
-impl ResolveCx<'_> {
+impl ResolveCtx<'_> {
     /// Takes the entries under each of `keys`, the top-level keys of a kind of node, out of the
     /// package's properties.
     ///

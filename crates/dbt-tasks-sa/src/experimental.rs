@@ -49,7 +49,7 @@ pub use dbt_parser::experimental::{
     ExperimentalPackage,
 };
 pub use dbt_parser::resolve::resolvable_node::{
-    IndexCx, IndexedName, ResolvableNode, ResolvableNodes, ResolveCx,
+    IndexCtx, IndexedName, ResolvableNode, ResolvableNodes, ResolveCtx,
 };
 
 /// Adds its own kind of node to a project ([`ResolvableNode`]) and runs the ones selected.
@@ -939,7 +939,7 @@ mod tests {
         fn properties_keys(&self) -> &'static [&'static str] {
             own_key(self.0)
         }
-        async fn resolve(&self, _cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
             Ok(())
         }
     }
@@ -955,7 +955,7 @@ mod tests {
         fn properties_keys(&self) -> &'static [&'static str] {
             self.0
         }
-        async fn resolve(&self, _cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
             Ok(())
         }
     }
@@ -1017,7 +1017,7 @@ mod tests {
         fn properties_keys(&self) -> &'static [&'static str] {
             own_key(self.experimental_type)
         }
-        async fn resolve(&self, _cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
             Ok(())
         }
     }
@@ -1340,7 +1340,7 @@ mod tests {
         fn flag(&self) -> Option<&'static FlagDef> {
             Some(&TEST_FLAG)
         }
-        async fn resolve(&self, _cx: &mut ResolveCx<'_>) -> FsResult<()> {
+        async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
             Ok(())
         }
     }

@@ -7,8 +7,7 @@ use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
     render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
 };
-use crate::resolve::properties_index::{IndexCx, IndexedName, validate_resource_name};
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
@@ -57,7 +56,6 @@ use dbt_schemas::schemas::{
 use dbt_schemas::state::{
     DbtAsset, DbtPackage, DbtRuntimeConfig, GenericTestAsset, ModelStatus, NodeResolverTracker,
 };
-use dbt_yaml::{Spanned, Verbatim};
 use indexmap::IndexMap;
 use minijinja::Value as MinijinjaValue;
 use std::collections::BTreeMap;
@@ -65,13 +63,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-/// The part of a snapshot's properties that names it.
-#[derive(Debug, serde::Deserialize)]
-struct MinimalSnapshotValue {
-    name: Spanned<String>,
-    __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
-}
 
 /// How a package's snapshots resolve.
 pub(crate) struct Snapshots;
@@ -82,52 +73,37 @@ impl ResolvableNode for Snapshots {
         &["snapshots"]
     }
 
-    /// A snapshot keeps where its name is written.
-    async fn index_item(
-        &self,
-        key: &'static str,
-        item: &dbt_yaml::Value,
-        cx: &IndexCx<'_>,
-    ) -> FsResult<Vec<IndexedName>> {
-        let item: MinimalSnapshotValue = cx.typed(item)?;
-        Ok(vec![IndexedName {
-            key,
-            name: validate_resource_name(item.name.as_ref())?,
-            name_span: item.name.span().clone(),
-        }])
-    }
-
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         // TODO: resolve_snapshots still creates its own local JinjaTypeCheckingEventListenerFactory
         // instead of receiving the top-level one, so snapshot macro dependencies are populated
         // locally rather than via update_manifest_with_macro_depends_on. Out of scope for now.
         // Resolve snapshots based on the dbt_state, database, schema, and project name
         let (snapshots, disabled_snapshots) = resolve_snapshots(
-            cx.arg,
-            cx.package,
-            cx.package_quoting,
-            cx.dbt_state.root_package(),
-            cx.root_project_configs,
-            cx.properties.take_entries("snapshots"),
-            &cx.macros.macros,
-            cx.database,
-            cx.schema,
-            cx.parse_adapter_scopes,
-            cx.adapter_type,
-            &cx.root_project_configs.adapter_quoting,
-            cx.jinja_env.clone(),
-            &cx.base_ctx,
-            cx.runtime_config.clone(),
-            cx.root_runtime_config.clone(),
-            &mut cx.node_resolver,
-            &mut cx.collected_generic_tests,
-            cx.test_name_truncations,
-            cx.seen_generic_test_paths,
-            cx.token,
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.properties.take_entries("snapshots"),
+            &ctx.macros.macros,
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            &mut ctx.node_resolver,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            ctx.token,
         )
         .await?;
-        cx.nodes.snapshots.extend(snapshots);
-        cx.disabled_nodes.snapshots.extend(disabled_snapshots);
+        ctx.nodes.snapshots.extend(snapshots);
+        ctx.disabled_nodes.snapshots.extend(disabled_snapshots);
         Ok(())
     }
 }

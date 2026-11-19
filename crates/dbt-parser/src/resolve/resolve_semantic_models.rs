@@ -2,8 +2,8 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
-use crate::resolve::properties_index::{IndexCx, IndexedName, PackageProperties};
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::properties_index::{IndexCtx, IndexedName, PackageProperties};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::utils::{
     extract_resource_config_from_raw_project, get_node_fqn, get_original_file_path, get_unique_id,
@@ -119,32 +119,32 @@ impl ResolvableNode for SemanticModels {
         &self,
         _key: &'static str,
         _item: &dbt_yaml::Value,
-        _cx: &IndexCx<'_>,
+        _ctx: &IndexCtx<'_>,
     ) -> FsResult<Vec<IndexedName>> {
         Ok(Vec::new())
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         // A package on the legacy semantic layer YAML resolves none.
-        if cx.semantic_layer_spec_is_legacy {
+        if ctx.semantic_layer_spec_is_legacy {
             return Ok(());
         }
         let (semantic_models, disabled_semantic_models) = resolve_semantic_models(
-            cx.adapter_type,
-            cx.arg,
-            cx.package,
-            cx.dbt_state.root_package(),
-            cx.root_project_configs,
-            &cx.model_properties,
-            &cx.typed_models_properties,
-            &cx.nodes.models,
-            cx.package_name,
-            &cx.jinja_env,
-            &cx.base_ctx,
+            ctx.adapter_type,
+            ctx.arg,
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &ctx.model_properties,
+            &ctx.typed_models_properties,
+            &ctx.nodes.models,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
         )
         .await?;
-        cx.nodes.semantic_models.extend(semantic_models);
-        cx.disabled_nodes
+        ctx.nodes.semantic_models.extend(semantic_models);
+        ctx.disabled_nodes
             .semantic_models
             .extend(disabled_semantic_models);
         Ok(())

@@ -1,7 +1,7 @@
 //! Sources in properties files: one entry for each table of a source.
 
 use crate::resolve::properties_index::{
-    IndexCx, IndexedName, PackageProperties, PropertiesEntry, validate_resource_name,
+    IndexCtx, IndexedName, PackageProperties, PropertiesEntry, validate_resource_name,
 };
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{ErrorCode, FsResult};
@@ -21,7 +21,7 @@ const SEPARATOR: char = '\0';
 pub(crate) fn index_source(
     key: &'static str,
     item: &Value,
-    cx: &IndexCx<'_>,
+    ctx: &IndexCtx<'_>,
 ) -> FsResult<Vec<IndexedName>> {
     // Pre-render the `tables` field if it is a single Jinja expression
     // (e.g. `{{ var('source_tables') }}`). MinimalSchemaValue wraps
@@ -29,15 +29,15 @@ pub(crate) fn index_source(
     // prematurely, but this also blocks expanding the field value itself
     // from a string into a sequence.
     // See: https://github.com/dbt-labs/dbt-fusion/issues/982
-    let item = with_tables_rendered(item, cx.jinja_env, cx.base_ctx);
-    let source: MinimalSchemaValue = cx.typed(&item)?;
+    let item = with_tables_rendered(item, ctx.jinja_env, ctx.base_ctx);
+    let source: MinimalSchemaValue = ctx.typed(&item)?;
     let Some(tables) = &*source.tables else {
         emit_warn_log_message(
             ErrorCode::NoTablesInSource,
             format!(
                 "No tables defined for source '{}' in file '{}'.",
                 source.name,
-                cx.properties_path.display()
+                ctx.properties_path.display()
             ),
         );
         return Ok(Vec::new());
@@ -46,7 +46,7 @@ pub(crate) fn index_source(
     tables
         .iter()
         .map(|table| {
-            let table: MinimalTableValue = cx.typed(table)?;
+            let table: MinimalTableValue = ctx.typed(table)?;
             Ok(IndexedName {
                 key,
                 name: format!("{}{SEPARATOR}{}", source.name, table.name.as_ref()),
@@ -199,7 +199,7 @@ mod tests {
                 &[],
             )?;
             properties
-                .index_file(&[&Sources], file, &IndexCx::new(&jinja_env, &base_ctx))
+                .index_file(&[&Sources], file, &IndexCtx::new(&jinja_env, &base_ctx))
                 .await?;
         }
         Ok(take_source_table_entries(

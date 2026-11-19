@@ -2,7 +2,7 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{
@@ -56,28 +56,28 @@ impl ResolvableNode for SavedQueries {
         &["saved_queries"]
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         // A package on the legacy semantic layer YAML resolves none.
-        if cx.semantic_layer_spec_is_legacy {
+        if ctx.semantic_layer_spec_is_legacy {
             return Ok(());
         }
         let (saved_queries, disabled_saved_queries) = resolve_saved_queries(
-            cx.adapter_type,
-            cx.arg,
-            cx.package,
-            cx.dbt_state.root_package(),
-            cx.root_package_name,
-            cx.root_project_configs,
-            &mut cx.properties.take_entries("saved_queries"),
-            cx.database,
-            cx.schema,
-            cx.package_name,
-            cx.jinja_env.clone(),
-            &cx.base_ctx,
+            ctx.adapter_type,
+            ctx.arg,
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.root_package_name,
+            ctx.root_project_configs,
+            &mut ctx.properties.take_entries("saved_queries"),
+            ctx.database,
+            ctx.schema,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
         )
         .await?;
-        cx.nodes.saved_queries.extend(saved_queries);
-        cx.disabled_nodes
+        ctx.nodes.saved_queries.extend(saved_queries);
+        ctx.disabled_nodes
             .saved_queries
             .extend(disabled_saved_queries);
         Ok(())

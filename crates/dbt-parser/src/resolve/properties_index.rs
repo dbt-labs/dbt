@@ -23,7 +23,7 @@ use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::serde::{FloatOrString, strip_one_trailing_newline_at_keys};
 use dbt_schemas::state::DbtPackage;
 use dbt_telemetry::AssetParsed;
-use dbt_yaml::{Mapping, Span, Value, Verbatim};
+use dbt_yaml::{Mapping, Span, Value};
 use itertools::Itertools;
 use minijinja::Value as MinijinjaValue;
 use serde::Deserialize;
@@ -63,12 +63,13 @@ impl PropertiesFile {
             path: path.to_path_buf(),
             ..Default::default()
         };
-        let keys = match from_yaml_raw::<Value>(
-            input,
-            Some(absolute_path),
-            true,
-            dependency_package_name,
-        )? {
+        let mut root =
+            from_yaml_raw::<Value>(input, Some(absolute_path), true, dependency_package_name)?;
+        // A tag on the file's mapping (`!tag` before the first key) is not read.
+        while let Value::Tagged(tagged, ..) = root {
+            root = tagged.value;
+        }
+        let keys = match root {
             Value::Null(..) => return Ok(file),
             Value::Mapping(keys, ..) => keys,
             value => return Err(not_a_properties_file(value)),
@@ -92,6 +93,9 @@ impl PropertiesFile {
                         value => typed_key(key, value)?,
                     };
                     if let Some(items) = items {
+                        if let Some(item) = items.iter().find(|item| !is_entry(item)) {
+                            return Err(not_an_entry(&name, item));
+                        }
                         file.items.insert(name, items);
                     }
                 }
@@ -172,19 +176,8 @@ pub struct IndexedName {
     pub key: &'static str,
     /// The name.
     pub name: String,
-    /// Where the name is written, for a kind that gives its nodes that location.
+    /// Where the name is written in its file.
     pub name_span: Span,
-}
-
-impl IndexedName {
-    /// A name found under `key`, without where it is written.
-    pub fn new(key: &'static str, name: String) -> Self {
-        IndexedName {
-            key,
-            name,
-            name_span: Span::default(),
-        }
-    }
 }
 
 /// Where one name is defined.
@@ -220,7 +213,7 @@ impl PropertiesIndex {
 
 /// What indexing the items of one properties file reads.
 #[derive(Clone, Copy)]
-pub struct IndexCx<'a> {
+pub struct IndexCtx<'a> {
     pub(crate) jinja_env: &'a Arc<JinjaEnv>,
     /// The Jinja context of the package's properties files.
     pub(crate) base_ctx: &'a Arc<BTreeMap<String, MinijinjaValue>>,
@@ -230,14 +223,14 @@ pub struct IndexCx<'a> {
     pub(crate) properties_path: &'a Path,
 }
 
-impl<'a> IndexCx<'a> {
+impl<'a> IndexCtx<'a> {
     /// What indexing the properties files of one package reads. [`PackageProperties::index_file`]
     /// names the file.
     pub(crate) fn new(
         jinja_env: &'a Arc<JinjaEnv>,
         base_ctx: &'a Arc<BTreeMap<String, MinijinjaValue>>,
     ) -> Self {
-        IndexCx {
+        IndexCtx {
             jinja_env,
             base_ctx,
             dependency_package_name: dependency_package_name_from_ctx(jinja_env, base_ctx),
@@ -245,21 +238,29 @@ impl<'a> IndexCx<'a> {
         }
     }
 
-    /// The one name that `item` defines, found under `key`: its `name`, with Jinja rendered.
-    /// Nothing else of the item is read.
+    /// The one name that `item` defines, found under `key`: its `name`, checked for forbidden
+    /// characters.
     pub fn named(&self, key: &'static str, item: &Value) -> FsResult<Vec<IndexedName>> {
-        /// An item, read only for its name.
-        #[derive(Deserialize)]
-        struct Named {
-            name: String,
-            __additional_properties__: Verbatim<BTreeMap<String, Value>>,
-        }
-
-        let item: Named = self.typed(item)?;
-        Ok(vec![IndexedName::new(
+        let (name, name_span) = self.name(item)?;
+        Ok(vec![IndexedName {
             key,
-            validate_resource_name(&item.name)?,
-        )])
+            name: validate_resource_name(&name)?,
+            name_span,
+        }])
+    }
+
+    /// The `name` of `item`, with Jinja rendered, and where it is written. Only the name is
+    /// read and rendered: nothing else of the item is typed or copied.
+    pub fn name(&self, item: &Value) -> FsResult<(String, Span)> {
+        let name = name_value(item)?;
+        let name_span = name.span().clone();
+        let name = render_name(
+            name,
+            self.jinja_env,
+            self.base_ctx,
+            self.dependency_package_name,
+        )?;
+        Ok((name, name_span))
     }
 
     /// `item` as a `T`, with Jinja rendered.
@@ -276,7 +277,7 @@ impl<'a> IndexCx<'a> {
     }
 }
 
-/// `item` as a `T`, with Jinja rendered, without reporting what [`IndexCx::typed`] reported when
+/// `item` as a `T`, with Jinja rendered, without reporting what [`IndexCtx::typed`] reported when
 /// the item was indexed.
 pub(crate) fn typed_again<T: DeserializeOwned>(
     item: &Value,
@@ -291,6 +292,42 @@ pub(crate) fn typed_again<T: DeserializeOwned>(
         &[],
         dependency_package_name_from_ctx(jinja_env, base_ctx),
         false,
+    )
+}
+
+/// The value of `name` in `item`, with its trailing newline dropped, before Jinja runs:
+/// dbt-core strips the template source, so an expression's own newline survives.
+pub(crate) fn name_value(item: &Value) -> FsResult<Value> {
+    let Some(name) = item.get("name") else {
+        return Err(fs_err!(
+            code => ErrorCode::SerializationError,
+            loc => item.span().clone(),
+            "YAML error: missing field `name`"
+        ));
+    };
+    Ok(
+        match name.as_str().and_then(|name| name.strip_suffix('\n')) {
+            Some(stripped) => Value::string(stripped.to_string()).with_span(name.span().clone()),
+            None => name.clone(),
+        },
+    )
+}
+
+/// `name`, the value of an item's `name`, as a string, with Jinja rendered.
+pub(crate) fn render_name(
+    name: Value,
+    jinja_env: &JinjaEnv,
+    base_ctx: &BTreeMap<String, MinijinjaValue>,
+    dependency_package_name: Option<&str>,
+) -> FsResult<String> {
+    into_typed_with_jinja(
+        name,
+        false,
+        jinja_env,
+        base_ctx,
+        &[],
+        dependency_package_name,
+        true,
     )
 }
 
@@ -331,14 +368,14 @@ impl PackageProperties {
         &mut self,
         kinds: &[&dyn ResolvableNode],
         file: PropertiesFile,
-        cx: &IndexCx<'_>,
+        ctx: &IndexCtx<'_>,
     ) -> FsResult<()> {
         let file_id = self.files.len();
         self.files.push(file);
         let file = &self.files[file_id];
-        let cx = &IndexCx {
+        let ctx = &IndexCtx {
             properties_path: &file.path,
-            ..*cx
+            ..*ctx
         };
         for kind in kinds {
             for &key in kind.properties_keys() {
@@ -346,7 +383,7 @@ impl PackageProperties {
                     continue;
                 };
                 for (item_id, item) in items.iter().enumerate() {
-                    let names = kind.index_item(key, item, cx).await?;
+                    let names = kind.index_item(key, item, ctx).await?;
                     for (part, name) in names.into_iter().enumerate() {
                         let location = PropertiesLocation {
                             file: file_id,
@@ -500,7 +537,7 @@ pub(crate) async fn index_properties(
         .flat_map(|kind| kind.properties_keys())
         .copied()
         .collect();
-    let index_cx = IndexCx::new(jinja_env, base_ctx);
+    let index_cx = IndexCtx::new(jinja_env, base_ctx);
 
     let ignored_keys: Vec<&str> = off_keys.keys().copied().collect();
     // The keys of kinds that are off, in any of the package's files.
@@ -586,6 +623,38 @@ fn typed_key<T: DeserializeOwned>(key: Value, value: Value) -> FsResult<T> {
         .expect("a mapping with one key is typed as one value"))
 }
 
+/// Whether `item`, in the list of a top-level key, can be an entry: a mapping.
+///
+/// A string is not an entry, although Jinja can render one expression to a mapping. dbt Core
+/// checks each entry before it renders anything. A string can still give the value of a key in
+/// an entry, such as `columns: "{{ var('columns') }}"`.
+fn is_entry(item: &Value) -> bool {
+    matches!(item, Value::Mapping(..) | Value::Tagged(..))
+}
+
+/// The error for `item`, in the list of the top-level key `key`, which is not a mapping.
+fn not_an_entry(key: &str, item: &Value) -> Box<FsError> {
+    let found = match item {
+        Value::Null(..) => "is empty",
+        Value::Bool(..) => "is a boolean",
+        Value::Number(..) => "is a number",
+        Value::String(..) => "is a string",
+        Value::Sequence(..) => "is a list",
+        Value::Mapping(..) | Value::Tagged(..) => "is not one",
+    };
+    let hint = match item.as_str() {
+        Some(text) if text.contains("{{") || text.contains("{%") => {
+            " Jinja can give the value of a key in an entry, but not a whole entry."
+        }
+        _ => "",
+    };
+    fs_err!(
+        code => ErrorCode::SerializationError,
+        loc => item.span().clone(),
+        "YAML error: {key}: each entry must be a mapping, but this entry {found}.{hint}"
+    )
+}
+
 /// The error for `value`, which is not the mapping with string keys that a properties file is.
 fn not_a_properties_file(value: Value) -> Box<FsError> {
     /// The name is part of the error's message.
@@ -633,7 +702,7 @@ mod tests {
             &self,
             _key: &'static str,
             item: &Value,
-            _cx: &IndexCx<'_>,
+            _ctx: &IndexCtx<'_>,
         ) -> FsResult<Vec<IndexedName>> {
             let name = item
                 .get("name")
@@ -648,7 +717,7 @@ mod tests {
 
         async fn resolve(
             &self,
-            _cx: &mut crate::resolve::resolvable_node::ResolveCx<'_>,
+            _ctx: &mut crate::resolve::resolvable_node::ResolveCtx<'_>,
         ) -> FsResult<()> {
             Ok(())
         }
@@ -659,7 +728,7 @@ mod tests {
     async fn index(files: &[(&str, &str)]) -> FsResult<PackageProperties> {
         let jinja_env = Arc::new(JinjaEnv::new(minijinja::Environment::new()));
         let base_ctx = Arc::new(BTreeMap::new());
-        let cx = IndexCx::new(&jinja_env, &base_ctx);
+        let ctx = IndexCtx::new(&jinja_env, &base_ctx);
         let mut properties = PackageProperties::default();
         for (path, input) in files {
             let file = PropertiesFile::read(
@@ -670,7 +739,7 @@ mod tests {
                 &["widgets", "gadgets"],
                 &[],
             )?;
-            properties.index_file(&[&Widgets], file, &cx).await?;
+            properties.index_file(&[&Widgets], file, &ctx).await?;
         }
         Ok(properties)
     }
@@ -759,6 +828,42 @@ mod tests {
         Ok(())
     }
 
+    /// The `name` of the YAML `item`, as [`IndexCtx::name`] gives it.
+    fn name_of(item: &str) -> FsResult<(String, Span)> {
+        let jinja_env = Arc::new(JinjaEnv::new(minijinja::Environment::new()));
+        let base_ctx = Arc::new(BTreeMap::new());
+        let item: Value = dbt_yaml::from_str(item).unwrap();
+        IndexCtx::new(&jinja_env, &base_ctx).name(&item)
+    }
+
+    #[dbt_runtime::test]
+    async fn only_the_name_of_an_item_is_read() -> FsResult<()> {
+        // What else the item has is not typed or rendered: `versions` is not a list here, and
+        // `description` is not valid Jinja.
+        let (name, span) = name_of("description: \"{{ nope( }}\"\nversions: 3\nname: orders\n")?;
+        assert_eq!(name, "orders");
+        // Where the name is written: line 3, after `name: `.
+        assert_eq!((span.start.line, span.start.column), (3, 7));
+        Ok(())
+    }
+
+    #[dbt_runtime::test]
+    async fn the_name_of_an_item_is_rendered() -> FsResult<()> {
+        assert_eq!(name_of("name: \"{{ 'ord' ~ 'ers' }}\"\n")?.0, "orders");
+        // A block scalar's own trailing newline is dropped before Jinja runs.
+        assert_eq!(name_of("name: |\n  orders\n")?.0, "orders");
+        Ok(())
+    }
+
+    #[dbt_runtime::test]
+    async fn an_item_without_a_name_is_an_error() {
+        let error = name_of("description: no name\n").expect_err("the item has no name");
+        assert_eq!(error.code, ErrorCode::SerializationError);
+        assert_eq!(error.context, "YAML error: missing field `name`");
+        // What is not a mapping has no name either.
+        assert!(name_of("orders\n").is_err());
+    }
+
     #[dbt_runtime::test]
     async fn a_package_has_a_key_that_one_of_its_files_has() -> FsResult<()> {
         let properties = index(&[
@@ -794,7 +899,68 @@ mod tests {
 
     #[test]
     fn a_tagged_list_is_a_list() {
-        assert!(read("models: !tag [1]\n").unwrap().has_items("models"));
+        let file = read("models: !tag [{name: a}]\n").unwrap();
+        assert!(file.has_items("models"));
+    }
+
+    #[test]
+    fn a_tag_on_the_file_or_on_an_entry_is_not_read() {
+        for input in [
+            "!tag\nmodels:\n  - name: a\n",
+            "--- !tag\nmodels:\n  - name: a\n",
+            "models:\n  - !tag\n    name: a\n",
+        ] {
+            let file = read(input).unwrap();
+            let models = file.items.get("models").expect("the file has models");
+            assert_eq!(models.len(), 1, "{input}");
+            assert_eq!(models[0].get("name").and_then(Value::as_str), Some("a"));
+        }
+        // What the tag is on must still be a mapping.
+        assert_eq!(
+            error("!tag [a]\n"),
+            "YAML error: invalid type: sequence, expected struct DbtPropertiesFileValues"
+        );
+    }
+
+    #[test]
+    fn an_entry_that_is_not_a_mapping_is_an_error() {
+        let error_of = |entry: &str| error(&format!("models:\n  - {entry}\n"));
+        // One Jinja expression is not rendered to an entry.
+        assert_eq!(
+            error_of("\"{{ var('customers') }}\""),
+            "YAML error: models: each entry must be a mapping, but this entry is a string. \
+             Jinja can give the value of a key in an entry, but not a whole entry."
+        );
+        assert_eq!(
+            error_of("customers"),
+            "YAML error: models: each entry must be a mapping, but this entry is a string."
+        );
+        assert_eq!(
+            error_of(""),
+            "YAML error: models: each entry must be a mapping, but this entry is empty."
+        );
+        assert_eq!(
+            error_of("1"),
+            "YAML error: models: each entry must be a mapping, but this entry is a number."
+        );
+        assert_eq!(
+            error_of("[a]"),
+            "YAML error: models: each entry must be a mapping, but this entry is a list."
+        );
+        // The key of the entry is named.
+        assert_eq!(
+            error("models:\n  - name: a\nseeds:\n  - true\n"),
+            "YAML error: seeds: each entry must be a mapping, but this entry is a boolean."
+        );
+    }
+
+    #[test]
+    fn a_string_in_an_entry_is_not_an_error() {
+        let file = read(
+            "models:\n  - name: a\n    columns: \"{{ var('columns') }}\"\n    config: \"{{ var('config') }}\"\n",
+        )
+        .unwrap();
+        assert_eq!(file.items.get("models").map(Vec::len), Some(1));
     }
 
     #[test]

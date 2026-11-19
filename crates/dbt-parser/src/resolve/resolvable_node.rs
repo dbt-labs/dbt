@@ -2,10 +2,8 @@
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
-pub use crate::resolve::properties_index::{IndexCx, IndexedName};
-use crate::resolve::properties_index::{
-    PackageProperties, PropertiesEntry, validate_resource_name,
-};
+pub use crate::resolve::properties_index::{IndexCtx, IndexedName};
+use crate::resolve::properties_index::{PackageProperties, PropertiesEntry};
 use crate::resolve::resolve_analyses::Analyses;
 use crate::resolve::resolve_checks::Checks;
 use crate::resolve::resolve_exposures::Exposures;
@@ -33,7 +31,7 @@ use dbt_jinja_utils::node_resolver::NodeResolver;
 use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_schemas::schemas::Nodes;
 use dbt_schemas::schemas::common::DbtQuoting;
-use dbt_schemas::schemas::properties::{MinimalSchemaValue, ModelProperties};
+use dbt_schemas::schemas::properties::ModelProperties;
 use dbt_schemas::state::{DbtPackage, DbtRuntimeConfig, DbtState, GenericTestAsset, Macros};
 use minijinja::Value as MinijinjaValue;
 use std::collections::{BTreeMap, HashMap};
@@ -59,24 +57,20 @@ pub trait ResolvableNode: Send + Sync {
 
     /// The names that `item`, under the kind's key `key`, defines.
     ///
-    /// The default is one name, found under `key`: the item's `name`, with Jinja rendered. An
-    /// error fails the package's resolution.
+    /// The default is one name, found under `key`: the item's `name`, with Jinja rendered.
+    /// Nothing else of the item is read. An error fails the package's resolution.
     async fn index_item(
         &self,
         key: &'static str,
         item: &dbt_yaml::Value,
-        cx: &IndexCx<'_>,
+        ctx: &IndexCtx<'_>,
     ) -> FsResult<Vec<IndexedName>> {
-        let item: MinimalSchemaValue = cx.typed(item)?;
-        Ok(vec![IndexedName::new(
-            key,
-            validate_resource_name(&item.name)?,
-        )])
+        ctx.named(key, item)
     }
 
-    /// Resolves the kind's nodes of `cx.package`, and adds them to `cx.nodes` and
-    /// `cx.disabled_nodes`.
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()>;
+    /// Resolves the kind's nodes of `ctx.package`, and adds them to `ctx.nodes` and
+    /// `ctx.disabled_nodes`.
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()>;
 }
 
 /// The kinds of node a project resolves with, in the order they resolve. The items of a
@@ -179,16 +173,16 @@ impl EnabledNodes {
 ///
 /// The kinds of node resolve one after another. Each reads what it needs from here and adds its
 /// nodes to `nodes` and `disabled_nodes`, where the kinds after it find them.
-pub struct ResolveCx<'a> {
+pub struct ResolveCtx<'a> {
     pub(crate) arg: &'a ResolveArgs,
     /// The package whose nodes resolve.
     pub(crate) package: &'a DbtPackage,
-    pub(crate) dbt_state: &'a DbtState,
+    pub(crate) dbt_state: Arc<DbtState>,
     pub(crate) root_package_name: &'a str,
     pub(crate) root_project_configs: &'a RootProjectConfigs,
     /// The target's default adapter.
     pub(crate) adapter_type: AdapterType,
-    pub(crate) parse_adapter_scopes: &'a Arc<AdapterScopes>,
+    pub(crate) parse_adapter_scopes: Arc<AdapterScopes>,
     pub(crate) macros: &'a Macros,
     pub(crate) jinja_env: Arc<JinjaEnv>,
     /// The Jinja context of the package's properties files.

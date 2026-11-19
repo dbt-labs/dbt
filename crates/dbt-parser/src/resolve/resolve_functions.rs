@@ -1,4 +1,4 @@
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::{collections::BTreeMap, sync::Arc};
@@ -75,32 +75,32 @@ impl ResolvableNode for Functions {
         &["functions"]
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         // Resolve functions
         let (functions, disabled_functions, function_bodies) = resolve_functions(
-            cx.arg,
-            cx.package,
-            cx.package_quoting,
-            cx.dbt_state.root_package(),
-            cx.root_project_configs,
-            &mut cx.properties.take_entries("functions"),
-            cx.database,
-            cx.schema,
-            cx.parse_adapter_scopes,
-            cx.adapter_type,
-            &cx.root_project_configs.adapter_quoting,
-            cx.package_name,
-            cx.jinja_env.clone(),
-            &cx.base_ctx,
-            cx.runtime_config.clone(),
-            cx.root_runtime_config.clone(),
-            &mut cx.node_resolver,
-            cx.token,
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &mut ctx.properties.take_entries("functions"),
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            &mut ctx.node_resolver,
+            ctx.token,
         )
         .await?;
-        cx.nodes.functions.extend(functions);
-        cx.disabled_nodes.functions.extend(disabled_functions);
-        cx.function_bodies.extend(function_bodies);
+        ctx.nodes.functions.extend(functions);
+        ctx.disabled_nodes.functions.extend(disabled_functions);
+        ctx.function_bodies.extend(function_bodies);
         Ok(())
     }
 }

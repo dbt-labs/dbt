@@ -1,5 +1,4 @@
-use crate::resolve::properties_index::{IndexCx, IndexedName, validate_resource_name};
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::{collections::BTreeMap, sync::Arc};
@@ -46,42 +45,28 @@ impl ResolvableNode for Checks {
         &["checks"]
     }
 
-    /// The whole item is typed, so a check with invalid properties is an error here.
-    async fn index_item(
-        &self,
-        key: &'static str,
-        item: &dbt_yaml::Value,
-        cx: &IndexCx<'_>,
-    ) -> FsResult<Vec<IndexedName>> {
-        let item: CheckProperties = cx.typed(item)?;
-        Ok(vec![IndexedName::new(
-            key,
-            validate_resource_name(&item.name)?,
-        )])
-    }
-
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         // Resolve checks
         let (checks, disabled_checks) = resolve_checks(
-            cx.arg,
-            cx.package,
-            cx.package_quoting,
-            cx.dbt_state.root_package(),
-            cx.root_project_configs,
-            &mut cx.properties.take_entries("checks"),
-            cx.database,
-            cx.schema,
-            cx.adapter_type,
-            cx.package_name,
-            cx.jinja_env.clone(),
-            &cx.base_ctx,
-            cx.runtime_config.clone(),
-            cx.root_runtime_config.clone(),
-            cx.token,
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &mut ctx.properties.take_entries("checks"),
+            ctx.database,
+            ctx.schema,
+            ctx.adapter_type,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            ctx.token,
         )
         .await?;
-        cx.nodes.checks.extend(checks);
-        cx.disabled_nodes.checks.extend(disabled_checks);
+        ctx.nodes.checks.extend(checks);
+        ctx.disabled_nodes.checks.extend(disabled_checks);
         Ok(())
     }
 }

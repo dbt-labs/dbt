@@ -1,5 +1,5 @@
-use crate::resolve::properties_index::{IndexCx, IndexedName};
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::properties_index::{IndexCtx, IndexedName};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
@@ -9,7 +9,6 @@ use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::nodes::{CommonAttributes, DbtGroup, DbtGroupAttr, NodeBaseAttributes};
-use dbt_schemas::schemas::properties::MinimalSchemaValue;
 use dbt_schemas::schemas::properties::{GroupConfig, GroupProperties};
 use minijinja::value::Value as MinijinjaValue;
 use std::collections::BTreeMap;
@@ -32,24 +31,28 @@ impl ResolvableNode for Groups {
         &self,
         key: &'static str,
         item: &dbt_yaml::Value,
-        cx: &IndexCx<'_>,
+        ctx: &IndexCtx<'_>,
     ) -> FsResult<Vec<IndexedName>> {
-        let item: MinimalSchemaValue = cx.typed(item)?;
-        Ok(vec![IndexedName::new(key, item.name)])
+        let (name, name_span) = ctx.name(item)?;
+        Ok(vec![IndexedName {
+            key,
+            name,
+            name_span,
+        }])
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         let (groups, disabled_groups) = resolve_groups(
-            cx.adapter_type,
-            &mut cx.properties.take_entries("groups"),
-            cx.package_name,
-            &cx.jinja_env,
-            &cx.base_ctx,
+            ctx.adapter_type,
+            &mut ctx.properties.take_entries("groups"),
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
         )
         .await?;
 
-        cx.nodes.groups.extend(groups);
-        cx.disabled_nodes.groups.extend(disabled_groups);
+        ctx.nodes.groups.extend(groups);
+        ctx.disabled_nodes.groups.extend(disabled_groups);
         Ok(())
     }
 }

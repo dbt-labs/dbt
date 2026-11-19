@@ -9,8 +9,8 @@ use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
 use crate::resolve::primary_key_inference::infer_and_apply_primary_keys;
 use crate::resolve::properties_index::PropertiesEntry;
-use crate::resolve::properties_index::{IndexCx, IndexedName, validate_resource_name};
-use crate::resolve::resolvable_node::{ResolvableNode, ResolveCx};
+use crate::resolve::properties_index::{IndexCtx, IndexedName, validate_resource_name};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_tests::persist_generic_data_tests::format_node_unique_id;
 use crate::resolve::resolve_utils::{
     RawProjectConfigsByAdapter, err_resource_name_has_spaces, resolve_node_quoting,
@@ -387,58 +387,54 @@ impl ResolvableNode for DataTests {
         &self,
         _key: &'static str,
         item: &dbt_yaml::Value,
-        cx: &IndexCx<'_>,
+        ctx: &IndexCtx<'_>,
     ) -> FsResult<Vec<IndexedName>> {
-        let item: MinimalSchemaValue = cx.typed(item)?;
-        Ok(vec![IndexedName::new(
-            "tests",
-            validate_resource_name(&item.name)?,
-        )])
+        ctx.named("tests", item)
     }
 
-    async fn resolve(&self, cx: &mut ResolveCx<'_>) -> FsResult<()> {
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
         // Scoped so the span handle drops on both exits: SpanEnd fires on last-handle-drop.
         // operation_id has the package name: resolve_inner runs concurrently across packages.
         let (data_tests, disabled_tests) = {
             let span = create_debug_span(GenericOpExecuted::new(
-                format!("resolve.resolve_data_tests.{}", cx.package_name),
+                format!("resolve.resolve_data_tests.{}", ctx.package_name),
                 "resolving data tests".to_string(),
                 None,
             ));
             resolve_data_tests(
-                cx.arg,
-                cx.package,
-                cx.package_quoting,
-                cx.dbt_state.root_package(),
-                cx.root_project_configs,
-                &mut cx.properties.take_entries("tests"),
-                cx.database,
-                cx.schema,
-                cx.parse_adapter_scopes,
-                cx.adapter_type,
-                cx.jinja_env.clone(),
-                &cx.base_ctx,
-                cx.runtime_config.clone(),
-                cx.root_runtime_config.clone(),
-                &cx.collected_generic_tests,
-                &cx.node_resolver,
-                cx.token,
-                cx.jinja_type_checking_event_listener_factory.clone(),
-                &cx.root_project_configs.adapter_quoting,
-                &cx.nodes.models,
-                &cx.disabled_nodes.models,
-                &cx.nodes.seeds,
-                &cx.nodes.snapshots,
+                ctx.arg,
+                ctx.package,
+                ctx.package_quoting,
+                ctx.dbt_state.root_package(),
+                ctx.root_project_configs,
+                &mut ctx.properties.take_entries("tests"),
+                ctx.database,
+                ctx.schema,
+                &ctx.parse_adapter_scopes,
+                ctx.adapter_type,
+                ctx.jinja_env.clone(),
+                &ctx.base_ctx,
+                ctx.runtime_config.clone(),
+                ctx.root_runtime_config.clone(),
+                &ctx.collected_generic_tests,
+                &ctx.node_resolver,
+                ctx.token,
+                ctx.jinja_type_checking_event_listener_factory.clone(),
+                &ctx.root_project_configs.adapter_quoting,
+                &ctx.nodes.models,
+                &ctx.disabled_nodes.models,
+                &ctx.nodes.seeds,
+                &ctx.nodes.snapshots,
             )
             .instrument(span.clone())
             .await
             .record_status(&span)?
         };
-        cx.nodes.tests.extend(data_tests);
-        cx.disabled_nodes.tests.extend(disabled_tests);
+        ctx.nodes.tests.extend(data_tests);
+        ctx.disabled_nodes.tests.extend(disabled_tests);
 
         // The primary keys of models are inferred from their constraints and these tests.
-        infer_and_apply_primary_keys(&mut cx.nodes, &cx.disabled_nodes);
+        infer_and_apply_primary_keys(&mut ctx.nodes, &ctx.disabled_nodes);
         Ok(())
     }
 }
