@@ -1,0 +1,7 @@
+kind: Fixes
+body: Support adding fields inside STRUCT columns with on_schema_change on BigQuery
+time: 2026-10-13T13:03:07.914162+02:00
+custom:
+    author: skatromb
+    issue: "16720"
+    project: dbt-core
