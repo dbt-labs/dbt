@@ -2670,7 +2670,7 @@ mod tests {
                 test_subject_unique_id: Some("model.my_project.my_model".to_string()),
                 test_metadata: Some(TestMetadata {
                     name: "not_null".to_string(), // Base test name
-                    kwargs: BTreeMap::new(),
+                    kwargs: Default::default(),
                     namespace: None,
                 }),
                 file_key_name: None,

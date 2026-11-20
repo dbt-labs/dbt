@@ -361,7 +361,7 @@ fn create_aggregated_test(
         )
     })?;
     let mut kwargs = template_metadata.kwargs.clone();
-    kwargs.insert(
+    kwargs.insert_sorted(
         "column_names".to_string(),
         dbt_yaml::Value::Sequence(
             columns
@@ -452,7 +452,7 @@ fn build_aggregated_raw_code(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use indexmap::IndexMap;
 
     use dbt_schemas::schemas::common::StoreFailuresAs;
     use dbt_schemas::schemas::nodes::{DbtTestAttr, Nodes};
@@ -472,7 +472,7 @@ mod tests {
             test_subject_unique_id: Some("model.pkg.orders".to_string()),
             test_metadata: Some(TestMetadata {
                 name: macro_name.to_string(),
-                kwargs: BTreeMap::from([
+                kwargs: IndexMap::from([
                     (
                         "column_name".to_string(),
                         dbt_yaml::Value::string(column_name.to_string()),

@@ -5875,9 +5875,22 @@ pub struct DbtTestAttr {
 #[serde(rename_all = "snake_case")]
 pub struct TestMetadata {
     pub name: String,
-    #[serde(default)]
-    pub kwargs: BTreeMap<String, YmlValue>,
+    /// Kept sorted by key, so it serializes and iterates in key order.
+    #[serde(default, deserialize_with = "deserialize_sorted_kwargs")]
+    pub kwargs: IndexMap<String, YmlValue>,
     pub namespace: Option<String>,
+}
+
+/// Deserializes test kwargs in any key order and sorts them by key.
+fn deserialize_sorted_kwargs<'de, D>(
+    deserializer: D,
+) -> Result<IndexMap<String, YmlValue>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut kwargs = IndexMap::<String, YmlValue>::deserialize(deserializer)?;
+    kwargs.sort_unstable_keys();
+    Ok(kwargs)
 }
 
 #[skip_serializing_none]

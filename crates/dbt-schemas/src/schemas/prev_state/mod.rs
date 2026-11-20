@@ -1323,7 +1323,7 @@ mod tests {
             attached_node: Some(attached_node.to_string()),
             test_metadata: Some(TestMetadata {
                 name: test_name.to_string(),
-                kwargs: BTreeMap::default(),
+                kwargs: Default::default(),
                 namespace: None,
             }),
             ..DbtTestAttr::default()

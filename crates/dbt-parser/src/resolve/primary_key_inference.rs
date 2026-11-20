@@ -246,6 +246,7 @@ mod tests {
     use dbt_schemas::schemas::nodes::{DbtTestAttr, TestMetadata};
     use dbt_schemas::schemas::project::ModelConfig;
     use dbt_schemas::schemas::{CommonAttributes, IntrospectionKind, NodeBaseAttributes};
+    use indexmap::IndexMap;
 
     fn empty_nodes() -> Nodes {
         Nodes::default()
@@ -314,7 +315,7 @@ mod tests {
                 test_metadata: Some(TestMetadata {
                     name: "unique".to_string(),
                     kwargs: {
-                        let mut m = BTreeMap::new();
+                        let mut m = IndexMap::new();
                         m.insert(
                             "column_name".to_string(),
                             YmlValue::string("id".to_string()),
@@ -341,7 +342,7 @@ mod tests {
                 test_metadata: Some(TestMetadata {
                     name: "not_null".to_string(),
                     kwargs: {
-                        let mut m = BTreeMap::new();
+                        let mut m = IndexMap::new();
                         m.insert(
                             "column_name".to_string(),
                             YmlValue::string("id".to_string()),

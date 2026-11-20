@@ -184,7 +184,11 @@ fn build_test_metadata_repr(asset: &GenericTestAsset) -> String {
 fn test_metadata_from_asset(asset: &GenericTestAsset) -> Option<TestMetadata> {
     if let Some(name) = &asset.test_metadata_name {
         let kwargs = if !asset.test_metadata_kwargs.is_empty() {
-            asset.test_metadata_kwargs.clone()
+            asset
+                .test_metadata_kwargs
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
         } else {
             // Fallback for assets constructed without test_metadata_kwargs (e.g. unit tests).
             let mut kwargs = BTreeMap::new();
@@ -205,7 +209,7 @@ fn test_metadata_from_asset(asset: &GenericTestAsset) -> Option<TestMetadata> {
             if let Some(model) = &asset.test_metadata_model {
                 kwargs.insert("model".to_string(), YmlValue::string(model.clone()));
             }
-            kwargs
+            kwargs.into_iter().collect()
         };
         return Some(TestMetadata {
             name: name.clone(),
