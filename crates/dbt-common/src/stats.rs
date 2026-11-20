@@ -146,6 +146,23 @@ impl Stat {
         }
     }
 
+    /// A node that errored before it produced a result.
+    pub fn errored(
+        unique_id: String,
+        start_time: SystemTime,
+        message: String,
+        thread_id: i32,
+    ) -> Self {
+        Self::new(
+            unique_id,
+            start_time,
+            None,
+            NodeStatus::Errored,
+            Some(message),
+            thread_id,
+        )
+    }
+
     /// Reports this result as an assertion: `pass` with no rows, `fail` with some.
     pub fn as_assertion(mut self) -> Self {
         self.assertion = true;
