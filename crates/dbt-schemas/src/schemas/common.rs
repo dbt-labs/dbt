@@ -364,6 +364,7 @@ where
 
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+#[serde(rename_all = "lowercase")]
 pub enum FreshnessStatus {
     Pass,
     Warn,
