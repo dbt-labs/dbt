@@ -1588,7 +1588,7 @@ impl TuiLayer {
             duration: max_duration,
             // Every member shares the one invocation-wide denominator.
             node_count_total: members.first().and_then(|(node, _)| node.node_count_total),
-            // A group attaches to one model, so its members share an adapter.
+            // Batches are split by adapter, so members share one.
             adapter: members
                 .first()
                 .and_then(|(node, _)| node.adapter.as_deref()),
