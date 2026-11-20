@@ -1,13 +1,14 @@
 # **what?**
 # Label a PR with a `community` label when a PR is opened by a user outside core/adapters
 # Label an issue with a `triage` label when an issue is opened by a user outside core/adapters
+# Label issues for selected feature areas
 
 # **why?**
 # To streamline triage and ensure that community contributions are recognized and prioritized
 
 # **when?**
 # When a PR is opened, not in draft or moved from draft to ready for review
-# When an issue is opened
+# When an issue is opened or edited
 
 name: Label community contributions
 
@@ -16,7 +17,7 @@ on:
   pull_request_target:
     types: [opened, ready_for_review]
   issues:
-    types: [opened]
+    types: [opened, edited]
 
 defaults:
   run:
@@ -65,3 +66,48 @@ jobs:
         label: 'triage'
     secrets:
         IT_TEAM_MEMBERSHIP: ${{ secrets.IT_TEAM_MEMBERSHIP }}
+
+  label_feature_area_issue:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label selected feature area issue
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || '';
+            const featureArea = body.match(
+              /### Which feature area is this issue related to\?\s+([^\n]+)/,
+            )?.[1]?.trim();
+
+            if (!featureArea || featureArea === 'None') {
+              core.info('No feature area was indicated; skipping.');
+              return;
+            }
+
+            const labelsByFeatureArea = {
+              SQLFluff: ['sqlfluff'],
+              State: ['state'],
+            };
+            const labels = labelsByFeatureArea[featureArea];
+
+            if (!labels) {
+              core.info(`No labels configured for feature area: ${featureArea}`);
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels,
+            });
+
+            if (featureArea === 'SQLFluff') {
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                assignees: ['wizardxz'],
+              });
+            }
