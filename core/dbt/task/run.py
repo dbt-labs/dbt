@@ -81,7 +81,7 @@ from dbt_common.events.base_types import EventLevel
 from dbt_common.events.contextvars import log_contextvars
 from dbt_common.events.functions import fire_event, get_invocation_id
 from dbt_common.events.types import Formatting
-from dbt_common.exceptions import DbtValidationError
+from dbt_common.exceptions import DbtValidationError, env_secrets, scrub_secrets
 from dbt_common.invocation import get_invocation_started_at
 
 
@@ -369,6 +369,8 @@ class ModelRunner(CompileRunner[ModelNode]):
             level = EventLevel.ERROR
         else:
             status = result.message
+            if result.status == NodeStatus.PartialSuccess and status:
+                status = status.partition("\n")[0]
             level = EventLevel.INFO
         fire_event(
             LogModelResult(
@@ -635,6 +637,7 @@ class MicrobatchBatchRunner(ModelRunner):
         model: ModelNode,
         batch: BatchType,
         elapsed_time: float = 0.0,
+        message: Optional[str] = None,
     ) -> RunResult:
         return RunResult(
             node=model,
@@ -642,7 +645,7 @@ class MicrobatchBatchRunner(ModelRunner):
             timing=[],
             thread_id=threading.current_thread().name,
             execution_time=elapsed_time,
-            message="ERROR",
+            message=message,
             adapter_response={},
             failures=1,
             batch_results=BatchResults(failed=[batch]),
@@ -687,15 +690,16 @@ class MicrobatchBatchRunner(ModelRunner):
             # reraise it for GraphRunnableTask.execute_nodes to handle
             raise
         except Exception as e:
+            message = str(e)
             fire_event(
                 GenericExceptionOnRun(
                     unique_id=self.node.unique_id,
-                    exc=f"Exception on worker thread. {str(e)}",
+                    exc=f"Exception on worker thread. {message}",
                     node_info=self.node.node_info,
                 )
             )
             batch_run_result = self._build_failed_run_batch_result(
-                model, batch, time.perf_counter() - start_time
+                model, batch, time.perf_counter() - start_time, message=message
             )
 
         batch_result = batch_run_result
@@ -802,17 +806,38 @@ class MicrobatchModelRunner(ModelRunner):
     def describe_node(self) -> str:
         return f"{self.node.language} microbatch model {self.get_node_representation()}"
 
-    def merge_batch_results(self, result: RunResult, batch_results: List[RunResult]):
-        """merge batch_results into result"""
+    def merge_batch_results(
+        self,
+        result: RunResult,
+        batch_results: List[RunResult],
+        *,
+        expected_batches: Optional[Iterable[BatchType]] = None,
+    ) -> None:
+        """Merge completed results and mark unfinished batches for retry."""
         if result.batch_results is None:
             result.batch_results = BatchResults()
 
+        batch_errors: Dict[BatchType, str] = {}
         for batch_result in batch_results:
             if batch_result.batch_results is not None:
                 result.batch_results += batch_result.batch_results
+                if batch_result.status == RunStatus.Error and batch_result.message:
+                    batch_errors.update(
+                        dict.fromkeys(batch_result.batch_results.failed, batch_result.message)
+                    )
             result.execution_time += batch_result.execution_time
 
         num_successes = len(result.batch_results.successful)
+        successful_batches = set(result.batch_results.successful)
+        if self.node.previous_batch_results is not None:
+            successful_batches.update(self.node.previous_batch_results.successful)
+
+        if expected_batches is not None:
+            finished = successful_batches.union(result.batch_results.failed)
+            result.batch_results.failed.extend(set(expected_batches) - finished)
+            # An interrupted retry includes historical successes in its summary.
+            num_successes = len(successful_batches)
+
         num_failures = len(result.batch_results.failed)
         if num_failures == 0:
             status = RunStatus.Success
@@ -824,38 +849,15 @@ class MicrobatchModelRunner(ModelRunner):
             status = RunStatus.PartialSuccess
             msg = f"PARTIAL SUCCESS ({num_successes}/{num_successes + num_failures})"
         result.status = status
-        result.message = msg
 
-        result.batch_results.successful = sorted(result.batch_results.successful)
+        details = []
+        for (start, _), message in sorted(batch_errors.items()):
+            label = MicrobatchBuilder.format_batch_start(start, self.node.config.batch_size)
+            details.append(f"Batch {label}: {scrub_secrets(message, env_secrets())}")
+        result.message = "\n".join([msg, *details])
+
+        result.batch_results.successful = sorted(successful_batches)
         result.batch_results.failed = sorted(result.batch_results.failed)
-
-        # # If retrying, propagate previously successful batches into final result, even thoguh they were not run in this invocation
-        if self.node.previous_batch_results is not None:
-            result.batch_results.successful += self.node.previous_batch_results.successful
-
-    def _update_result_with_unfinished_batches(
-        self, result: RunResult, batches: Dict[int, BatchType]
-    ) -> None:
-        """This method is really only to be used when the execution of a microbatch model is halted before all batches have had a chance to run"""
-        batches_finished: Set[BatchType] = set()
-
-        if result.batch_results:
-            # build list of finished batches
-            batches_finished = batches_finished.union(set(result.batch_results.successful))
-            batches_finished = batches_finished.union(set(result.batch_results.failed))
-        else:
-            # instantiate `batch_results` if it was `None`
-            result.batch_results = BatchResults()
-
-        # skipped batches are any batch that was expected but didn't finish
-        batches_expected = {batch for _, batch in batches.items()}
-        skipped_batches = batches_expected.difference(batches_finished)
-
-        result.batch_results.failed.extend(list(skipped_batches))
-
-        # We call this method, even though we are merging no new results, as it updates
-        # the result witht he appropriate status (Success/Partial/Failed)
-        self.merge_batch_results(result, [])
 
     def get_microbatch_builder(self, model: ModelNode) -> MicrobatchBuilder:
         # Intially set the start/end to values from args
@@ -954,8 +956,9 @@ class MicrobatchModelRunner(ModelRunner):
                 # instead we're going to say the didn't finish, regardless of if they finished
                 # or not. Thus, lets get a copy of the results as they exist right "now".
                 frozen_batch_results = deepcopy(batch_results)
-                self.merge_batch_results(result, frozen_batch_results)
-                self._update_result_with_unfinished_batches(result, batches)
+                self.merge_batch_results(
+                    result, frozen_batch_results, expected_batches=batches.values()
+                )
                 return result
 
             # breifly sleep so that this thread doesn't go brrrrr while waiting

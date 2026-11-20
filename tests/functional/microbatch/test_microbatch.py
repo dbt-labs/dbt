@@ -642,6 +642,9 @@ class TestMicrobatchIncrementalBatchFailure(BaseMicrobatchTest):
         run_results = get_artifact(project.project_root, "target", "run_results.json")
         microbatch_run_result = run_results["results"][1]
         assert microbatch_run_result["status"] == "partial success"
+        assert microbatch_run_result["message"].startswith("PARTIAL SUCCESS (2/3)\n")
+        assert "Batch 2020-01-02" in microbatch_run_result["message"]
+        assert 'syntax error at or near "invalid_sql"' in microbatch_run_result["message"]
         batch_results = microbatch_run_result["batch_results"]
         assert batch_results is not None
         assert len(batch_results["successful"]) == 2
@@ -773,6 +776,14 @@ class TestMicrobatchInitialBatchFailure(BaseMicrobatchTest):
 
         assert len(general_exc_catcher.caught_events) == 1
         assert len(batch_catcher.caught_events) == 2
+
+        run_results = get_artifact(project.project_root, "target", "run_results.json")
+        microbatch_run_result = run_results["results"][1]
+        assert microbatch_run_result["status"] == "error"
+        assert microbatch_run_result["message"].startswith("ERROR\nBatch 2020-01-01")
+        assert 'syntax error at or near "invalid_sql"' in microbatch_run_result["message"]
+        assert "SKIPPED" not in microbatch_run_result["message"]
+        assert len(microbatch_run_result["batch_results"]["failed"]) == 3
 
         # Because the first batch failed, and the rest of the batches were skipped, the table shouldn't
         # exist in the data warehosue
