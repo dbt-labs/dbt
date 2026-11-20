@@ -79,7 +79,7 @@ data warehouse backend.
 
 ### Changing driver code
 
-When you need to extend the funcionality of an ADBC diver, you can do so by
+When you need to extend the functionality of an ADBC driver, you can do so by
 cloning our fork of `apache/arrow-adbc` and modifying the Go code of the driver
 you want to work on.
 
