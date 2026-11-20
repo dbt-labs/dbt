@@ -82,6 +82,19 @@ impl RelationObject {
         }
     }
 
+    /// Returns a copy with the empty-relation filter disabled when it was active.
+    pub fn without_empty_filter(&self) -> Option<Self> {
+        let filter = self.run_filter.as_ref().filter(|filter| filter.empty)?;
+        Some(Self::new_with_filter(
+            self.relation.clone(),
+            RunFilter {
+                empty: false,
+                ..filter.clone()
+            },
+            self.event_time.clone(),
+        ))
+    }
+
     /// Wraps a relation derived from this one, keeping this relation's run filter.
     fn with_relation(&self, relation: Arc<dyn BaseRelation>) -> Self {
         Self {

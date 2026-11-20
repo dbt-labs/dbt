@@ -559,6 +559,20 @@ fn for_caller(
     Ok(respelled.map_or(relation, RelationObject::into_value))
 }
 
+/// Unit tests read fixture rows even when the enclosing build uses `--empty`.
+pub(crate) fn relation_for_node_type(
+    relation: MinijinjaValue,
+    node_type: NodeType,
+) -> MinijinjaValue {
+    if node_type != NodeType::UnitTest {
+        return relation;
+    }
+    let input = relation
+        .downcast_object_ref::<RelationObject>()
+        .and_then(RelationObject::without_empty_filter);
+    input.map_or(relation, RelationObject::into_value)
+}
+
 impl Object for RefFunction {
     fn call(
         self: &Arc<Self>,
@@ -586,7 +600,10 @@ impl Object for RefFunction {
                     (true, Some(deferred)) => deferred,
                     _ => relation,
                 };
-                let resolved_relation = for_caller(resolved_relation, self.caller_adapter)?;
+                let resolved_relation = relation_for_node_type(
+                    for_caller(resolved_relation, self.caller_adapter)?,
+                    self.validation_config.node_type,
+                );
 
                 for listener in listeners {
                     listener.on_ref_or_source_resolved(&unique_id);
@@ -831,6 +848,8 @@ impl Object for SourceFunction {
                 }
 
                 self.validate_dependency(&unique_id, &source_name, &table_name)?;
+
+                let relation = relation_for_node_type(relation, self.validation_config.node_type);
 
                 // Apply microbatch filtering if we have a microbatch context and
                 // the referenced source has event_time configured
