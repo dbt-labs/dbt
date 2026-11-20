@@ -2772,6 +2772,7 @@ struct FlagsBlock {
     manage_state: Option<bool>,
     maximum_seed_size_mib: Option<u64>,
     send_anonymous_usage_stats: Option<bool>,
+    indirect_selection: Option<String>,
 }
 
 fn manage_state_from_yaml(path: &Path) -> Option<bool> {
@@ -2814,6 +2815,14 @@ fn send_anonymous_usage_stats_from_yaml(path: &Path) -> Option<bool> {
         .and_then(|flags| flags.send_anonymous_usage_stats)
 }
 
+fn indirect_selection_from_yaml(path: &Path) -> Option<IndirectSelection> {
+    let content = stdfs::read_to_string(path).ok()?;
+    let file = dbt_yaml::from_str::<FlagsFile>(&content).ok()?;
+    file.flags
+        .and_then(|flags| flags.indirect_selection)
+        .and_then(|mode| mode.parse().ok())
+}
+
 const DEFAULT_MAXIMUM_SEED_SIZE_MIB: u64 = 1;
 
 fn user_settings_path() -> Option<PathBuf> {
@@ -2838,6 +2847,13 @@ impl CommonArgs {
         self.maximum_seed_size_mib
             .or_else(|| maximum_seed_size_mib_from_yaml(&project_dir.join(DBT_PROJECT_YML)))
             .unwrap_or(DEFAULT_MAXIMUM_SEED_SIZE_MIB)
+    }
+
+    /// Resolve indirect_selection with precedence:
+    /// `--indirect-selection` > DBT_INDIRECT_SELECTION env > project yaml flags
+    fn resolve_indirect_selection(&self, project_dir: &Path) -> Option<IndirectSelection> {
+        self.indirect_selection
+            .or_else(|| indirect_selection_from_yaml(&project_dir.join(DBT_PROJECT_YML)))
     }
 
     /// Precedence: CLI flag, then an explicit config opt-out, then env var, then
@@ -2937,10 +2953,11 @@ impl CommonArgs {
     }
 
     pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
+        let indirect_selection = self.resolve_indirect_selection(in_dir);
         let select_option = self.select.clone().map(|selectors| {
             let mut expr = parse_model_specifiers(&selectors).unwrap();
-            // Apply indirect selection from CLI if specified (matching dbt-core behavior)
-            if let Some(mode) = self.indirect_selection {
+            // Apply indirect selection if specified (CLI > env > project flags, matching dbt-core)
+            if let Some(mode) = indirect_selection {
                 expr.set_indirect_selection(mode);
             }
             expr
@@ -2948,8 +2965,8 @@ impl CommonArgs {
 
         let exclude_option = self.exclude.clone().map(|selectors| {
             let mut expr = parse_model_specifiers(&selectors).unwrap();
-            // Apply indirect selection from CLI if specified (matching dbt-core behavior)
-            if let Some(mode) = self.indirect_selection {
+            // Apply indirect selection if specified (CLI > env > project flags, matching dbt-core)
+            if let Some(mode) = indirect_selection {
                 expr.set_indirect_selection(mode);
             }
             expr
@@ -3016,6 +3033,7 @@ impl CommonArgs {
             no_parallel: self.no_parallel,
             select: select_option,
             exclude: exclude_option,
+            // CLI/env only: selectors.yml modes are overridden by this field, so the project default must stay out.
             indirect_selection: self.indirect_selection,
             replay,
             long_living: false,
@@ -4652,6 +4670,109 @@ mod tests {
             ..Default::default()
         };
         assert!(!args.get_send_anonymous_usage_stats());
+    }
+
+    #[test]
+    fn indirect_selection_from_yaml_reads_project_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dbt_project.yml");
+        std::fs::write(&path, "flags:\n  indirect_selection: cautious\n").unwrap();
+        assert_eq!(
+            indirect_selection_from_yaml(&path),
+            Some(IndirectSelection::Cautious)
+        );
+        std::fs::write(&path, "flags:\n  indirect_selection: Buildable\n").unwrap();
+        assert_eq!(
+            indirect_selection_from_yaml(&path),
+            Some(IndirectSelection::Buildable)
+        );
+    }
+
+    #[test]
+    fn indirect_selection_from_yaml_missing_or_invalid_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dbt_project.yml");
+        assert!(indirect_selection_from_yaml(&path).is_none());
+        std::fs::write(&path, "flags:\n  send_anonymous_usage_stats: false\n").unwrap();
+        assert!(indirect_selection_from_yaml(&path).is_none());
+        std::fs::write(&path, "flags:\n  indirect_selection: bogus\n").unwrap();
+        assert!(indirect_selection_from_yaml(&path).is_none());
+    }
+
+    #[test]
+    fn invalid_indirect_selection_does_not_break_other_project_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dbt_project.yml");
+        std::fs::write(
+            &path,
+            "flags:\n  indirect_selection: bogus\n  send_anonymous_usage_stats: false\n",
+        )
+        .unwrap();
+        assert_eq!(send_anonymous_usage_stats_from_yaml(&path), Some(false));
+    }
+
+    #[test]
+    fn resolve_indirect_selection_falls_back_to_project_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(DBT_PROJECT_YML),
+            "flags:\n  indirect_selection: cautious\n",
+        )
+        .unwrap();
+        let args = CommonArgs::default();
+        assert_eq!(
+            args.resolve_indirect_selection(dir.path()),
+            Some(IndirectSelection::Cautious)
+        );
+    }
+
+    #[test]
+    fn resolve_indirect_selection_cli_overrides_project_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(DBT_PROJECT_YML),
+            "flags:\n  indirect_selection: cautious\n",
+        )
+        .unwrap();
+        let args = CommonArgs {
+            indirect_selection: Some(IndirectSelection::Empty),
+            ..Default::default()
+        };
+        assert_eq!(
+            args.resolve_indirect_selection(dir.path()),
+            Some(IndirectSelection::Empty)
+        );
+    }
+
+    #[test]
+    fn resolve_indirect_selection_without_project_flag_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = CommonArgs::default();
+        assert!(args.resolve_indirect_selection(dir.path()).is_none());
+    }
+
+    #[test]
+    fn project_indirect_selection_applies_to_cli_select_only() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(DBT_PROJECT_YML),
+            "flags:\n  indirect_selection: cautious\n",
+        )
+        .unwrap();
+        let args = CommonArgs {
+            select: Some(vec!["model_a".to_string()]),
+            ..Default::default()
+        };
+        let eval_args =
+            args.to_eval_args(test_system_args(FsCommand::Build), dir.path(), dir.path());
+
+        // resolve_final_selectors applies Some(..) over selectors.yml modes; the project default must not reach it.
+        assert_eq!(eval_args.indirect_selection, None);
+        let Some(dbt_common::node_selector::SelectExpression::Atom(criteria)) = eval_args.select
+        else {
+            panic!("expected a single atom, got {:?}", eval_args.select);
+        };
+        assert_eq!(criteria.indirect, Some(IndirectSelection::Cautious));
     }
 
     fn parse_internal_args(args: &[&str]) -> Result<InternalArgs, clap::Error> {
