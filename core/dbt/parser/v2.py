@@ -147,8 +147,8 @@ def _finalize_v2_manifest(
     `validate_and_coerce_microbatch_configs`'s docstring (dbt-labs/dbt#16582).
     """
     rediscover_adapter_macros(manifest, runtime_config)
-    manifest.build_flat_graph()
     validate_and_coerce_microbatch_configs(manifest, project_name)
+    manifest.build_flat_graph()
 
 
 def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig") -> None:
