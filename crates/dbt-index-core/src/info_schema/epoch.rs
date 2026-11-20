@@ -373,8 +373,9 @@ impl EpochRelation {
     /// Includes the
     /// latest-wins wrapper when the relation supersedes by key.
     ///
-    /// Precedence is by epoch number parsed out of the file name, not by
-    /// `ingested_at`: the epoch number is what the ingest orders on
+    /// `LatestTimestamp` orders by ingestion time, then epoch and row number.
+    /// For the other modes, precedence is by epoch number parsed out of the file
+    /// name: the epoch number is what the ingest orders on
     /// (`write_parse_nodes` walks epochs newest-first), and two rows written in
     /// the same second would otherwise tie.
     pub fn create_view_sql(&self, metadata_dir: &Path) -> String {
@@ -615,7 +616,6 @@ pub fn origin(staging_table: &str) -> Option<Origin> {
         "semantic_dimensions" => semantic_sub!("dimensions"),
         // ── other epoch sources ──────────────────────────────────────────
         "node_columns" => Custom,
-        // Alive-pruned on the *target* node, as `write_compile_cll` does.
         "render_traces" => Relation {
             view: "epoch_render_traces",
             keep: None,
@@ -623,6 +623,7 @@ pub fn origin(staging_table: &str) -> Option<Origin> {
             join: None,
             unnest: None,
         },
+        // Alive-pruned on the *target* node, as `write_compile_cll` does.
         "column_lineage" => Relation {
             view: "epoch_compile_cll",
             keep: None,
