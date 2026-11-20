@@ -175,7 +175,7 @@ jobs:
       URL_TEMPLATE: ${{ inputs.url_template }}
       TAG: ${{ inputs.tag || format('v{0}', inputs.version) }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
 
       - name: Download SHA256SUMS from GitHub Release
         env:
@@ -190,7 +190,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry and dbt-ci build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # Swatinem/rust-cache@v2.9.3
         with:
           shared-key: cargo-ci-tool
           cache-targets: "true"
