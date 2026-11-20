@@ -81,17 +81,17 @@ jobs:
 
     steps:
       - name: "Checkout code"
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           ref: ${{ inputs.branch }}
 
       - name: "Setup Python"
-        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # actions/setup-python@v6
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v6
         with:
           python-version: "${{ inputs.python_version }}"
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        uses: pypa/hatch@f647ed70d49adb885f53a27d1c7f5bdaeacf2c60 # pypa/hatch@install
 
       - name: "Setup Dev Environment"
         run: |
@@ -107,7 +107,7 @@ jobs:
         # mac and windows don't use make due to limitations with docker with those runners in GitHub
       - name: Set up postgres (macos)
         if: runner.os == 'macOS'
-        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # nick-fields/retry@v3
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # nick-fields/retry@v4.0.0
         with:
           timeout_minutes: 10
           max_attempts: 3

@@ -23,12 +23,12 @@ runs:
         components: ${{ inputs.components }}
 
     - name: Cache cargo registry and target
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # Swatinem/rust-cache@v2.9.3
       with:
         key: ${{ inputs.cache-key }}
 
     - name: Setup sccache
-      uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # mozilla-actions/sccache-action@v0.0.9
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # mozilla-actions/sccache-action@v0.0.11
       with:
         version: "v0.12.0"
 
