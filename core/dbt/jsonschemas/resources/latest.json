@@ -40,6 +40,19 @@
         "$ref": "#/definitions/DataTestProperties"
       }
     },
+    "experimental": {
+      "description": "Entries for experimentals, by experimental type. Experimentals are features in testing, off unless their feature flag is on; each reads the entries under its own type.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/AnyValue"
+        }
+      }
+    },
     "exposures": {
       "type": [
         "array",
@@ -885,6 +898,7 @@
         "warn_unenforced": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
@@ -899,6 +913,7 @@
         "warn_unsupported": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
@@ -1381,6 +1396,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -1758,6 +1787,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -2109,6 +2144,12 @@
             }
           ]
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -2406,6 +2447,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -3142,6 +3197,12 @@
             "null"
           ]
         },
+        "database": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "export_as": {
           "anyOf": [
             {
@@ -3830,6 +3891,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -4168,6 +4243,12 @@
           ]
         },
         "max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_actions_explicit": {
           "type": [
             "string",
             "null"
@@ -4558,6 +4639,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -4835,6 +4922,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -6282,6 +6383,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -6781,6 +6896,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_exclude_columns": {
           "anyOf": [
             {
@@ -7256,6 +7377,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -7578,6 +7705,20 @@
             }
           ]
         },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "use_safer_relation_operations": {
           "anyOf": [
             {
@@ -7699,6 +7840,7 @@
         "warn_unenforced": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
@@ -7713,6 +7855,7 @@
         "warn_unsupported": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
@@ -8549,6 +8692,12 @@
             }
           ]
         },
+        "database": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "enabled": {
           "anyOf": [
             {
@@ -8714,6 +8863,21 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "all_varchar": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "as_columnstore": {
@@ -9017,6 +9181,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -9121,6 +9299,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "fast": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "fields": {
@@ -9386,6 +9578,12 @@
           ]
         },
         "max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_actions_explicit": {
           "type": [
             "string",
             "null"
@@ -9787,6 +9985,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -10043,6 +10247,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -10543,6 +10761,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -10938,6 +11170,12 @@
           ]
         },
         "max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_actions_explicit": {
           "type": [
             "string",
             "null"
@@ -11339,6 +11577,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -11487,6 +11731,12 @@
           ]
         },
         "table": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "table_format": {
           "type": [
             "string",
             "null"
@@ -11660,6 +11910,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -12117,6 +12381,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -12478,6 +12756,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -12814,6 +13098,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -13081,6 +13371,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -13864,6 +14168,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -14177,6 +14495,12 @@
           ]
         },
         "max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_actions_explicit": {
           "type": [
             "string",
             "null"
@@ -14507,6 +14831,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -14763,6 +15093,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {

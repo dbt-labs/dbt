@@ -39,13 +39,16 @@ _HIERARCHICAL_CONFIG_KEYS = {
 
 _ADAPTER_TO_EXTRA_KEYS = {
     "bigquery": ["dataset", "project"],
-    # databricks/dbt-databricks#1540, #1302
+    # databricks/dbt-databricks#1540, #1302, #1661
     "databricks": [
-        "query_tags",
+        # The synced project schema declares zorder and skip_optimize only for models,
+        # but snapshots use them too.
         "zorder",
-        "options",
-        "unique_tmp_table_suffix",
         "skip_optimize",
+        # The synced schemas don't declare these at all.
+        "options",
+        "access_control_list",
+        "notebook_access_control_list",
     ],
 }
 

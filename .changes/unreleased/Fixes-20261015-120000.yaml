@@ -1,0 +1,6 @@
+kind: Fixes
+body: Accept the dbt v2-only `info_schema`, `check-paths` and `checks` keys in dbt_project.yml, ignoring them with a note that they are specific to the dbt v2 engine
+time: 2026-10-15T12:00:00.000000-05:00
+custom:
+    Author: aahel
+    Issue: "16640"

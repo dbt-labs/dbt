@@ -1,0 +1,6 @@
+kind: Fixes
+body: Reword the snapshot timestamp data type mismatch warning to identify hard-delete timestamps as the affected columns and to recommend overriding the `snapshot_get_time` macro, instead of incorrectly suggesting a change to the snapshot's `updated_at` config
+time: 2026-09-14T15:03:02.310242-05:00
+custom:
+    Author: HannanNaeem
+    Issue: "fs-14450"

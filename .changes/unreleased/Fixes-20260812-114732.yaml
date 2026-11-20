@@ -1,0 +1,6 @@
+kind: Fixes
+body: Scope relation-cache population in `compile`/`show`/`docs generate` to the selected nodes' schemas so `--cache-selected-only` is honored (previously only `run` respected the flag)
+time: 2026-08-12T11:47:32.848547-04:00
+custom:
+    Author: dataders claude
+    Issue: "12944"
