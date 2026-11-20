@@ -284,6 +284,7 @@ def test_review_regression_artifact(case, tmp_project, invoke):
         "traced",
         "--feature",
         "write_render_trace",
+        "--generate-info-schema",
     )
     assert traced.success, traced.exception
     relative = "compiled/render_trace/models/probe"

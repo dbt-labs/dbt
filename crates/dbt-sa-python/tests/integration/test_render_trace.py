@@ -60,6 +60,7 @@ def test_render_trace_matches_compile_and_preserves_provenance(tmp_project, invo
         "traced",
         "--feature",
         "write_render_trace",
+        "--generate-info-schema",
     )
     assert traced.success, traced.exception
     relative = "compiled/render_trace/models/probe"
@@ -100,6 +101,7 @@ def test_render_trace_matches_compile_and_preserves_provenance(tmp_project, invo
         "traced",
         "--feature",
         "write_render_trace",
+        "--generate-info-schema",
     )
     assert repeated.success, repeated.exception
     refreshed = read_trace(project, invoke, f"traced/{TRACE_TABLE}", "model.render_trace.probe")
@@ -122,6 +124,7 @@ def test_selected_compiles_retain_unselected_traces(tmp_project, invoke, partial
     retained = project / "models/retained.sql"
     retained.write_text("select 1 as retained_value\n")
     flags = [
+        "--generate-info-schema",
         "--feature",
         "write_render_trace",
         "--write-metadata",
@@ -347,15 +350,17 @@ def test_trace_write_error_warns_without_failing_compile(tmp_project, invoke, ca
 
 
 @pytest.mark.parametrize("full_info_schema", [False, True])
-def test_public_trace_table_survives_info_schema_generation(tmp_project, invoke, full_info_schema):
+def test_public_trace_table_requires_info_schema_generation(tmp_project, invoke, full_info_schema):
     project = tmp_project("render_trace")
     args = ["compile", "--select", "probe", "--feature", "write_render_trace"]
     if full_info_schema:
         args.append("--generate-info-schema")
     result = invoke(project, *args)
     assert result.success, result.exception
-    public = read_trace(project, invoke, f"target/{TRACE_TABLE}", "model.render_trace.probe")
     private = read_trace(project, invoke, f"target/{TRACE_EPOCHS}", "model.render_trace.probe")
-    assert public == private
     if full_info_schema:
+        public = read_trace(project, invoke, f"target/{TRACE_TABLE}", "model.render_trace.probe")
+        assert public == private
         assert "dbt.render_traces" in (project / "target/info_schema/v1/views.sql").read_text()
+    else:
+        assert not (project / "target" / TRACE_TABLE).exists()

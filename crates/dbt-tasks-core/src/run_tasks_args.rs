@@ -130,8 +130,6 @@ pub struct RunTasksArgs {
     pub metadata_dir: PathBuf,
     /// Resolved index directory (`--index-dir` or `<out_dir>/index`). See `metadata_dir`.
     pub index_dir: PathBuf,
-    /// Resolved public information-schema directory, including any CLI override.
-    pub info_schema_dir: PathBuf,
     /// `show --query-id <id>`: fetch a previously completed LakeCompute query's
     /// result directly. See `EvalArgs::query_id`.
     pub query_id: Option<String>,
@@ -144,7 +142,6 @@ impl RunTasksArgs {
             io: arg.io.clone(),
             metadata_dir: arg.metadata_dir(),
             index_dir: arg.index_dir(),
-            info_schema_dir: arg.info_schema_dir(),
             query_id: arg.query_id.clone(),
             profile: arg.profile.clone(),
             profiles_dir: arg.profiles_dir.clone(),

@@ -174,21 +174,6 @@ pub fn write_info_schema_with(
     }
 }
 
-/// Publish the latest retained trace per model, independently of full info-schema generation.
-/// Private epochs remain the incremental store; this public snapshot is replaced atomically.
-pub fn refresh_render_traces(
-    metadata_dir: &Path,
-    info_schema_dir: &Path,
-) -> Result<(), IndexError> {
-    let spec = INFO_SCHEMA
-        .iter()
-        .find(|spec| spec.name == "render_traces")
-        .ok_or_else(|| IndexError::Other("info schema: no dbt.render_traces spec".into()))?;
-    let out = project::out_schema(spec)?;
-    let batches = project::project_table(spec, &render_trace_batches(metadata_dir)?, &out)?;
-    write_output(&versioned_dir(info_schema_dir), spec, &out, &batches)
-}
-
 fn render_trace_batches(metadata_dir: &Path) -> Result<Vec<RecordBatch>, IndexError> {
     let rows = dbt_metadata_parquet::render_traces::read_render_traces_latest(
         &metadata_dir.join("compile/render_traces"),

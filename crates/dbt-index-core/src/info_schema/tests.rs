@@ -1147,10 +1147,10 @@ fn bench_external_corpus_stage_attribution() {
     }
 }
 
-/// Standalone export and both full materializers must publish the same latest rows,
+/// Both full materializers must publish the same latest rows,
 /// including ordered nested events and the source filename (not an epoch filename).
 #[test]
-fn render_traces_public_snapshot_matches_full_materialization() {
+fn render_traces_materializers_agree_on_latest_rows() {
     use dbt_metadata_parquet::render_traces::{
         RenderTraceEventRow, RenderTraceRow, write_render_traces,
     };
@@ -1210,9 +1210,6 @@ fn render_traces_public_snapshot_matches_full_materialization() {
         rows.sort_by(|a, b| a.unique_id.cmp(&b.unique_id));
         rows
     };
-    super::refresh_render_traces(metadata.path(), output.path()).unwrap();
-    assert_eq!(read(), expected);
-    assert!(!output.path().join("v1/views.sql").exists());
     super::write_info_schema_with(
         super::Materializer::Arrow,
         metadata.path(),
@@ -1240,6 +1237,12 @@ fn render_traces_public_snapshot_matches_full_materialization() {
         None,
     )
     .unwrap();
-    super::refresh_render_traces(metadata.path(), output.path()).unwrap();
+    super::write_info_schema_with(
+        super::Materializer::Arrow,
+        metadata.path(),
+        output.path(),
+        staging.path(),
+    )
+    .unwrap();
     assert_eq!(read(), vec![trace("model.keep", 10)]);
 }

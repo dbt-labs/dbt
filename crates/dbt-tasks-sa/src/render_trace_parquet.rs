@@ -1,6 +1,6 @@
 //! Adapter from task render traces to the metadata Parquet schema.
 
-use dbt_common::{ErrorCode, FsError, FsResult};
+use dbt_common::FsResult;
 use dbt_metadata_parquet::parse_alive::read_alive_ids;
 use dbt_metadata_parquet::render_traces::{
     RenderTraceEventRow, RenderTraceRow, write_render_traces,
@@ -60,15 +60,5 @@ pub(crate) fn write_collected_render_traces(ctx: &TaskRunnerCtx) -> FsResult<()>
         &recomputed_ids,
         valid_ids.as_ref().map(|ids| ids.len()),
         valid_ids.as_ref(),
-    )?;
-    dbt_index_core::info_schema::refresh_render_traces(
-        &ctx.inner.arg.metadata_dir,
-        &ctx.inner.arg.info_schema_dir,
     )
-    .map_err(|err| {
-        Box::new(FsError::new(
-            ErrorCode::InfoSchemaWriteFailed,
-            err.to_string(),
-        ))
-    })
 }
