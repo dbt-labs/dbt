@@ -1004,6 +1004,18 @@ fn collect_parse_column_rows(
         }
         push_column_rows(uid, &src.__base_attr__.columns, ingested_at, &mut rows);
     }
+    for (uid, seed) in &nodes.seeds {
+        if changed_nodes.is_some_and(|s| !s.contains(uid.as_str())) {
+            continue;
+        }
+        push_column_rows(uid, &seed.__base_attr__.columns, ingested_at, &mut rows);
+    }
+    for (uid, snapshot) in &nodes.snapshots {
+        if changed_nodes.is_some_and(|s| !s.contains(uid.as_str())) {
+            continue;
+        }
+        push_column_rows(uid, &snapshot.__base_attr__.columns, ingested_at, &mut rows);
+    }
     rows
 }
 
@@ -1828,6 +1840,82 @@ mod tests {
             payload: payload.to_string(),
             ..Default::default()
         }
+    }
+
+    /// Columns declared in YAML reach `parse/columns` (and so `dbt.node_columns`)
+    /// for every node type that declares them, not only models and sources.
+    #[test]
+    fn parse_columns_cover_models_sources_seeds_and_snapshots() {
+        fn column(name: &str) -> Vec<Arc<dbt_schemas::schemas::dbt_column::DbtColumn>> {
+            vec![Arc::new(dbt_schemas::schemas::dbt_column::DbtColumn {
+                name: name.to_string(),
+                description: Some(format!("{name} description")),
+                ..Default::default()
+            })]
+        }
+
+        let mut nodes = Nodes::default();
+        let mut model = DbtModel::default();
+        model.__base_attr__.columns = column("model_col");
+        nodes
+            .models
+            .insert("model.pkg.m".to_string(), Arc::new(model));
+        let mut source = DbtSource::default();
+        source.__base_attr__.columns = column("source_col");
+        nodes
+            .sources
+            .insert("source.pkg.raw.s".to_string(), Arc::new(source));
+        let mut seed = DbtSeed::default();
+        seed.__base_attr__.columns = column("seed_col");
+        nodes
+            .seeds
+            .insert("seed.pkg.sd".to_string(), Arc::new(seed));
+        let mut snapshot = DbtSnapshot::default();
+        snapshot.__base_attr__.columns = column("snapshot_col");
+        nodes
+            .snapshots
+            .insert("snapshot.pkg.sn".to_string(), Arc::new(snapshot));
+
+        let mut rows: Vec<(String, String, Option<String>)> =
+            collect_parse_column_rows(&nodes, None, 1)
+                .into_iter()
+                .map(|r| (r.unique_id, r.column_name, r.description))
+                .collect();
+        rows.sort();
+
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "model.pkg.m".into(),
+                    "model_col".into(),
+                    Some("model_col description".into())
+                ),
+                (
+                    "seed.pkg.sd".into(),
+                    "seed_col".into(),
+                    Some("seed_col description".into())
+                ),
+                (
+                    "snapshot.pkg.sn".into(),
+                    "snapshot_col".into(),
+                    Some("snapshot_col description".into())
+                ),
+                (
+                    "source.pkg.raw.s".into(),
+                    "source_col".into(),
+                    Some("source_col description".into())
+                ),
+            ]
+        );
+
+        // A delta parse only re-emits the nodes that changed.
+        let changed: HashSet<String> = ["snapshot.pkg.sn".to_string()].into();
+        let delta: Vec<String> = collect_parse_column_rows(&nodes, Some(&changed), 1)
+            .into_iter()
+            .map(|r| r.unique_id)
+            .collect();
+        assert_eq!(delta, vec!["snapshot.pkg.sn".to_string()]);
     }
 
     #[test]
