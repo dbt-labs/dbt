@@ -1,0 +1,7 @@
+kind: Fixes
+body: Keep data tests from every declaration when a column is declared more than once in one properties list, matching dbt-core
+time: 2026-09-15T17:50:02.200497+01:00
+custom:
+    author: CallumFriend-MP
+    issue: "16313"
+    project: dbt-core
