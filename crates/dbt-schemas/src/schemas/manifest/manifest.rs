@@ -2,6 +2,7 @@ use crate::schemas::project::ResolvableConfig;
 use chrono::{DateTime, Utc};
 use dbt_adapter_core::AdapterType;
 use dbt_common::{Span, path::DbtPath};
+use dbt_proc_macros::DebugNoInline;
 use dbt_yaml::{Spanned, UntaggedEnumDeserialize};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -49,19 +50,20 @@ use crate::{
     state::{ManifestPathConfig, Operations, ResolverState},
 };
 
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Serialize, UntaggedEnumDeserialize)]
+/// Variants are boxed so each manifest node takes only its own kind's size,
+/// not the size of the largest kind.
+#[derive(DebugNoInline, Clone, Serialize, UntaggedEnumDeserialize)]
 #[serde(tag = "resource_type")]
 #[serde(rename_all = "snake_case")]
 pub enum DbtNode {
-    Model(ManifestModel),
-    Test(ManifestDataTest),
-    Snapshot(ManifestSnapshot),
-    Seed(ManifestSeed),
-    Operation(ManifestOperation),
-    Analysis(ManifestAnalysis),
-    Function(ManifestFunction),
-    Check(ManifestCheck),
+    Model(Box<ManifestModel>),
+    Test(Box<ManifestDataTest>),
+    Snapshot(Box<ManifestSnapshot>),
+    Seed(Box<ManifestSeed>),
+    Operation(Box<ManifestOperation>),
+    Analysis(Box<ManifestAnalysis>),
+    Function(Box<ManifestFunction>),
+    Check(Box<ManifestCheck>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -165,7 +167,7 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
             .iter()
             .map(|(id, node)| {
                 (id.clone(), {
-                    let mut model_node: ManifestModel = (**node).clone().into();
+                    let mut model_node: Box<ManifestModel> = Box::new((**node).clone().into());
 
                     if is_public_model_from_publication(resolver_state, &model_node) {
                         model_node.__common_attr__.path = DbtPath::new();
@@ -186,7 +188,7 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
                 })
             })
             .chain(resolver_state.nodes.tests.iter().map(|(id, node)| {
-                let mut test_node: ManifestDataTest = (**node).clone().into();
+                let mut test_node: Box<ManifestDataTest> = Box::new((**node).clone().into());
                 let path_config = path_config_for_package(
                     resolver_state,
                     &test_node.__common_attr__.package_name,
@@ -195,7 +197,7 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
                 (id.clone(), DbtNode::Test(test_node))
             }))
             .chain(resolver_state.nodes.snapshots.iter().map(|(id, node)| {
-                let mut snapshot_node: ManifestSnapshot = (**node).clone().into();
+                let mut snapshot_node: Box<ManifestSnapshot> = Box::new((**node).clone().into());
                 let path_config = path_config_for_package(
                     resolver_state,
                     &snapshot_node.__common_attr__.package_name,
@@ -209,7 +211,7 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
                 (id.clone(), DbtNode::Snapshot(snapshot_node))
             }))
             .chain(resolver_state.nodes.seeds.iter().map(|(id, node)| {
-                let mut seed_node: ManifestSeed = (**node).clone().into();
+                let mut seed_node: Box<ManifestSeed> = Box::new((**node).clone().into());
                 let path_config = path_config_for_package(
                     resolver_state,
                     &seed_node.__common_attr__.package_name,
@@ -223,7 +225,7 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
                 (id.clone(), DbtNode::Seed(seed_node))
             }))
             .chain(resolver_state.nodes.analyses.iter().map(|(id, node)| {
-                let mut analysis_node: ManifestAnalysis = (**node).clone().into();
+                let mut analysis_node: Box<ManifestAnalysis> = Box::new((**node).clone().into());
                 let path_config = path_config_for_package(
                     resolver_state,
                     &analysis_node.__common_attr__.package_name,
@@ -233,7 +235,7 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
                 (id.clone(), DbtNode::Analysis(analysis_node))
             }))
             .chain(resolver_state.nodes.checks.iter().map(|(id, node)| {
-                let mut check_node: ManifestCheck = (**node).clone().into();
+                let mut check_node: Box<ManifestCheck> = Box::new((**node).clone().into());
                 let path_config = path_config_for_package(
                     resolver_state,
                     &check_node.__common_attr__.package_name,
@@ -245,13 +247,13 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
             .chain(resolver_state.operations.on_run_start.iter().map(|node| {
                 (
                     node.__common_attr__.unique_id.clone(),
-                    DbtNode::Operation((*node).clone().into_inner().into()),
+                    DbtNode::Operation(Box::new((*node).clone().into_inner().into())),
                 )
             }))
             .chain(resolver_state.operations.on_run_end.iter().map(|node| {
                 (
                     node.__common_attr__.unique_id.clone(),
-                    DbtNode::Operation((*node).clone().into_inner().into()),
+                    DbtNode::Operation(Box::new((*node).clone().into_inner().into())),
                 )
             }))
             .collect(),
@@ -1204,7 +1206,7 @@ pub fn nodes_from_dbt_manifest(mut manifest: DbtManifest, dbt_quoting: DbtQuotin
             DbtNode::Model(model) => {
                 nodes.models.insert(
                     unique_id,
-                    Arc::new(manifest_model_to_dbt_model(model, &manifest, dbt_quoting)),
+                    Arc::new(manifest_model_to_dbt_model(*model, &manifest, dbt_quoting)),
                 );
             }
             DbtNode::Test(test) => {
@@ -1498,7 +1500,7 @@ pub fn nodes_from_dbt_manifest(mut manifest: DbtManifest, dbt_quoting: DbtQuotin
                 nodes.functions.insert(
                     unique_id,
                     Arc::new(manifest_function_to_dbt_function(
-                        function,
+                        *function,
                         dbt_quoting,
                         adapter_type,
                     )),
@@ -2483,9 +2485,12 @@ mod tests {
                     adapter_type: "snowflake".to_string(),
                     ..Default::default()
                 },
-                nodes: [("seed.root_project.orders".to_string(), DbtNode::Seed(seed))]
-                    .into_iter()
-                    .collect(),
+                nodes: [(
+                    "seed.root_project.orders".to_string(),
+                    DbtNode::Seed(Box::new(seed)),
+                )]
+                .into_iter()
+                .collect(),
                 ..Default::default()
             };
             let seed = nodes_from_dbt_manifest(seed_manifest, quoting)
