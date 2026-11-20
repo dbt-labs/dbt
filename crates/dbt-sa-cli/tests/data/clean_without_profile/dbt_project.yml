@@ -1,0 +1,10 @@
+name: 'clean_without_profile'
+
+config-version: 2
+version: '0.1'
+
+profile: 'clean_without_profile'
+
+# There is no profiles.yml, so `target` is empty and this renders as "build".
+clean-targets:
+  - "build{{ target.name }}"

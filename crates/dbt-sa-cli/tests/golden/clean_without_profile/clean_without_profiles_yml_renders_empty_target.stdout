@@ -1,0 +1,5 @@
+   dbt-oss 
+  Removing ../scratch/target
+  Removing build
+==================== Execution Summary =====================
+Finished 'clean' successfully [duration]
