@@ -43,7 +43,7 @@ dependencies = [
     "protobuf>=6.0,<8.0",
     "requests<3.0.0",  # should match dbt-common
     "snowplow-tracker>=1.0.2,<2.0",
-    "pathspec>=0.9,<1.1",
+    "pathspec>=0.9,<1.2",
     # ----
     # These packages are major-version-0. Keep upper bounds on upcoming minor versions (which could have breaking changes)
     # and check compatibility / bump in each new minor version of dbt-core.
