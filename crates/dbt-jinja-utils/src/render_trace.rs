@@ -44,6 +44,15 @@ impl std::ops::Deref for RenderTraceEvents {
     }
 }
 
+impl IntoIterator for RenderTraceEvents {
+    type Item = RenderTraceEvent;
+    type IntoIter = std::vec::IntoIter<RenderTraceEvent>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 impl<'a> IntoIterator for &'a RenderTraceEvents {
     type Item = &'a RenderTraceEvent;
     type IntoIter = std::slice::Iter<'a, RenderTraceEvent>;

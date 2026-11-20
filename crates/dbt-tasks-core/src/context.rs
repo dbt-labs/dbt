@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -166,7 +166,7 @@ pub struct RenderedNodeInfo {
 }
 
 /// One model's Jinja provenance, retained until the invocation writes its
-/// single nested Parquet artifact.
+/// nested Parquet epoch.
 #[derive(Debug)]
 pub struct ModelRenderTrace {
     pub protocol_version: u32,
@@ -193,6 +193,7 @@ pub struct TaskRunnerCtxInner {
     pub microbatch_execution_metrics: SccHashMap<String, ExecutionMetrics>,
     pub node_hashes: SccHashMap<String, String>,
     pub rendered_sql: SccHashMap<String, RenderedNodeInfo>,
+    pub render_trace_attempts: parking_lot::Mutex<HashSet<String>>,
     pub render_traces: parking_lot::Mutex<Vec<ModelRenderTrace>>,
     pub freshness_seconds: SccHashMap<String, i64>,
     pub updates_on: SccHashMap<String, UpdatesOn>,
@@ -290,6 +291,7 @@ impl TaskRunnerCtxInner {
             microbatch_execution_metrics: SccHashMap::default(),
             node_hashes,
             rendered_sql: SccHashMap::default(),
+            render_trace_attempts: parking_lot::Mutex::new(HashSet::new()),
             render_traces: parking_lot::Mutex::new(Vec::new()),
             freshness_seconds: SccHashMap::default(),
             updates_on: SccHashMap::default(),

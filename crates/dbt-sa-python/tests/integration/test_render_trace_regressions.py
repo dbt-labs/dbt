@@ -273,7 +273,7 @@ def test_review_regression_artifact(case, tmp_project, invoke):
     model.write_text(source, encoding="utf-8", newline="")
     normal = invoke(project, "compile", "--select", "probe", "--target-path", "normal")
     assert normal.success, normal.exception
-    assert not (project / "normal/render_traces.parquet").exists()
+    assert not list(project.glob("normal/private/metadata/compile/render_traces/*.parquet"))
     traced = invoke(
         project,
         "compile",
@@ -289,13 +289,16 @@ def test_review_regression_artifact(case, tmp_project, invoke):
     assert (project / "normal" / f"{relative}.sql").read_bytes() == (
         project / "traced" / f"{relative}.sql"
     ).read_bytes()
+    epoch = sorted(project.glob("traced/private/metadata/compile/render_traces/v1_*.parquet"))[
+        -1
+    ].relative_to(project)
     preview = invoke(
         project,
         "show",
         "--inline",
         (
             "select to_json(t) as trace_json "
-            "from read_parquet('traced/render_traces.parquet') t "
+            f"from read_parquet('{epoch}') t "
             "where unique_id = 'model.render_trace.probe'"
         ),
         "--limit",

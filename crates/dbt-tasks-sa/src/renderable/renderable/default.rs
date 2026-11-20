@@ -199,6 +199,10 @@ fn render_model_sql(
     input: &ModelRenderInput<'_>,
 ) -> FsResult<String> {
     if dbt_flags::WRITE_RENDER_TRACE.enabled() {
+        ctx.inner
+            .render_trace_attempts
+            .lock()
+            .insert(node.unique_id());
         let trace = render_sql_with_trace(
             input.source,
             &ctx.env,
