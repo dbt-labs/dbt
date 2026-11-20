@@ -151,8 +151,7 @@ pub fn redirect_buffer_to_stdin(buffer_content: &str) -> TestResult<File> {
     use std::io::{Seek, Write};
     use std::os::windows::io::AsRawHandle;
 
-    use winapi::um::processenv::SetStdHandle;
-    use winapi::um::winbase::STD_INPUT_HANDLE;
+    use windows_sys::Win32::System::Console::{STD_INPUT_HANDLE, SetStdHandle};
 
     // Create a temporary file and write the buffer content to it
     let mut temp_file = tempfile::tempfile()?;
@@ -613,7 +612,7 @@ impl Drop for FdRedirectionGuard {
         }
         #[cfg(target_os = "windows")]
         unsafe {
-            use winapi::um::processenv::SetStdHandle;
+            use windows_sys::Win32::System::Console::SetStdHandle;
 
             // Restore the original stdout
             SetStdHandle(self.target_fd as _, self.original_fd as _);
@@ -626,10 +625,10 @@ impl Drop for FdRedirectionGuard {
 /// stdout on drop.
 fn with_redirected_stdout(file: File) -> FdRedirectionGuard {
     use std::os::windows::io::AsRawHandle as _;
-    use winapi::um::processenv::SetStdHandle;
-    use winapi::um::winbase::STD_OUTPUT_HANDLE;
+    use windows_sys::Win32::System::Console::{STD_OUTPUT_HANDLE, SetStdHandle};
 
-    let original_fd = unsafe { winapi::um::processenv::GetStdHandle(STD_OUTPUT_HANDLE) as usize };
+    let original_fd =
+        unsafe { windows_sys::Win32::System::Console::GetStdHandle(STD_OUTPUT_HANDLE) as usize };
 
     let raw_handle = file.as_raw_handle();
 
@@ -650,10 +649,10 @@ fn with_redirected_stdout(file: File) -> FdRedirectionGuard {
 /// stderr on drop.
 fn with_redirected_stderr(file: File) -> FdRedirectionGuard {
     use std::os::windows::io::AsRawHandle as _;
-    use winapi::um::processenv::SetStdHandle;
-    use winapi::um::winbase::STD_ERROR_HANDLE;
+    use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
 
-    let original_fd = unsafe { winapi::um::processenv::GetStdHandle(STD_ERROR_HANDLE) as usize };
+    let original_fd =
+        unsafe { windows_sys::Win32::System::Console::GetStdHandle(STD_ERROR_HANDLE) as usize };
 
     let raw_handle = file.as_raw_handle();
 

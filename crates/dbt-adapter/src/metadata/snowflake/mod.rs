@@ -15,7 +15,9 @@ use crate::time_machine::{
 use crate::{AdapterEngine, AdapterResult, AdapterType};
 use dbt_adapter_engine::cow::uppercase;
 use dbt_adapter_engine::record_batch::RecordBatchExt;
-use dbt_adapter_sql::ident::{Ident, escape_string_literal, quote_identifier};
+use dbt_adapter_sql::ident::snowflake::Ident;
+use dbt_adapter_sql::join_dotted;
+use dbt_adapter_sql::literal::escape_string_literal;
 
 use arrow_array::{
     Array, BooleanArray, Decimal128Array, RecordBatch, StringArray, TimestampMillisecondArray,
@@ -178,24 +180,22 @@ fn snowflake_string_literal(value: &str) -> String {
 /// Render a Snowflake identifier without changing the case-folding behavior of
 /// ordinary unquoted names. Names that cannot be a single unquoted identifier
 /// are quoted and any embedded quotes are doubled.
-fn snowflake_metadata_identifier(value: &str) -> String {
+fn snowflake_metadata_identifier(value: &str) -> Ident {
     let mut chars = value.chars();
     let is_safe_unquoted = chars
         .next()
         .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
         && chars.all(|c| c == '_' || c == '$' || c.is_ascii_alphanumeric());
     if is_safe_unquoted {
-        Ident::new(value, AdapterType::Snowflake)
-            .display(AdapterType::Snowflake)
-            .to_string()
+        Ident::new(value)
     } else {
-        quote_identifier(value, AdapterType::Snowflake)
+        Ident::from_unquoted(value)
     }
 }
 
-pub(crate) fn snowflake_relation_identifier(value: &str, quote: bool) -> String {
+pub(crate) fn snowflake_relation_identifier(value: &str, quote: bool) -> Ident {
     if quote {
-        quote_identifier(value, AdapterType::Snowflake)
+        Ident::from_unquoted(value)
     } else {
         snowflake_metadata_identifier(value)
     }
@@ -213,12 +213,12 @@ fn snowflake_show_objects_sql(
         db_schema.resolved_catalog.is_empty(),
         db_schema.resolved_schema.is_empty(),
     ) {
-        (true, _) => quote_identifier(&db_schema.resolved_schema, AdapterType::Snowflake),
-        (_, true) => quote_identifier(&db_schema.resolved_catalog, AdapterType::Snowflake),
+        (true, _) => Ident::from_unquoted(db_schema.resolved_schema.as_str()).to_string(),
+        (_, true) => Ident::from_unquoted(db_schema.resolved_catalog.as_str()).to_string(),
         (false, false) => format!(
             "{}.{}",
-            quote_identifier(&db_schema.resolved_catalog, AdapterType::Snowflake),
-            quote_identifier(&db_schema.resolved_schema, AdapterType::Snowflake)
+            Ident::from_unquoted(db_schema.resolved_catalog.as_str()),
+            Ident::from_unquoted(db_schema.resolved_schema.as_str())
         ),
     };
     format!("SHOW OBJECTS IN SCHEMA {scope} LIMIT {limit}{from_clause}")
@@ -241,11 +241,7 @@ fn snowflake_relation_sql_name(relation: &dyn BaseRelation) -> String {
             && let Some(value) = value
             && !value.is_empty()
         {
-            parts.push(if quote {
-                quote_identifier(value, AdapterType::Snowflake)
-            } else {
-                snowflake_metadata_identifier(value)
-            });
+            parts.push(snowflake_relation_identifier(value, quote));
         }
     };
     push(relation.database(), include.database, quoting.database);
@@ -255,7 +251,7 @@ fn snowflake_relation_sql_name(relation: &dyn BaseRelation) -> String {
         include.identifier,
         quoting.identifier,
     );
-    parts.join(".")
+    join_dotted(&parts)
 }
 
 fn snowflake_relation_patterns_sql(database: &str, patterns: &[&RelationPattern]) -> String {
@@ -295,7 +291,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
 fn snowflake_schema_count_sql(database: &str, limit: usize) -> String {
     format!(
         "SHOW TERSE SCHEMAS IN DATABASE {} LIMIT {limit}",
-        quote_identifier(database, AdapterType::Snowflake)
+        Ident::from_unquoted(database)
     )
 }
 
@@ -359,7 +355,7 @@ fn schema_probe_decision(num_schemas: usize, observed: Option<usize>) -> bool {
 
 fn snowflake_freshness_sql(database: &str, where_clauses: &[String]) -> AdapterResult<String> {
     let database = require_snowflake_metadata_component("database", database)?;
-    let database = quote_identifier(database, AdapterType::Snowflake);
+    let database = Ident::from_unquoted(database);
     Ok(format!(
         "SELECT
                 table_schema,
@@ -584,7 +580,10 @@ fn build_relations_from_show_objects(
             // all supported dbt operations (SELECT *, DROP TABLE, etc.).
             Some(RelationType::Table)
         } else {
-            Some(RelationType::from(table_kind))
+            Some(
+                RelationType::from_adapter_type(AdapterType::Snowflake, table_kind)
+                    .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?,
+            )
         };
 
         let table_format = if try_canonicalize_bool_column_field(is_iceberg)? {
@@ -3093,15 +3092,15 @@ mod tests {
     #[test]
     fn snowflake_relation_identifier_safely_honors_quote_policy() {
         assert_eq!(
-            snowflake_relation_identifier(r#"db"; SELECT 1; --"#, false),
+            snowflake_relation_identifier(r#"db"; SELECT 1; --"#, false).to_string(),
             r#""db""; SELECT 1; --""#
         );
         assert_eq!(
-            snowflake_relation_identifier("analytics", false),
+            snowflake_relation_identifier("analytics", false).to_string(),
             "analytics"
         );
         assert_eq!(
-            snowflake_relation_identifier("analytics", true),
+            snowflake_relation_identifier("analytics", true).to_string(),
             r#""analytics""#
         );
     }

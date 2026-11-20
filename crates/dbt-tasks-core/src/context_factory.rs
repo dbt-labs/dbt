@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use dbt_adapter::Adapter;
 use dbt_adapter::relation::create_relation_from_node;
-use dbt_adapter::{Adapter, AdapterStore};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
 use dbt_common::collections::SccHashMap;
@@ -13,6 +13,7 @@ use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::RenderingEventListenerFactory;
+use dbt_jinja_utils::phases::NodeAdapterGlobals;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::state::{DbtProfile, ResolverState};
@@ -59,7 +60,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         freshness_results: Option<Box<dyn PreTaskRunData>>,
         static_analysis_buckets: Arc<dyn StaticAnalysisBuckets>,
         adapter: Arc<Adapter>,
-        adapter_store: Arc<AdapterStore>,
+        adapter_globals: NodeAdapterGlobals,
         run_cache_lifecycle: Arc<RunCacheLifecycle>,
         shared_event_order: Option<SharedEventOrder>,
     ) -> Pin<Box<dyn Future<Output = Result<TaskRunnerCtx, Box<FsError>>> + Send>> {
@@ -174,7 +175,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                     generic_test_relationships,
                     span_manager,
                     execute,
-                    adapter_store,
+                    adapter_globals,
                     sources_extractor,
                     run_cache_ctx,
                 )),

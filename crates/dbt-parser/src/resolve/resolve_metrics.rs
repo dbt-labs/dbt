@@ -2,11 +2,13 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{
     extract_resource_config_from_raw_project, get_node_fqn, get_original_file_path, get_unique_id,
 };
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
 use dbt_common::path::DbtPath;
@@ -25,7 +27,7 @@ use minijinja::value::Value as MinijinjaValue;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::validate_metrics::validate_metric;
 
 use dbt_schemas::schemas::manifest::metric::{
@@ -39,6 +41,40 @@ type ResolveMetricsResult = FsResult<(
     HashMap<String, Arc<DbtMetric>>,
 )>;
 
+/// How a package's metrics resolve.
+pub(crate) struct Metrics;
+
+#[async_trait]
+impl ResolvableNode for Metrics {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["metrics"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // A package on the legacy semantic layer YAML resolves none.
+        if ctx.semantic_layer_spec_is_legacy {
+            return Ok(());
+        }
+        let (metrics, disabled_metrics) = resolve_metrics(
+            ctx.adapter_type,
+            ctx.arg,
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &ctx.model_properties,
+            &ctx.properties.take_entries("metrics"),
+            &ctx.typed_models_properties,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+        )
+        .await?;
+        ctx.nodes.metrics.extend(metrics);
+        ctx.disabled_nodes.metrics.extend(disabled_metrics);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_metrics(
     adapter_type: AdapterType,
@@ -46,8 +82,8 @@ pub async fn resolve_metrics(
     package: &DbtPackage,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    minimal_model_properties: &BTreeMap<String, MinimalPropertiesEntry>,
-    minimal_metric_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    minimal_model_properties: &BTreeMap<String, PropertiesEntry>,
+    minimal_metric_properties: &BTreeMap<String, PropertiesEntry>,
     typed_models_properties: &BTreeMap<String, ModelProperties>,
     package_name: &str,
     env: &JinjaEnv,
@@ -119,7 +155,7 @@ pub fn resolve_nested_model_metrics(
     arg: &ResolveArgs,
     package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    minimal_model_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    minimal_model_properties: &BTreeMap<String, PropertiesEntry>,
     typed_models_properties: &BTreeMap<String, ModelProperties>,
     package_name: &str,
     env: &JinjaEnv,
@@ -356,7 +392,7 @@ pub fn resolve_top_level_metrics(
     arg: &ResolveArgs,
     package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    minimal_metric_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    minimal_metric_properties: &BTreeMap<String, PropertiesEntry>,
     package_name: &str,
     env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,

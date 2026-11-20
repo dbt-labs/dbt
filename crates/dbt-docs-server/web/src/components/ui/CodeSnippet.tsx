@@ -1,20 +1,16 @@
 import { useEffect, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
+import type { HighlighterCore, LanguageInput } from 'shiki/core';
 
 import { cn } from '../../lib/utils';
 
-export type CodeSnippetLanguage =
-  'bash' | 'sql' | 'json' | 'python' | 'yaml' | 'graphql' | 'markdown';
+export type CodeSnippetLanguage = 'sql' | 'python';
 
-const LANGS: CodeSnippetLanguage[] = [
-  'bash',
-  'sql',
-  'json',
-  'python',
-  'yaml',
-  'graphql',
-  'markdown',
-];
+/** `import('shiki')` would bundle every grammar and theme into the binary. */
+const LANGS: Record<CodeSnippetLanguage, LanguageInput> = {
+  sql: () => import('shiki/langs/sql.mjs'),
+  python: () => import('shiki/langs/python.mjs'),
+};
 
 const THEME_NAME = 'dbt-docs';
 
@@ -41,14 +37,19 @@ const SYNTAX_STYLE = {
   '--shiki-token-operator': 'var(--fgSyntaxOperators)',
 } as React.CSSProperties;
 
-type Highlighter = Awaited<ReturnType<typeof import('shiki').createHighlighter>>;
-
-let highlighterPromise: Promise<Highlighter> | null = null;
+let highlighterPromise: Promise<HighlighterCore> | null = null;
 
 function getHighlighter() {
   if (!highlighterPromise) {
-    highlighterPromise = import('shiki').then(
-      ({ createHighlighter, createCssVariablesTheme }) => {
+    // Avoids the Oniguruma WASM chunk.
+    highlighterPromise = Promise.all([
+      import('shiki/core'),
+      import('shiki/engine/javascript'),
+    ]).then(
+      ([
+        { createHighlighterCore, createCssVariablesTheme },
+        { createJavaScriptRegexEngine },
+      ]) => {
         const theme = createCssVariablesTheme({ name: THEME_NAME });
         (theme.tokenColors ??= []).push(
           {
@@ -64,7 +65,11 @@ function getHighlighter() {
             settings: { foreground: 'var(--shiki-token-operator)' },
           },
         );
-        return createHighlighter({ themes: [theme], langs: LANGS });
+        return createHighlighterCore({
+          themes: [theme],
+          langs: Object.values(LANGS),
+          engine: createJavaScriptRegexEngine({ forgiving: true }),
+        });
       },
     );
   }

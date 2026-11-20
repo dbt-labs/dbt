@@ -3121,6 +3121,7 @@ impl CommonArgs {
             optimize_tests: Default::default(),
             local_execution_backend: self.compute.into(),
             skip_checkpoints: false,
+            command_options: BTreeMap::new(),
             skip_private_deps: self.skip_private_deps,
             no_deps: self.no_deps,
             event_time_end: self.event_time_end.clone(),

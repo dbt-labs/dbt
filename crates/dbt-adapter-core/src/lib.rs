@@ -21,6 +21,7 @@ pub const STATIC_ANALYSIS_SUPPORTED_ADAPTERS: &[AdapterType] = &[
     AdapterType::Databricks,
     AdapterType::Spark,
     AdapterType::DuckDB,
+    AdapterType::MotherDuck,
 ];
 
 /// Adapters that support concurrent execution of microbatch models.
@@ -92,6 +93,8 @@ pub enum AdapterType {
     /// `lake_compute`, its names before its two renames, are not accepted on
     /// input; see `test_retired_names_are_not_accepted_on_input`.
     LakeCompute,
+    /// MotherDuck
+    MotherDuck,
 }
 
 impl AdapterType {
@@ -131,7 +134,7 @@ pub fn quote_char(adapter_type: AdapterType) -> char {
         Redshift => '"',
         Postgres | Salesforce => '"',
         Fabric => '"',
-        DuckDB | LakeCompute => '"',
+        DuckDB | LakeCompute | MotherDuck => '"',
         Athena | Trino | Starburst => '"',
         Datafusion => '"',
         // https://clickhouse.com/docs/sql-reference/syntax#identifiers
@@ -193,6 +196,7 @@ mod tests {
             ("tRino", AdapterType::Trino),
             ("dAtafusion", AdapterType::Datafusion),
             ("lAkecompute", AdapterType::LakeCompute),
+            ("mOtherduck", AdapterType::MotherDuck),
         ];
         for (input, expected) in cases {
             let res = input.parse::<AdapterType>();
@@ -286,6 +290,7 @@ mod tests {
                 (AdapterType::Dremio, "dremio"),
                 (AdapterType::Oracle, "oracle"),
                 (AdapterType::LakeCompute, "lakecompute"),
+                (AdapterType::MotherDuck, "motherduck"),
             ]
         );
     }
@@ -313,6 +318,7 @@ mod tests {
             AdapterType::Starburst,
             AdapterType::Datafusion,
             AdapterType::Exasol,
+            AdapterType::MotherDuck,
         ] {
             assert_eq!(quote_char(adapter_type), '"', "{adapter_type:?}");
         }

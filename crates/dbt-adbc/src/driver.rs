@@ -84,6 +84,10 @@ pub enum Backend {
     ClickHouse,
     /// Exasol driver implementation (ADBC).
     Exasol,
+    /// Trino driver implementation (ADBC).
+    Trino,
+    /// MotherDuck driver implementation (ADBC).
+    MotherDuck,
     /// Generic ADBC driver implementation.
     ///
     /// This variant is fully dynamic and experimental. Features might not work reliably and fail
@@ -116,6 +120,8 @@ impl fmt::Display for Backend {
             Backend::Athena => write!(f, "Athena"),
             Backend::ClickHouse => write!(f, "ClickHouse"),
             Backend::Exasol => write!(f, "Exasol"),
+            Backend::Trino => write!(f, "Trino"),
+            Backend::MotherDuck => write!(f, "MotherDuck"),
             Backend::Generic { library_name, .. } => write!(f, "Generic({library_name})"),
         }
     }
@@ -137,6 +143,8 @@ impl Backend {
             Backend::Athena => Some("adbc_driver_athena"),
             Backend::ClickHouse => Some("adbc_clickhouse"),
             Backend::Exasol => Some("adbc_driver_exasol"),
+            Backend::Trino => Some("adbc_driver_trino"),
+            Backend::MotherDuck => Some("adbc_driver_motherduck"),
             Backend::Generic { library_name, .. } => Some(library_name),
         }
     }
@@ -146,6 +154,7 @@ impl Backend {
             Backend::Snowflake => Some(b"SnowflakeDriverInit"),
             Backend::DuckDB | Backend::DuckDBExtended => Some(b"duckdb_adbc_init"),
             Backend::LakeCompute => Some(b"AdbcDriverDbtInit"),
+            Backend::Trino => Some(b"AdbcDriverTrinoInit"),
             Backend::Generic {
                 library_name: _,
                 entrypoint,
@@ -441,7 +450,7 @@ impl AdbcDriver {
             (
                 load_strategy @ (CdnCache | SystemThenCdnCache),
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
-                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
+                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse | MotherDuck,
             ) => {
                 #[cfg(debug_assertions)]
                 {
@@ -468,7 +477,7 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol) => System(None),
+            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol | Trino) => System(None),
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
             (CdnCache | SystemThenCdnCache | Bridge, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))
@@ -481,7 +490,7 @@ impl AdbcDriver {
             (
                 load_strategy @ Bridge,
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
-                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
+                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse | MotherDuck,
             ) => load_strategy,
         };
 
@@ -693,6 +702,11 @@ mod tests {
             Backend::ClickHouse.adbc_library_name(),
             Some("adbc_clickhouse")
         );
+        assert_eq!(
+            Backend::MotherDuck.adbc_library_name(),
+            Some("adbc_driver_motherduck")
+        );
+        assert_eq!(Backend::MotherDuck.to_string(), "MotherDuck");
         assert_eq!(generic.adbc_library_name(), Some("adbc_driver_sqlite"));
     }
 
@@ -716,6 +730,7 @@ mod tests {
             Some(&b"duckdb_adbc_init"[..])
         );
         assert_eq!(Backend::Postgres.adbc_driver_entrypoint(), None);
+        assert_eq!(Backend::MotherDuck.adbc_driver_entrypoint(), None);
         assert_eq!(
             generic.adbc_driver_entrypoint(),
             Some(&b"SqliteDriverInit"[..])

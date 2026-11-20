@@ -451,12 +451,7 @@ impl CatalogRelation {
     /// Helper for building a catalog relation, default or iceberg, for model-configured only
     /// iceberg materializations in Snowflake.
     fn build_without_catalogs_yml(model: &Value) -> AdapterResult<CatalogRelation> {
-        if Self::get_model_adapter_properties(model, AdapterType::Snowflake).is_some() {
-            return Err(AdapterError::new(
-                AdapterErrorKind::Configuration,
-                "'adapter_properties' may only be specified to override catalogs.yml and cannot be used in a legacy model config",
-            ));
-        }
+        Self::reject_legacy_model_adapter_properties(model, AdapterType::Snowflake)?;
 
         // Core does not functionally permit a manually specified catalog_type in a model config.
         // Prompt the user to adopt catalogs.yml. [DELIBERATE CHANGE]: Core only ignores this silently.
@@ -719,7 +714,7 @@ impl CatalogRelation {
             AdapterType::Spark => DATABRICKS_ATTR,
             AdapterType::Snowflake => SNOWFLAKE_ATTR,
             // Lake compute model configs surface the same way DuckDB's do.
-            AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => DUCKDB_ATTR,
             _ => return None,
         };
         let model_config = if let Ok(adapter_attr) = model.get_attr(adapter_attr)
@@ -760,7 +755,7 @@ impl CatalogRelation {
             AdapterType::Databricks => DATABRICKS_ATTR,
             AdapterType::Snowflake => SNOWFLAKE_ATTR,
             // Lake compute model configs surface the same way DuckDB's do.
-            AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => DUCKDB_ATTR,
             _ => return None,
         };
         let model_config = if let Ok(adapter_attr) = model.get_attr(adapter_attr)
@@ -797,6 +792,19 @@ impl CatalogRelation {
         } else {
             None
         }
+    }
+
+    fn reject_legacy_model_adapter_properties(
+        model: &Value,
+        adapter_type: AdapterType,
+    ) -> AdapterResult<()> {
+        if Self::get_model_adapter_properties(model, adapter_type).is_some() {
+            return Err(AdapterError::new(
+                AdapterErrorKind::Configuration,
+                "'adapter_properties' may only be specified to override catalogs.yml and cannot be used in a legacy model config",
+            ));
+        }
+        Ok(())
     }
 
     fn get_yaml_adapter_properties(
@@ -1165,17 +1173,12 @@ fn from_model_config_and_catalogs_default(
                 None if !wants_iceberg => {
                     return Ok(CatalogRelation::default_catalog_relation_bigquery());
                 }
-                None => {
-                    return Err(AdapterError::new(
-                        AdapterErrorKind::Configuration,
-                        "On Bigquery, table_format=iceberg requires catalogs.yml and a `catalog_name` that selects a v2 catalog.",
-                    ));
-                }
+                None => return CatalogRelation::build_bigquery_without_catalogs_yml(model),
                 Some(catalog_name) => catalog_name,
             }
         }
         // Lake compute behaves as DuckDB-backed for relation-building purposes.
-        AdapterType::DuckDB | AdapterType::LakeCompute => {
+        AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => {
             match model_catalog_name(model, adapter_type) {
                 None => return Ok(CatalogRelation::default_catalog_relation_duckdb()),
                 Some(catalog_name) => catalog_name,
@@ -1846,6 +1849,89 @@ impl CatalogRelation {
         })
     }
 
+    fn build_bigquery_without_catalogs_yml(model: &Value) -> AdapterResult<CatalogRelation> {
+        Self::reject_legacy_model_adapter_properties(model, AdapterType::Bigquery)?;
+
+        let external_volume =
+            Self::get_model_config_value(model, FIELD_EXTERNAL_VOLUME, AdapterType::Bigquery);
+        if let Some(root) = external_volume.as_deref() {
+            if root.trim().is_empty() {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    "Bigquery Iceberg model external_volume cannot be blank",
+                ));
+            }
+            if !root.starts_with("gs://") {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    "Bigquery Iceberg model external_volume must start with gs://",
+                ));
+            }
+        }
+
+        if let Some(value) =
+            Self::get_model_config_value(model, FIELD_FILE_FORMAT, AdapterType::Bigquery)
+            && !value.eq_ignore_ascii_case(PARQUET_TABLE_FORMAT)
+        {
+            return Err(AdapterError::new(
+                AdapterErrorKind::Configuration,
+                "Bigquery Iceberg model file_format must be parquet",
+            ));
+        }
+
+        let base_location_root =
+            Self::get_model_config_value(model, FIELD_BASE_LOCATION_ROOT, AdapterType::Bigquery);
+        if let Some(base_location_root) = base_location_root.as_deref()
+            && base_location_root.trim().is_empty()
+        {
+            return Err(AdapterError::new(
+                AdapterErrorKind::Configuration,
+                "Bigquery v2 base_location_root cannot be blank or whitespace",
+            ));
+        }
+
+        let base_location_subpath =
+            Self::get_model_config_value(model, FIELD_BASE_LOCATION_SUBPATH, AdapterType::Bigquery);
+        let schema = Self::get_model_config_value(model, "schema", AdapterType::Bigquery);
+        let identifier = Self::get_model_config_value(model, "alias", AdapterType::Bigquery)
+            .or_else(|| Self::get_model_config_value(model, "identifier", AdapterType::Bigquery));
+        let base_location = Self::build_base_location(
+            &base_location_root,
+            &base_location_subpath,
+            &schema,
+            &identifier,
+        );
+
+        let storage_uri =
+            Self::get_model_config_value(model, FIELD_STORAGE_URI, AdapterType::Bigquery)
+                .or_else(|| {
+                    external_volume
+                        .as_deref()
+                        .map(|root| format!("{root}/{base_location}"))
+                })
+                .ok_or_else(|| {
+                    AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        "Bigquery Iceberg models without a catalog require model `storage_uri` or `external_volume`; snapshots cannot use `storage_uri`",
+                    )
+                })?;
+
+        Ok(CatalogRelation {
+            adapter_type: AdapterType::Bigquery,
+            catalog_name: None,
+            integration_name: None,
+            catalog_type: CatalogType::BiglakeMetastore,
+            table_format: TableFormat::Iceberg,
+            adapter_properties: BTreeMap::from([(FIELD_STORAGE_URI.to_string(), storage_uri)]),
+            is_transient: None,
+            external_volume: None,
+            catalog_database: None,
+            lakehouse_catalog: None,
+            base_location: None,
+            file_format: Some(PARQUET_TABLE_FORMAT.to_string()),
+        })
+    }
+
     fn build_bigquery_biglake_with_catalogs(
         model: &Value,
         catalog: &CatalogSpecView<'_>,
@@ -2187,7 +2273,9 @@ mod default_relation_tests {
             AdapterType::Bigquery => "bigquery_attr".to_string(),
             AdapterType::Databricks => "databricks_attr".to_string(),
             AdapterType::Spark => "databricks_attr".to_string(),
-            AdapterType::DuckDB | AdapterType::LakeCompute => "duckdb_attr".to_string(),
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => {
+                "duckdb_attr".to_string()
+            }
             _ => panic!("Not yet supported"),
         }
     }
@@ -3035,6 +3123,201 @@ catalogs:
         );
     }
 
+    fn bigquery_catalogs() -> Arc<DbtCatalogs> {
+        Arc::new(load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: BQ
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: gs://bucket
+        file_format: parquet
+"#,
+        ))
+    }
+
+    #[test]
+    fn bigquery_without_catalog_name_storage_uri_wins() {
+        let conf = json!({
+            "table_format": "iceberg",
+            "storage_uri": "gs://b/explicit",
+            "external_volume": "gs://root",
+            "schema": "analytics",
+            "alias": "events"
+        });
+        let ms = [
+            model(AdapterType::Bigquery, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+        for m in ms {
+            let r =
+                CatalogRelation::from_model_config_and_catalogs(AdapterType::Bigquery, &m, None)
+                    .unwrap();
+            assert_eq!(r.catalog_type, CatalogType::BiglakeMetastore);
+            assert!(r.catalog_name.is_none());
+            assert_eq!(r.table_format, TableFormat::Iceberg);
+            assert_eq!(r.file_format.as_deref(), Some("parquet"));
+            assert_eq!(r.adapter_properties["storage_uri"], "gs://b/explicit");
+            assert!(!r.adapter_properties.contains_key("connection_id"));
+        }
+    }
+
+    #[test]
+    fn bigquery_without_catalog_name_storage_uri_only() {
+        let m = model(
+            AdapterType::Bigquery,
+            json!({"table_format": "iceberg", "storage_uri": "gs://b/explicit"}),
+        );
+        let r = CatalogRelation::from_model_config_and_catalogs(AdapterType::Bigquery, &m, None)
+            .unwrap();
+        assert_eq!(r.adapter_properties["storage_uri"], "gs://b/explicit");
+    }
+
+    #[test]
+    fn bigquery_without_catalog_name_derives_storage_uri() {
+        let catalogs = bigquery_catalogs();
+        let conf = json!({
+            "table_format": "iceberg",
+            "external_volume": "gs://root",
+            "schema": "analytics",
+            "alias": "events"
+        });
+        let ms = [
+            model(AdapterType::Bigquery, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+        for m in ms {
+            let r = from_model_config_and_catalogs_default(
+                AdapterType::Bigquery,
+                &m,
+                Arc::clone(&catalogs),
+            )
+            .unwrap();
+            assert_eq!(
+                r.adapter_properties["storage_uri"],
+                "gs://root/_dbt/analytics/events"
+            );
+        }
+    }
+
+    #[test]
+    fn bigquery_without_catalog_name_missing_storage_errors() {
+        let catalogs = bigquery_catalogs();
+        let conf = json!({"table_format": "iceberg"});
+        let ms = [
+            model(AdapterType::Bigquery, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+        for m in ms {
+            for result in [
+                CatalogRelation::from_model_config_and_catalogs(AdapterType::Bigquery, &m, None),
+                from_model_config_and_catalogs_default(
+                    AdapterType::Bigquery,
+                    &m,
+                    Arc::clone(&catalogs),
+                ),
+            ] {
+                let err = result.unwrap_err();
+                assert_eq!(err.kind(), AdapterErrorKind::Configuration);
+                assert_eq!(
+                    err.message(),
+                    "Bigquery Iceberg models without a catalog require model `storage_uri` or `external_volume`; snapshots cannot use `storage_uri`",
+                    "{err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bigquery_without_catalog_name_invalid_root_errors() {
+        let conf = json!({
+            "table_format": "iceberg",
+            "storage_uri": "gs://b/explicit",
+            "external_volume": "s3://x"
+        });
+        let ms = [
+            model(AdapterType::Bigquery, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+        for m in ms {
+            let err =
+                CatalogRelation::from_model_config_and_catalogs(AdapterType::Bigquery, &m, None)
+                    .unwrap_err();
+            assert_eq!(err.kind(), AdapterErrorKind::Configuration);
+            assert!(
+                err.message()
+                    .contains("external_volume must start with gs://"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn bigquery_without_catalog_name_invalid_settings_error() {
+        for (key, value, storage_uri, expected) in [
+            ("file_format", "orc", None, "file_format must be parquet"),
+            (
+                "external_volume",
+                " ",
+                None,
+                "external_volume cannot be blank",
+            ),
+            (
+                "base_location_root",
+                " ",
+                None,
+                "base_location_root cannot be blank",
+            ),
+            (
+                "base_location_root",
+                " ",
+                Some("gs://b/explicit"),
+                "base_location_root cannot be blank",
+            ),
+        ] {
+            let mut config = json!({
+                "table_format": "iceberg",
+                "external_volume": "gs://root",
+                "schema": "analytics",
+                "alias": "events"
+            });
+            if let Some(storage_uri) = storage_uri {
+                config["storage_uri"] = json!(storage_uri);
+            }
+            config[key] = json!(value);
+            let model = model_deprecated_config(config);
+            let err = CatalogRelation::from_model_config_and_catalogs(
+                AdapterType::Bigquery,
+                &model,
+                None,
+            )
+            .expect_err(key);
+            assert_eq!(err.kind(), AdapterErrorKind::Configuration, "{key}: {err}");
+            assert!(err.message().contains(expected), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn bigquery_without_catalog_name_rejects_adapter_properties() {
+        let conf = json!({
+            "table_format": "iceberg",
+            "adapter_properties": {"storage_uri": "gs://x"}
+        });
+        let ms = [
+            model(AdapterType::Bigquery, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+        for m in ms {
+            let err =
+                CatalogRelation::from_model_config_and_catalogs(AdapterType::Bigquery, &m, None)
+                    .unwrap_err();
+            assert_eq!(err.kind(), AdapterErrorKind::Configuration);
+            assert!(err.message().contains("adapter_properties"), "{err}");
+        }
+    }
+
     #[test]
     fn bigquery_biglake_catalog_builds_relation() {
         let catalogs = load_catalogs_yaml(
@@ -3122,6 +3405,32 @@ catalogs:
             assert_eq!(
                 r.adapter_properties.get("storage_uri").map(|s| s.as_str()),
                 Some("gs://other-bucket/override/analytics/events/leaf")
+            );
+        }
+    }
+
+    #[test]
+    fn bigquery_biglake_invalid_model_root_with_storage_uri_errors() {
+        let catalogs = bigquery_catalogs();
+        let conf = json!({
+            "catalog_name": "BQ",
+            "external_volume": "s3://x",
+            "storage_uri": "gs://ok/t"
+        });
+        let ms = [
+            model(AdapterType::Bigquery, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+        for m in ms {
+            let err = from_model_config_and_catalogs_default(
+                AdapterType::Bigquery,
+                &m,
+                Arc::clone(&catalogs),
+            )
+            .unwrap_err();
+            assert_eq!(
+                err.message(),
+                "Catalog 'BQ' biglake_metastore/bigquery external_volume must start with gs://"
             );
         }
     }
@@ -4023,6 +4332,12 @@ mod tests {
             .catalog_name
             .clone();
         snapshot.__snapshot_attr__.table_format = snapshot.deprecated_config.table_format.clone();
+        snapshot.__base_attr__.schema = snapshot
+            .deprecated_config
+            .schema
+            .clone()
+            .unwrap_or_default();
+        snapshot.__base_attr__.alias = snapshot.deprecated_config.alias.clone().unwrap_or_default();
 
         JVal::from_object(convert_yml_to_value_map(snapshot.serialize()))
     }
@@ -4225,6 +4540,47 @@ mod tests {
                 .map(String::as_str),
             Some("2")
         );
+    }
+
+    #[test]
+    fn snapshot_config_selects_bigquery_iceberg_relation_without_catalog_name() {
+        let cats = catalogs_yaml_one(
+            "cat_name",
+            "wi_name",
+            "biglake_metastore",
+            "iceberg",
+            &[
+                ("file_format", s("parquet")),
+                ("external_volume", s("gs://bucket")),
+            ],
+        );
+        let mut config = SnapshotConfig {
+            schema: Some("analytics".to_string()),
+            alias: Some("events_snapshot".to_string()),
+            table_format: Some("iceberg".to_string()),
+            ..Default::default()
+        };
+        config.__warehouse_specific_config__.external_volume = Some("gs://root".to_string());
+        let snapshot = snapshot(config);
+
+        for catalogs in [
+            None,
+            Some(Arc::new(DbtCatalogs::new(cats, Default::default()))),
+        ] {
+            let relation = CatalogRelation::from_model_config_and_catalogs(
+                AdapterType::Bigquery,
+                &snapshot,
+                catalogs,
+            )
+            .unwrap();
+
+            assert_eq!(relation.catalog_type, CatalogType::BiglakeMetastore);
+            assert_eq!(relation.table_format, TableFormat::Iceberg);
+            assert_eq!(
+                relation.adapter_properties["storage_uri"],
+                "gs://root/_dbt/analytics/events_snapshot"
+            );
+        }
     }
 
     #[test]
@@ -5520,38 +5876,6 @@ mod tests {
             assert!(r.is_transient.is_none());
             assert!(r.external_volume.is_none());
             assert!(r.base_location.is_none());
-        }
-    }
-
-    #[test]
-    fn bigquery_with_catalogs_no_catalog_name_iceberg_format_errors() {
-        let cats = catalogs_yaml_one(
-            "cat_name",
-            "wi_name",
-            "biglake_metastore",
-            "iceberg",
-            &[
-                ("file_format", s("parquet")),
-                ("external_volume", s("gs://bucket")),
-            ],
-        );
-        let conf = json!({"table_format": "iceberg"});
-        let ms = [
-            model(AdapterType::Bigquery, conf.clone()),
-            model_deprecated_config(conf),
-        ];
-        for m in ms {
-            let err = CatalogRelation::from_model_config_and_catalogs(
-                AdapterType::Bigquery,
-                &m,
-                Some(Arc::new(DbtCatalogs::new(cats.clone(), Default::default()))),
-            )
-            .unwrap_err();
-
-            assert!(
-                err.message()
-                    .contains("table_format=iceberg requires catalogs.yml")
-            );
         }
     }
 

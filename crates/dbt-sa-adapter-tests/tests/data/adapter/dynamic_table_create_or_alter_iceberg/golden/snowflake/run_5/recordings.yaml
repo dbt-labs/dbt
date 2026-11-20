@@ -1,0 +1,80 @@
+1002a4a3:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks where name = 'ice_idempotent' and created_on = 'Mon, 02 Nov 2026 01:04:46 -0800'
+2142cc88:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_refresh_mode_replace' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+3261578a:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks where name = 'ice_identity_change' and created_on = 'Mon, 02 Nov 2026 01:05:17 -0800'
+3a4e4278:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_identity_change' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+4cf65285:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks where name = 'ice_refresh_mode_replace' and created_on = 'Mon, 02 Nov 2026 01:05:10 -0800'
+5e50ded8:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks where name = 'ice_to_native' and created_on = 'Mon, 02 Nov 2026 01:05:09 -0800'
+68e7b6d1:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'native_to_ice' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+6e194268:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_idempotent')
+6e2aa6db:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_to_native' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+744a6c19:
+- sequence: 0
+  type: execute
+  sql: select "base_location" from table(result_scan(last_query_id())) where upper("name") = upper('ice_identity_change')
+7e4a757d:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_to_native')
+8399651e:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_evolve' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+88059d42:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('native_to_ice')
+8b1c4295:
+- sequence: 0
+  type: execute
+  sql: show iceberg tables like 'ice_identity_change' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+8c76baea:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ice_idempotent' in schema development.adapters_snowflake_dynamic_table_create_or_alter_iceberg
+a452b0ae:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_identity_change')
+aa90da5e:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks where name = 'ice_evolve' and created_on = 'Mon, 02 Nov 2026 01:04:48 -0800'
+cc469d5a:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_refresh_mode_replace')
+ec0afa0d:
+- sequence: 0
+  type: execute
+  sql: select "created_on"::varchar, "text", "refresh_mode", "target_lag", "is_iceberg" from table(result_scan(last_query_id())) where upper("name") = upper('ice_evolve')
+f74c3e29:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_dynamic_table_create_or_alter_iceberg.coa_marks where name = 'native_to_ice' and created_on = 'Mon, 02 Nov 2026 01:05:06 -0800'

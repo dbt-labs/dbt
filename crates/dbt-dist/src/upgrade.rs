@@ -321,7 +321,7 @@ fn resolve_manager(
             "this isn't an interactive terminal to ask which one to use"
         };
         return err!(
-            ErrorCode::Unexpected,
+            ErrorCode::MissingArgument,
             "{reason}, and {cause} -- {} was left unchanged. Re-run interactively (without \
              --yes) to pick one, pass --package-manager <name> to say which one non-\
              interactively, or edit and re-sync the manifest yourself.",
@@ -807,12 +807,19 @@ async fn install_dbt_v2_standalone(
     #[cfg(not(target_os = "windows"))]
     {
         let args = install_sh_args(location, update);
-        let options = run_script::ScriptOptions::new();
-        let (code, output, error) = run_script::run(&script, &args, &options)
+        let result = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .arg("sh")
+            .args(&args)
+            .stdin(std::process::Stdio::inherit())
+            .output()
             .map_err(|e| fs_err!(ErrorCode::IoError, "failed to run install script: {e}"))?;
+        let output = String::from_utf8_lossy(&result.stdout);
+        let error = String::from_utf8_lossy(&result.stderr);
         let output = output.trim();
         let error = error.trim();
-        if code != 0 {
+        if !result.status.success() {
             let msg = if !error.is_empty() {
                 format!("{error}\n{output}")
             } else {

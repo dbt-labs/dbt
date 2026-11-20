@@ -162,12 +162,16 @@ impl BigqueryPartitionConfig {
     /// Return the data type of partitions for replacement.
     /// When time_ingestion_partitioning is enabled, the data type supported are date & timestamp.
     pub fn data_type_for_partition(&self) -> Result<MinijinjaValue, MinijinjaError> {
-        let data_type = if !self.time_ingestion_partitioning() || self.data_type == "date" {
+        Ok(MinijinjaValue::from(self.partition_data_type()))
+    }
+
+    /// The type that `declare_dbt_max_partition` gives the `_dbt_max_partition` variable.
+    pub fn partition_data_type(&self) -> &str {
+        if !self.time_ingestion_partitioning() || self.data_type == "date" {
             self.data_type.as_str()
         } else {
             "timestamp"
-        };
-        Ok(MinijinjaValue::from(data_type))
+        }
     }
 
     pub fn reject_partition_field_column(
@@ -424,6 +428,45 @@ mod tests {
         let json = dbt_yaml::from_str("field: created_at\ncopy_partitions: maybe\n").unwrap();
         let result: Result<BigqueryPartitionConfig, _> = dbt_yaml::from_value(json);
         assert!(result.is_err());
+    }
+
+    /// `partition_data_type` is the type the materialization declares `_dbt_max_partition` with,
+    /// and the type `data_type_for_partition` renders.
+    #[test]
+    fn test_partition_data_type() {
+        let data_type = |yaml: &str| {
+            let config: BigqueryPartitionConfig =
+                dbt_yaml::from_value(dbt_yaml::from_str(yaml).unwrap()).unwrap();
+            let rendered = config.data_type_for_partition().unwrap();
+            let data_type = config.partition_data_type().to_string();
+            assert_eq!(rendered.to_string(), data_type);
+            data_type
+        };
+        // The default is `date`.
+        assert_eq!(data_type("field: created_at"), "date");
+        assert_eq!(
+            data_type("field: created_at\ndata_type: timestamp"),
+            "timestamp"
+        );
+        assert_eq!(
+            data_type("field: created_at\ndata_type: datetime"),
+            "datetime"
+        );
+        assert_eq!(
+            data_type(
+                "field: id\ndata_type: int64\nrange:\n  start: 0\n  end: 100\n  interval: 10"
+            ),
+            "int64"
+        );
+        // Ingestion-time partitioning declares a `date` or a `timestamp`.
+        assert_eq!(
+            data_type("field: created_at\ndata_type: date\ntime_ingestion_partitioning: true"),
+            "date"
+        );
+        assert_eq!(
+            data_type("field: created_at\ndata_type: datetime\ntime_ingestion_partitioning: true"),
+            "timestamp"
+        );
     }
 
     #[test]

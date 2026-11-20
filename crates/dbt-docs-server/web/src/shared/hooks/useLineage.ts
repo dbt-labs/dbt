@@ -1,4 +1,5 @@
-import { useMetadataDataSource } from '../context/MetadataDataProvider';
+import { useMetadataDataSource } from 'dbt-docs-lib';
+
 import type { LineageArgs } from '../typings/args';
 import { lineageKey } from '../util/queryKeys';
 import { useSourceQuery } from './useSourceQuery';

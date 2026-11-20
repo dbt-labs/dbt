@@ -2,8 +2,8 @@ import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within } from 'storybook/test';
 
-import { buildFileTreeItems } from '../../utils/fileTree';
 import { storyFiles } from '../../shared/testing/storyFixtures';
+import { buildFileTreeItems } from '../../utils/fileTree';
 import {
   type FileTreeItemType,
   PaginatedFileTree,

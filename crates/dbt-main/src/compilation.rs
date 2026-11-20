@@ -34,7 +34,10 @@ use dbt_jinja_utils::{
     jinja_environment::JinjaEnv,
     listener::JinjaTypeCheckingEventListenerFactory,
     node_resolver::{NodeResolver, PackageSearchOrder},
-    phases::{build_operation_context_btreemap, configure_compile_and_run_jinja_environment},
+    phases::{
+        NodeAdapterGlobals, build_operation_context_btreemap,
+        configure_compile_and_run_jinja_environment,
+    },
 };
 use dbt_loader::args::*;
 use dbt_parser::args::ResolveArgs;
@@ -57,7 +60,7 @@ use dbt_tasks_core::{
 
 use dbt_common::{
     DiscreteEventEmitter, ErrorCode, FsResult,
-    artifact_io::write_artifact_to_file,
+    artifact_io::{ArtifactSerialization, write_artifact_to_file},
     cancellation::CancellationToken,
     constants::{DBT_MANIFEST_JSON, DBT_SEMANTIC_MANIFEST_JSON},
     fail_fast::FailFast,
@@ -452,7 +455,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
             // Write semantic manifest
             if !resolved_state.semantic_layer_spec_is_legacy {
                 write_artifact_to_file(
-                    &semantic_manifest,
+                    ArtifactSerialization::WithYamlFlattening(&semantic_manifest),
                     ArtifactType::SemanticManifest,
                     &self.arg.io.out_dir,
                     DBT_SEMANTIC_MANIFEST_JSON,
@@ -465,7 +468,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
             if self.arg.command == FsCommand::Parse {
                 let dbt_manifest = self.memoized_manifest(invocation_id, resolved_state);
                 write_artifact_to_file(
-                    &dbt_manifest,
+                    ArtifactSerialization::Direct(&dbt_manifest),
                     ArtifactType::Manifest,
                     &self.arg.io.out_dir,
                     DBT_MANIFEST_JSON,
@@ -623,7 +626,6 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                     assertion: false,
                                 })
                                 .collect(),
-                            nodes: Some(resolved_state.nodes.clone()),
                             batch_results: Default::default(),
                             compiled_code: Default::default(),
                         };
@@ -633,6 +635,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                 // TODO: should also be captured by the caller?
                                 &build_run_results_artifact(
                                     &error_stats,
+                                    &resolved_state.nodes,
                                     // Adapter responses are not available during parse phase.
                                     &HashMap::new(),
                                     self.arg.as_ref(),
@@ -645,6 +648,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                         if self.arg.write_metadata {
                             crate::utils::write_runtime_results_parquet(
                                 &error_stats,
+                                &resolved_state.nodes,
                                 &HashMap::new(),
                                 self.arg.as_ref(),
                             );
@@ -653,7 +657,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
 
                     let dbt_manifest = self.memoized_manifest(invocation_id, resolved_state);
                     write_artifact_to_file(
-                        dbt_manifest,
+                        ArtifactSerialization::Direct(dbt_manifest),
                         ArtifactType::Manifest,
                         &self.arg.io.out_dir,
                         DBT_MANIFEST_JSON,
@@ -1477,10 +1481,7 @@ impl DbtProjectCompilation {
                     token,
                     jinja_type_checking_event_listener_factory.clone(),
                     feature_stack.resolver.hooks.clone(),
-                    feature_stack
-                        .experimentals
-                        .experimentals
-                        .resolve_experimentals(),
+                    feature_stack.experimentals.experimentals.resolvable_nodes(),
                 )
                 .await?
         };
@@ -1963,7 +1964,10 @@ impl DbtProjectCompilation {
             }
         };
 
-        let is_duckdb_adapter = self.adapter_type() == AdapterType::DuckDB;
+        let is_duckdb_adapter = matches!(
+            self.adapter_type(),
+            AdapterType::DuckDB | AdapterType::MotherDuck
+        );
 
         // Sidecar/service schemas and all remote entries in the epoch cache share
         // this directory, so clear it before loading schemas from the current run.
@@ -2266,11 +2270,11 @@ impl DbtProjectCompilation {
             // ephemeral+versioned model's own node_id can't be traced back to the CTE name
             // dbt-core compiled it under without this. See fs#11684.
             for model in resolved_state.nodes.models.values() {
-                replay_adapter.record_node_alias(&model.unique_id(), &model.alias());
+                replay_adapter.record_node_alias(model.unique_id(), model.alias());
             }
         }
 
-        let base_context = build_base_context(&resolved_state, &jinja_env);
+        let base_context = Arc::new(build_base_context(&resolved_state, &jinja_env));
         token.check_cancellation()?;
 
         render_all_model_constraint_refs_in_place(&mut resolved_state, &jinja_env, &base_context)?;
@@ -2330,6 +2334,14 @@ impl DbtProjectCompilation {
             // path hands the resolved state to the blocking pool, so it needs an
             // owned handle. `Nodes` is maps of `Arc`s, so the clone below is shallow.
             let resolved_state = Arc::new(resolved_state);
+            // No node: the render takes the run adapter's connection, as `get_show_sql` does.
+            let mut base_context = base_context;
+            NodeAdapterGlobals::new(Arc::clone(&adapter_store), &resolved_state.dbt_profile)
+                .insert_for_connection(
+                    Arc::get_mut(&mut base_context)
+                        .expect("run-operation's base context has one owner"),
+                    adapter_store.run_adapter_type(),
+                )?;
 
             // Macro path returns the macro author's `return` value (any `Value`,
             // stringified for display); inline-SQL path returns the Phase 1 rendered
@@ -2373,7 +2385,6 @@ impl DbtProjectCompilation {
 
             let run_stats = Stats {
                 stats: vec![stat],
-                nodes: Some(resolved_state.nodes.clone()),
                 batch_results: Default::default(),
                 compiled_code: Default::default(),
             };
@@ -2383,6 +2394,7 @@ impl DbtProjectCompilation {
                 write_run_results_json(
                     &build_run_results_artifact(
                         &run_stats,
+                        &resolved_state.nodes,
                         // NOTE: dbt Core v1 does not populate AdapterResponse on `dbt run-operation`.
                         // However we technically could pull the adapter responses from the macro
                         // execution and add them here. We just have to wire it up.
@@ -2425,7 +2437,8 @@ impl DbtProjectCompilation {
             &resolved_state.nodes,
             &schedule,
             runs_nodes,
-        )?;
+        )
+        .await?;
         let graph_builder = GraphBuilder::new(
             Arc::clone(&run_task_args),
             Arc::clone(&static_analysis_buckets),
@@ -2455,7 +2468,7 @@ impl DbtProjectCompilation {
             }
             // An experimental node is graph work only while its experimental runs.
             if node
-                .experimental_type()
+                .injected_kind()
                 .is_some_and(|experimental_type| !experimental_runs.is_running(experimental_type))
             {
                 return;
@@ -2528,7 +2541,7 @@ impl DbtProjectCompilation {
                         Arc::clone(&run_task_args),
                         generic_test_relationships,
                         &graph,
-                        base_context.clone(),
+                        Arc::unwrap_or_clone(base_context),
                         schedule.clone(),
                         freshness_results,
                         shared_event_order,
@@ -2544,7 +2557,6 @@ impl DbtProjectCompilation {
                     .run(
                         Arc::clone(&run_task_args),
                         schedule,
-                        base_context,
                         ctx,
                         graph,
                         has_dynamic_closure,

@@ -1,7 +1,7 @@
-import { QueryClient } from '@tanstack/react-query';
+import type { MetadataDataSource } from 'dbt-docs-lib';
+import { QueryClient } from 'dbt-docs-lib';
 import { describe, expect, it } from 'vitest';
 
-import type { MetadataDataSource } from '../data-sources/MetadataDataSource';
 import { createFakeDataSource } from '../testing/createFakeDataSource';
 import { wrapDataSource } from './wrapDataSource';
 

@@ -26,6 +26,7 @@ dbt-selector-parser = { workspace = true }
 dbt-telemetry = { workspace = true }
 pathdiff = { workspace = true }
 
+async-trait = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 csv = { workspace = true }

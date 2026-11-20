@@ -1,6 +1,6 @@
 import { FC } from 'react';
+import type { Argument } from 'dbt-docs-lib/domain';
 
-import { Argument } from '../typings/domain/asset';
 import { truthy } from '../util/array';
 import { ColumnCard } from './ColumnCard';
 

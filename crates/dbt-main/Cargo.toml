@@ -14,9 +14,9 @@ workspace = true
 
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = [
-  "Win32_System_Threading",
+windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
+  "Win32_System_Threading",
 ] }
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
@@ -71,8 +71,8 @@ git-version = { version = "0.3.9" }
 minijinja = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
-run_script = { workspace = true }
 rustls = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

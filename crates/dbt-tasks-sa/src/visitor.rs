@@ -792,7 +792,7 @@ fn report_node_evaluation(
                 get_execution_phase_from_task(node),
                 node_outcome,
                 None,
-                dbt_node.static_analysis().into_inner(),
+                **dbt_node.static_analysis(),
                 (None, Span::default()),
             );
         }

@@ -7,8 +7,6 @@ use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_dist::packages::InstallLocation;
 use dbt_telemetry::PackageUpdate;
 use rand::Rng as _;
-#[cfg(not(target_os = "windows"))]
-use run_script::ScriptOptions;
 use std::env;
 use std::path::Path;
 use std::process::Command;
@@ -790,8 +788,6 @@ async fn exec_update_legacy(
     let script_url = format!("{}/install/install.sh", cdn_base_url());
     let script = client.get_text(&script_url).await?;
 
-    let options = ScriptOptions::new();
-
     let (option, path) = script_option(location)?;
     let mut script_args = vec![
         String::from("--update"),
@@ -809,17 +805,26 @@ async fn exec_update_legacy(
         script_args.push(package.to_string());
     }
 
-    let (code, output, error) = match run_script::run(&script, &script_args, &options) {
+    let result = match Command::new("sh")
+        .arg("-c")
+        .arg(&script)
+        .arg("sh")
+        .args(&script_args)
+        .stdin(std::process::Stdio::inherit())
+        .output()
+    {
         Ok(result) => result,
         Err(e) => {
             return err!(ErrorCode::IoError, "Failed to run install script: {}", e);
         }
     };
 
+    let output = String::from_utf8_lossy(&result.stdout);
+    let error = String::from_utf8_lossy(&result.stderr);
     let output = output.trim();
     let error = error.trim();
 
-    if code != 0 {
+    if !result.status.success() {
         let err_msg = if !error.is_empty() {
             format!("{error}\nFailed to update dbt: {output}")
         } else {

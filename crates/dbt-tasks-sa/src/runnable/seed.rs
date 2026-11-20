@@ -71,7 +71,7 @@ async fn maybe_seed_column_change_hint(
 
     let schemas = metadata_adapter
         .list_relations_schemas(
-            Some(seed.unique_id()),
+            Some(seed.unique_id().to_string()),
             None,
             &relations,
             None,

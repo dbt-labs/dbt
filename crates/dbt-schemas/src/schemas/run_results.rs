@@ -268,12 +268,26 @@ impl Preview {
     }
 }
 
+/// What a run resolved about its target and project, for the invocation record. Known only
+/// after the profile and the project are loaded, which is after the record is started.
+#[derive(Debug, Clone, Default)]
+pub struct InvocationFacts {
+    pub target_name: Option<String>,
+    pub adapter_type: Option<String>,
+    pub target_database: Option<String>,
+    pub target_schema: Option<String>,
+    pub target_threads: Option<i32>,
+    pub node_count: Option<i32>,
+}
+
 /// In-memory result of dbt command invocation.
 ///
 /// Maybe partially populated depending on the command and if execution reached
 /// the point of producing the artifacts.
 #[derive(Default)]
 pub struct DbtCommandExecutionArtifacts {
+    /// What the run resolved about itself, once it got far enough to know.
+    pub invocation_facts: Option<InvocationFacts>,
     pub manifest: Option<DbtManifest>,
     pub run_results: Option<RunResultsArtifact>,
     pub catalog: Option<DbtCatalog>,

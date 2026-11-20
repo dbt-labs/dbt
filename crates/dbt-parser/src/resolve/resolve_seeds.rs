@@ -1,6 +1,7 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::{
     RawProjectConfigsByAdapter, err_resource_name_has_spaces, extract_config_map,
     node_effective_propagation_target, resolve_node_quoting, select_node_adapter,
@@ -10,6 +11,7 @@ use crate::utils::{
     register_duplicate_resource, trigger_duplicate_errors, update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
@@ -19,7 +21,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs};
 use dbt_frontend_common::Dialect;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::validate_delimiter;
@@ -41,16 +43,53 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
 
+/// How a package's seeds resolve.
+pub(crate) struct Seeds;
+
+#[async_trait]
+impl ResolvableNode for Seeds {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["seeds"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // Resolve seeds based on the dbt_state, database, schema, and project name
+        let (seeds, disabled_seeds) = resolve_seeds(
+            ctx.arg,
+            ctx.properties.take_entries("seeds"),
+            ctx.package,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            &mut ctx.node_resolver,
+        )
+        .await?;
+        ctx.nodes.seeds.extend(seeds);
+        ctx.disabled_nodes.seeds.extend(disabled_seeds);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_seeds(
     arg: &ResolveArgs,
-    mut seed_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    mut seed_properties: BTreeMap<String, PropertiesEntry>,
     package: &DbtPackage,
     // Authored quoting per declared adapter name. See `resolve_models`.
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
@@ -58,7 +97,7 @@ pub async fn resolve_seeds(
     root_project_configs: &RootProjectConfigs,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &AdapterScopes,
     default_adapter: AdapterType,
     package_name: &str,
     jinja_env: &JinjaEnv,

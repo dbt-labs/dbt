@@ -150,6 +150,93 @@ fn source_columns_live_only_on_sources() {
     }
 }
 
+/// Columns that apply only to models, `materialized` among them, are on no other
+/// node table. `ai_context` is on no table: nothing fills it.
+#[test]
+fn model_only_columns_live_only_on_models() {
+    const MODEL_ONLY: &[&str] = &[
+        "materialized",
+        "incremental_strategy",
+        "on_schema_change",
+        "contract_enforced",
+        "version",
+        "latest_version",
+        "deprecation_date",
+        "constraints",
+        "primary_key",
+        "time_spine",
+        "classifiers",
+    ];
+    for table in INFO_SCHEMA {
+        let node_table = matches!(table.src, Src::Table("nodes"));
+        for col in table.cols {
+            assert_ne!(col.out, "ai_context", "{}", table.qualified_name());
+            assert!(
+                !node_table || table.name == "models" || !MODEL_ONLY.contains(&col.out),
+                "{} must not carry the model-only column {}",
+                table.qualified_name(),
+                col.out
+            );
+        }
+    }
+}
+
+/// Every node table that is a table in the warehouse has a grain.
+#[test]
+fn grains_live_on_relation_tables() {
+    const GRAINS: &[&str] = &["grain", "grain_declared", "grain_tested", "grain_inferred"];
+    const WITH_GRAIN: &[&str] = &["models", "seeds", "snapshots", "sources"];
+    for table in INFO_SCHEMA {
+        if !matches!(table.src, Src::Table("nodes")) {
+            continue;
+        }
+        for grain in GRAINS {
+            let has = table.cols.iter().any(|col| col.out == *grain);
+            assert_eq!(
+                has,
+                WITH_GRAIN.contains(&table.name),
+                "{} {grain}",
+                table.qualified_name()
+            );
+        }
+    }
+}
+
+/// A hook is SQL and its phase. Its only tag is its phase, so `phase`, the
+/// first tag as text, takes the place of `tags`.
+#[test]
+fn hooks_carry_their_sql_and_phase() {
+    let hooks = INFO_SCHEMA
+        .iter()
+        .find(|t| t.name == "hooks")
+        .expect("hooks");
+    let cols: Vec<&str> = hooks.cols.iter().map(|c| c.out).collect();
+    assert_eq!(
+        cols,
+        [
+            "unique_id",
+            "name",
+            "resource_type",
+            "package_name",
+            "original_file_path",
+            "fqn",
+            "node_language",
+            "raw_code",
+            "phase",
+            "compiled_code",
+            "compiled_path",
+            "ingested_at",
+        ]
+    );
+    let phase = hooks.cols.iter().find(|c| c.out == "phase").unwrap();
+    assert!(phase.first && phase.src == "tags");
+    let out = out_schema(hooks).unwrap();
+    assert_eq!(
+        out.field_with_name("phase").unwrap().data_type(),
+        &arrow_schema::DataType::Utf8
+    );
+}
+
 /// Columns the schema retires must not survive anywhere under their old name.
 #[test]
 fn retired_columns_are_gone() {
@@ -206,8 +293,7 @@ fn retired_columns_are_gone() {
     }
 }
 
-/// `from_*`/`to_*` are retired on lineage but are the *new* names on semantic
-/// relationships, so this pair has to be checked per table rather than globally.
+/// `from_*`/`to_*` are retired on lineage.
 #[test]
 fn lineage_uses_parent_child_naming() {
     let lineage = INFO_SCHEMA
@@ -236,23 +322,6 @@ fn lineage_uses_parent_child_naming() {
         assert!(
             names.contains(&expected),
             "column_lineage missing {expected}"
-        );
-    }
-
-    let rel = INFO_SCHEMA
-        .iter()
-        .find(|t| t.name == "semantic_relationships")
-        .expect("semantic_relationships");
-    let names: Vec<&str> = rel.cols.iter().map(|c| c.out).collect();
-    for expected in [
-        "from_node_unique_id",
-        "to_node_unique_id",
-        "from_column_names",
-        "to_column_names",
-    ] {
-        assert!(
-            names.contains(&expected),
-            "semantic_relationships missing {expected}"
         );
     }
 }
@@ -409,6 +478,10 @@ fn removed_tables_are_absent() {
         "test_metadata",
         "docs",
         "graph_nodes",
+        // Always empty: nothing writes them.
+        "semantic_relationships",
+        "classifiers",
+        "diagnostics",
     ];
     for table in INFO_SCHEMA {
         assert!(
@@ -780,17 +853,16 @@ fn relations_pivots_the_catalog_stats() {
 fn operations_land_in_hooks() {
     let staging = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
+    let mut hook = node_row(
+        "operation.pkg.pkg-on-run-start-0",
+        "pkg-on-run-start-0",
+        "operation",
+    );
+    hook["tags"] = json!(["on-run-start"]);
     write_source(
         staging.path(),
         "nodes",
-        &[
-            node_row(
-                "operation.pkg.pkg-on-run-start-0",
-                "pkg-on-run-start-0",
-                "operation",
-            ),
-            node_row("model.pkg.a", "a", "model"),
-        ],
+        &[hook, node_row("model.pkg.a", "a", "model")],
     );
     super::project_all(staging.path(), out.path()).unwrap();
 
@@ -800,6 +872,8 @@ fn operations_land_in_hooks() {
         hooks[0]["unique_id"],
         json!("operation.pkg.pkg-on-run-start-0")
     );
+    assert_eq!(hooks[0]["phase"], json!("on-run-start"));
+    assert!(hooks[0].get("tags").is_none());
     assert_eq!(out_rows(out.path(), "dbt.models.parquet").len(), 1);
 }
 

@@ -1,3 +1,5 @@
+pub(crate) mod properties;
+
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, ResolvedNode};
@@ -11,6 +13,8 @@ use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
+use crate::resolve::properties_index::{IndexCtx, IndexedName};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::RawProjectConfigsByAdapter;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
 use crate::resolve::resolve_utils::extract_config_map;
@@ -20,6 +24,7 @@ use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
 use crate::utils::{node_starting_database_and_schema, update_node_relation_components};
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 
 use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
@@ -39,7 +44,7 @@ use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::CommonAttributes;
 use dbt_schemas::schemas::DbtModel;
@@ -86,14 +91,13 @@ use dbt_schemas::state::ModelStatus;
 use dbt_schemas::state::NodeResolverTracker;
 use dbt_schemas::state::ResourcePathKind;
 use dbt_yaml::Spanned;
-use minijinja::MacroSpans;
 use minijinja::constants::CURRENT_PATH;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
@@ -159,6 +163,59 @@ fn parse_source_from_constraint(to: &str) -> Option<(String, String)> {
     Some((src.to_string(), tbl.to_string()))
 }
 
+/// How a package's models resolve.
+pub(crate) struct Models;
+
+#[async_trait]
+impl ResolvableNode for Models {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["models"]
+    }
+
+    /// A model defines one name for each of its versions.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        ctx: &IndexCtx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        properties::index_model(key, item, ctx)
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // Resolve SQLs and get nodes except refs and sources
+        let (models, disabled_models) = resolve_models(
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &ctx.model_properties,
+            // TODO: pass in typed_models_properties
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            &mut ctx.node_resolver,
+            ctx.token,
+            ctx.jinja_type_checking_event_listener_factory.clone(),
+        )
+        .await?;
+        ctx.nodes.models.extend(models);
+        ctx.disabled_nodes.models.extend(disabled_models);
+        Ok(())
+    }
+}
+
 #[allow(
     clippy::cognitive_complexity,
     clippy::expect_fun_call,
@@ -175,14 +232,14 @@ pub async fn resolve_models(
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    models_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties: &BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     collected_generic_tests: &mut Vec<GenericTestAsset>,
@@ -193,13 +250,11 @@ pub async fn resolve_models(
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
 ) -> FsResult<(
     HashMap<String, Arc<DbtModel>>,
-    HashMap<String, (String, MacroSpans)>,
     HashMap<String, Arc<DbtModel>>,
 )> {
     let mut models: HashMap<String, Arc<DbtModel>> = HashMap::new();
     let mut models_with_execute: HashMap<String, DbtModel> = HashMap::new();
     let mut disabled_models: HashMap<String, Arc<DbtModel>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
     let is_dependency = dependency_package_name.is_some();
@@ -239,7 +294,7 @@ pub async fn resolve_models(
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -264,8 +319,7 @@ pub async fn resolve_models(
     // This is a hack because we treat models and models.metrics differently in an attempt
     // for only-once parsing of model yaml properties in resolver.rs, which duplicates the knowledge
     // that you must treat them separately, such as the removal of semantic properties here.
-    let mut models_properties_sans_semantics: BTreeMap<String, MinimalPropertiesEntry> =
-        BTreeMap::new();
+    let mut models_properties_sans_semantics: BTreeMap<String, PropertiesEntry> = BTreeMap::new();
     models_properties.iter().for_each(|(model_key, v)| {
         let mut v = v.clone();
         if let Some(m) = v.schema_value.as_mapping_mut() {
@@ -382,7 +436,6 @@ pub async fn resolve_models(
         &mut models,
         &mut models_with_execute,
         &mut disabled_models,
-        &mut rendering_results,
         &mut duplicates,
     )
     .await?;
@@ -465,7 +518,7 @@ pub async fn resolve_models(
             .into_iter()
             .map(|(v, _)| (v.__common_attr__.unique_id.to_string(), Arc::new(v))),
     );
-    Ok((models, rendering_results, disabled_models))
+    Ok((models, disabled_models))
 }
 
 /// Builds a `DbtModel` node for each rendered model file, routing it into `models`,
@@ -495,14 +548,14 @@ async fn build_model_nodes(
     package: &DbtPackage,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     root_package: &DbtPackage,
-    models_properties_sans_semantics: &BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties_sans_semantics: &BTreeMap<String, PropertiesEntry>,
     raw_project_configs_by_adapter: &mut RawProjectConfigsByAdapter<'_>,
     raw_schema_yml_configs: &BTreeMap<String, BTreeMap<String, dbt_yaml::Value>>,
     raw_test_configs: &BTreeMap<String, TestUnrenderedConfigs>,
     model_sql_resources_map: Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &AdapterScopes,
     default_adapter: AdapterType,
     package_name: &str,
     dependency_package_name: Option<&str>,
@@ -516,7 +569,6 @@ async fn build_model_nodes(
     models: &mut HashMap<String, Arc<DbtModel>>,
     models_with_execute: &mut HashMap<String, DbtModel>,
     disabled_models: &mut HashMap<String, Arc<DbtModel>>,
-    rendering_results: &mut HashMap<String, (String, MacroSpans)>,
     duplicates: &mut Vec<(String, String, Option<String>, PathBuf)>,
 ) -> FsResult<()> {
     let mut node_names = HashSet::new();
@@ -535,8 +587,7 @@ async fn build_model_nodes(
         adapter,
         alias_adapter,
         raw_code,
-        rendered_sql,
-        macro_spans,
+        rendered_sql: _,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -1127,7 +1178,7 @@ async fn build_model_nodes(
                 sync: model_config.sync.clone(),
                 compiled_code: None,
             },
-            __adapter_attr__: AdapterAttr::from_config_and_dialect(
+            __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(
                 &model_config.__warehouse_specific_config__,
                 selected_adapter,
             ),
@@ -1156,9 +1207,9 @@ async fn build_model_nodes(
 
         // Update time_spine node_relation with the resolved relation components
         if dbt_model.__model_attr__.time_spine.is_some() {
-            let database = dbt_model.database();
-            let schema = dbt_model.schema();
-            let alias = dbt_model.alias();
+            let database = dbt_model.database().to_string();
+            let schema = dbt_model.schema().to_string();
+            let alias = dbt_model.alias().to_string();
             let relation_name = dbt_model.__base_attr__.relation_name.clone();
 
             if let Some(ref mut ts) = dbt_model.__model_attr__.time_spine {
@@ -1187,7 +1238,6 @@ async fn build_model_nodes(
                     models.insert(unique_id.to_owned(), Arc::new(dbt_model));
                 }
                 node_names.insert(model_name.to_owned());
-                rendering_results.insert(unique_id, (rendered_sql.clone(), macro_spans.clone()));
 
                 if !arg.skip_creating_generic_tests {
                     properties.as_testable().persist(
@@ -1586,7 +1636,7 @@ fn process_python_models(
     dbt_project: &DbtProject,
     config_resolver: &ProjectConfigResolver<ModelConfig>,
     python_files: Vec<dbt_schemas::state::DbtAsset>,
-    models_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties: &mut BTreeMap<String, PropertiesEntry>,
     adapter_type: AdapterType,
 ) -> FsResult<Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>> {
     let mut results = Vec::new();
@@ -1688,7 +1738,6 @@ fn process_python_models(
             // Match dbt-core's `load_file_contents(strip=True)` behavior.
             raw_code: source.trim().to_owned(),
             rendered_sql: source.clone(),
-            macro_spans: Default::default(),
             properties: maybe_properties,
             status,
             render_error_deferred: false,
@@ -1711,7 +1760,7 @@ fn process_python_models(
 fn extract_model_properties(
     env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
-    models_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties: &mut BTreeMap<String, PropertiesEntry>,
     ref_name: &str,
 ) -> FsResult<(Option<ModelProperties>, Option<PathBuf>)> {
     if let Some(mpe) = models_properties.get_mut(ref_name)
@@ -2576,7 +2625,8 @@ mod interactive_table_validation_tests {
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 cluster_by: Some(ClusterConfig::String("id".to_string())),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }
     }
@@ -2799,7 +2849,8 @@ mod interactive_table_validation_tests {
                 transient: Some(true),
                 target_lag: Some("1 minute".to_string()),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
         let resolved = resolve(cfg);
@@ -2821,7 +2872,8 @@ mod interactive_table_validation_tests {
                 transient: Some(true),
                 target_lag: Some("1 minute".to_string()),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }
     }

@@ -662,6 +662,7 @@ mod tests {
         };
 
         let key = "initial_expiration_test_node";
+        task_cache.invalidate_task(key).await.unwrap();
 
         let start_value = TaskValue::new_now("worker1".into(), Some("test_data".into()));
         let info = dbt_state::task_cache::TaskInfo {
@@ -671,10 +672,12 @@ mod tests {
             ]),
         };
 
-        task_cache
-            .try_start_task(key, &start_value, &None)
-            .await
-            .unwrap();
+        assert!(
+            task_cache
+                .try_start_task(key, &start_value, &None)
+                .await
+                .unwrap()
+        );
         let stop_value = TaskValue::new_now("worker1".into(), Some("result_data".into()));
         task_cache
             .stop_task(key, &stop_value, &info, &start_value)
@@ -710,6 +713,7 @@ mod tests {
         };
 
         let key = "get_info_test_node";
+        task_cache.invalidate_task(key).await.unwrap();
 
         let start_value = TaskValue::new_now("worker1".into(), Some("test_data".into()));
         let info = dbt_state::task_cache::TaskInfo {
@@ -719,10 +723,12 @@ mod tests {
             ]),
         };
 
-        task_cache
-            .try_start_task(key, &start_value, &None)
-            .await
-            .unwrap();
+        assert!(
+            task_cache
+                .try_start_task(key, &start_value, &None)
+                .await
+                .unwrap()
+        );
         let stop_value = TaskValue::new_now("worker1".into(), Some("result_data".into()));
         task_cache
             .stop_task(key, &stop_value, &info, &start_value)

@@ -1,14 +1,15 @@
-//! SidecarClient trait for subprocess-based adapter execution. See [`SidecarClient`] for
-//! the design rationale.
+//! SidecarClient trait for subprocess-based adapter execution.
+//!
+//! See [`SidecarClient`] for the design rationale.
 
 use std::fmt::Debug;
 
 use arrow::record_batch::RecordBatch;
-use dbt_adapter_core::AdapterType;
-use dbt_adapter_sql::ident::Ident;
+use minijinja::State;
+
+use dbt_adapter_sql::ident::duckdb::Ident;
 use dbt_adbc::{Connection, QueryCtx};
 use dbt_schemas::{dbt_types::RelationType, schemas::common::ResolvedQuoting};
-use minijinja::State;
 
 use crate::errors::AdapterResult;
 
@@ -27,12 +28,12 @@ pub struct ColumnInfo {
 /// double-quoted, with an embedded `"` escaped. Plain parts do not change, so
 /// their case-folding stays the same.
 pub fn sidecar_relation_name(database: &str, schema: &str, identifier: &str) -> String {
-    let part = |p: &str| {
-        Ident::new(p, AdapterType::DuckDB)
-            .display(AdapterType::DuckDB)
-            .to_string()
-    };
-    format!("{}.{}.{}", part(database), part(schema), part(identifier))
+    format!(
+        "{}.{}.{}",
+        Ident::new(database),
+        Ident::new(schema),
+        Ident::new(identifier)
+    )
 }
 
 /// Delegation interface for adapters that route execution to a sidecar subprocess or

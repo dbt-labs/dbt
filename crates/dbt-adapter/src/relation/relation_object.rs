@@ -172,6 +172,34 @@ impl RelationObject {
     }
 }
 
+/// Parse a relation type string from user Jinja.
+pub(crate) fn parse_relation_type(s: &str) -> Result<RelationType, minijinja::Error> {
+    RelationType::try_from(s).map_err(|_| {
+        minijinja::Error::new(
+            minijinja::ErrorKind::InvalidArgument,
+            format!("'{s}' is not a valid relation type"),
+        )
+    })
+}
+
+/// Parse an optional Jinja `type` argument; none/undefined means unset.
+pub(crate) fn parse_relation_type_value(
+    value: Option<Value>,
+) -> Result<Option<RelationType>, minijinja::Error> {
+    value
+        .filter(|v| !v.is_none() && !v.is_undefined())
+        .map(|v| {
+            let s = v.as_str().ok_or_else(|| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidArgument,
+                    "'type' must be a string",
+                )
+            })?;
+            parse_relation_type(s)
+        })
+        .transpose()
+}
+
 /// Always returns the unfiltered relation string (via [`BaseRelation::render_self_as_str`]),
 /// reference: https://github.com/dbt-labs/dbt-adapters/blob/616a8d3cb595605872c011070c240e7a2b825d79/dbt-adapters/src/dbt/adapters/base/relation.py#L268-L269
 fn render_without_filter(ro: &Arc<RelationObject>) -> Value {
@@ -251,7 +279,8 @@ impl Object for RelationObject {
                 iter.finish()?;
                 let relation_type = relation_type
                     .filter(|s| !s.is_empty())
-                    .map(RelationType::from);
+                    .map(parse_relation_type)
+                    .transpose()?;
                 self.derivative(suffix, relation_type, interpret_suffix_as_full_identifier)
                     .map(|r| Value::from_object(RelationObject::new(r)))
             }
@@ -280,13 +309,7 @@ impl Object for RelationObject {
                 let relation_type_val: Option<Value> =
                     args.consume_optional_only_from_kwargs("type");
                 let location: Option<String> = args.consume_optional_only_from_kwargs("location");
-                let relation_type = relation_type_val.and_then(|v| {
-                    if v.is_none() || v.is_undefined() {
-                        None
-                    } else {
-                        v.as_str().map(RelationType::from)
-                    }
-                });
+                let relation_type = parse_relation_type_value(relation_type_val)?;
                 self.incorporate(path, relation_type, location)
                     .map(|r| Value::from_object(self.with_relation(r)))
             }
@@ -419,6 +442,8 @@ impl Object for RelationObject {
                 Some(Value::from(RelationType::MaterializedView.to_string()))
             }
             Some("Table") => Some(Value::from(RelationType::Table.to_string())),
+            // `this.incorporate(type=this.Function)` in the function materialization reads this.
+            Some("Function") => Some(Value::from(RelationType::Function.to_string())),
             Some("DynamicTable") => Some(Value::from(RelationType::DynamicTable.to_string())),
             Some("InteractiveTable") => {
                 Some(Value::from(RelationType::InteractiveTable.to_string()))
@@ -614,14 +639,17 @@ pub fn create_relation_from_source(
         .clone()
         .unwrap_or(database);
 
-    if adapter_type == AdapterType::DuckDB
-        && let Some(external) = duckdb_external_location_for_source(source)?
-    {
-        return Ok(Box::new(
-            Relation::new(AdapterType::DuckDB, database, schema, identifier)
-                .with_quoting(custom_quoting)
-                .with_external(external),
-        ));
+    match adapter_type {
+        AdapterType::DuckDB | AdapterType::MotherDuck => {
+            if let Some(external) = duckdb_external_location_for_source(source)? {
+                return Ok(Box::new(
+                    Relation::new(adapter_type, database, schema, identifier)
+                        .with_quoting(custom_quoting)
+                        .with_external(external),
+                ));
+            }
+        }
+        _ => {}
     }
 
     create_relation(
@@ -643,8 +671,8 @@ pub fn create_relation_from_node(
     if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
         return create_relation_from_source(
             adapter_type,
-            node.database(),
-            node.schema(),
+            node.database().to_string(),
+            node.schema().to_string(),
             node.base().alias.clone(), // all identifiers are consolidated to alias in InternalDbtNode
             node.quoting(),
             source,
@@ -653,8 +681,8 @@ pub fn create_relation_from_node(
 
     let mut relation = create_relation(
         adapter_type,
-        node.database(),
-        node.schema(),
+        node.database().to_string(),
+        node.schema().to_string(),
         Some(node.base().alias.clone()), // all identifiers are consolidated to alias in InternalDbtNode
         Some(RelationType::from(node.materialized())),
         node.quoting(),
@@ -996,13 +1024,7 @@ pub trait StaticBaseRelation: fmt::Debug + Send + Sync {
             database,
             schema,
             identifier,
-            relation_type.and_then(|v: Value| {
-                if v.is_none() || v.is_undefined() {
-                    None
-                } else {
-                    Some(RelationType::from(v.as_str().unwrap_or_default()))
-                }
-            }),
+            parse_relation_type_value(relation_type)?,
             custom_quoting,
             temporary,
         )
@@ -1163,17 +1185,23 @@ mod tests {
     fn duckdb_source_external_location_formats_and_quotes_path() {
         let source = source_with_meta_location("data/{name}.csv");
 
-        let relation = create_relation_from_source(
-            AdapterType::DuckDB,
-            "main".to_string(),
-            "raw".to_string(),
-            "orders".to_string(),
-            DEFAULT_RESOLVED_QUOTING,
-            &source,
-        )
-        .unwrap();
+        for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+            let relation = create_relation_from_source(
+                adapter_type,
+                "main".to_string(),
+                "raw".to_string(),
+                "orders".to_string(),
+                DEFAULT_RESOLVED_QUOTING,
+                &source,
+            )
+            .unwrap();
 
-        assert_eq!(relation.render_self_as_str(), "'data/orders.csv'");
+            assert_eq!(
+                relation.render_self_as_str(),
+                "'data/orders.csv'",
+                "{adapter_type:?}"
+            );
+        }
     }
 
     #[test]
@@ -1181,17 +1209,23 @@ mod tests {
         let mut source = source_with_meta_location("ignored/{name}.csv");
         source.deprecated_config.external_location = Some("read_csv('orders.csv')".to_string());
 
-        let relation = create_relation_from_source(
-            AdapterType::DuckDB,
-            "main".to_string(),
-            "raw".to_string(),
-            "orders".to_string(),
-            DEFAULT_RESOLVED_QUOTING,
-            &source,
-        )
-        .unwrap();
+        for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+            let relation = create_relation_from_source(
+                adapter_type,
+                "main".to_string(),
+                "raw".to_string(),
+                "orders".to_string(),
+                DEFAULT_RESOLVED_QUOTING,
+                &source,
+            )
+            .unwrap();
 
-        assert_eq!(relation.render_self_as_str(), "read_csv('orders.csv')");
+            assert_eq!(
+                relation.render_self_as_str(),
+                "read_csv('orders.csv')",
+                "{adapter_type:?}"
+            );
+        }
     }
 
     #[test]
@@ -1397,6 +1431,36 @@ mod tests {
         );
     }
 
+    /// The function materialization builds its target with
+    /// `this.incorporate(type=this.Function)`. If `Function` were undefined, the
+    /// target would keep the node's unset type and GRANT statements could not
+    /// tell it is a function.
+    #[test]
+    fn function_type_name_is_exposed_and_incorporates() {
+        let relation = do_create_relation(
+            AdapterType::Snowflake,
+            "d".to_string(),
+            "s".to_string(),
+            Some("f".to_string()),
+            None,
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        let relation = Arc::new(RelationObject::new(relation.into()));
+
+        assert_eq!(
+            relation.get_value(&Value::from("Function")),
+            Some(Value::from("function"))
+        );
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("this", Value::from_dyn_object(relation));
+        let rendered = env
+            .render_str("{{ this.incorporate(type=this.Function).type }}", (), &[])
+            .unwrap();
+        assert_eq!(rendered, "function");
+    }
+
     /// Asserts on `ErrorKind`, not the message: both this arm and the catch-all name the called
     /// method in their message text, so a message-only assertion would pass either way.
     #[test]
@@ -1583,6 +1647,27 @@ mod tests {
             derived.relation_type(),
             Some(RelationType::MaterializedView)
         );
+    }
+
+    #[test]
+    fn api_relation_create_rejects_bogus_type() {
+        let obj = create_static_relation(AdapterType::Postgres, DEFAULT_RESOLVED_QUOTING).unwrap();
+
+        let env = minijinja::Environment::new();
+        let state = State::new_for_env(&env);
+
+        let err = obj
+            .call_method(
+                &state,
+                "create",
+                &[Value::from(minijinja::value::Kwargs::from_iter([(
+                    "type",
+                    Value::from("bogus"),
+                )]))],
+                &[],
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), minijinja::ErrorKind::InvalidArgument);
     }
 
     #[test]

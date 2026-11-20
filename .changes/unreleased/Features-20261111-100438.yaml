@@ -1,0 +1,7 @@
+kind: Features
+body: Publish musllinux (Alpine) wheels for dbt-core-experimental-parser
+time: 2026-11-11T10:04:38.359657+05:30
+custom:
+    author: tauhid621
+    issue: "15607"
+    project: dbt-core

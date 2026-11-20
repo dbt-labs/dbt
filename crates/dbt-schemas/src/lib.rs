@@ -1,3 +1,7 @@
+// Lets the derives of `dbt-proc-macros` name this crate by the same path here and in the crates
+// that depend on it.
+extern crate self as dbt_schemas;
+
 // `DbtProfile::adapters` is a public `IndexMap`, so downstream crates need to be
 // able to name it to construct a profile without taking an `indexmap` dependency
 // of their own.
@@ -45,21 +49,20 @@ pub mod schemas {
         ModificationType, OnManifestLoadFailure, StateArtifacts, config_excluded_keys,
     };
     pub use run_results::{
-        BatchResults, ContextRunResult, DbtCommandExecutionArtifacts, Preview, RunResultOutput,
-        RunResultsArgs, RunResultsArtifact, RunResultsMetadata, TimingInfo,
+        BatchResults, ContextRunResult, DbtCommandExecutionArtifacts, InvocationFacts, Preview,
+        RunResultOutput, RunResultsArgs, RunResultsArtifact, RunResultsMetadata, TimingInfo,
     };
     pub use user_settings::UserSettings;
 
     pub mod nodes;
     pub use nodes::{
         AbsorbedOverload, AdapterAttr, CommonAttributes, DbtAnalysis, DbtAnalysisAttr, DbtCheck,
-        DbtCheckAttr, DbtExperimentalNode, DbtExperimentalNodeAttr, DbtExposure, DbtExposureAttr,
-        DbtFunction, DbtFunctionAttr, DbtModel, DbtModelAttr, DbtSeed, DbtSeedAttr, DbtSnapshot,
-        DbtSnapshotAttr, DbtSource, DbtSourceAttr, DbtTest, DbtTestAttr, DbtUnitTest,
-        DbtUnitTestAttr, ExperimentalData, ExposureType, InternalDbtNode,
-        InternalDbtNodeAttributes, InternalDbtNodeWrapper, IntrospectionKind, NodeBaseAttributes,
-        NodePathKind, Nodes, TestMetadata, TimeSpine, TimeSpinePrimaryColumn,
-        deserialize_empty_string_as_none, serialize_none_as_empty_string,
+        DbtCheckAttr, DbtExposure, DbtExposureAttr, DbtFunction, DbtFunctionAttr, DbtModel,
+        DbtModelAttr, DbtSeed, DbtSeedAttr, DbtSnapshot, DbtSnapshotAttr, DbtSource, DbtSourceAttr,
+        DbtTest, DbtTestAttr, DbtUnitTest, DbtUnitTestAttr, ExposureType, InjectedNode,
+        InjectedNodeType, InternalDbtNode, InternalDbtNodeAttributes, InternalDbtNodeWrapper,
+        IntrospectionKind, NodeBaseAttributes, NodePathKind, Nodes, TestMetadata, TimeSpine,
+        TimeSpinePrimaryColumn, deserialize_empty_string_as_none, serialize_none_as_empty_string,
     };
 
     pub use sources::{FreshnessResultsArtifact, FreshnessResultsMetadata, FreshnessResultsNode};
@@ -159,6 +162,8 @@ pub mod schemas {
             pub mod snapshot_config;
             pub mod source_config;
             pub mod unit_test_config;
+            #[cfg(test)]
+            pub mod warehouse_config_test_support;
             pub mod warehouse_scope;
         }
 
@@ -175,7 +180,9 @@ pub mod schemas {
             CheckConfig, DEFAULT_CHECK_SEVERITY, InfoSchemaConfig, ProjectCheckConfig,
             ResolvedCheckConfig, SUPPORTED_INFO_SCHEMA_VERSIONS, SelectionFilterOn,
         };
-        pub use configs::common::{WarehouseSpecificNodeConfig, same_warehouse_config};
+        pub use configs::common::{
+            LazyWarehouseSpecificNodeConfig, WarehouseSpecificNodeConfig, same_warehouse_config,
+        };
         pub use configs::config_keys::ConfigKeys;
         pub use configs::config_merge::{DefaultTo, Packages, Tags, TblProperties};
         pub use configs::data_test_config::{
@@ -247,7 +254,7 @@ pub mod schemas {
         pub use function_properties::{
             FUNCTION_LANGUAGE_JAVASCRIPT, FUNCTION_LANGUAGE_PYTHON, FUNCTION_LANGUAGE_SQL,
             FunctionArgument, FunctionKind, FunctionOverload, FunctionProperties,
-            FunctionReturnType, Volatility,
+            FunctionReturnType, Volatility, is_any_type,
         };
         pub use metrics_properties::MetricsProperties;
         pub use model_properties::DataTestState;
@@ -259,10 +266,7 @@ pub mod schemas {
         pub use properties::GroupConfig;
         pub use properties::GroupProperties;
         pub use properties::MacrosProperties;
-        pub use properties::{
-            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalExperimentalEntryValue,
-            MinimalSchemaValue, MinimalTableValue, MinimalUnitTestValue,
-        };
+        pub use properties::{DbtPropertiesFile, GetConfig, MinimalSchemaValue, MinimalTableValue};
         pub use saved_queries_properties::SavedQueriesProperties;
         pub use seed_properties::SeedProperties;
         pub use snapshot_properties::SnapshotProperties;

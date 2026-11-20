@@ -15,7 +15,7 @@ use arrow_array::{Array, RecordBatch, StringArray, UInt64Array};
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
 use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
-use dbt_adapter_sql::ident::quote_identifier;
+use dbt_adapter_sql::ident::clickhouse::QualifiedRelationName;
 use dbt_adbc::{Connection, QueryCtx};
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -39,16 +39,6 @@ use std::sync::Arc;
 /// string literals (see <https://clickhouse.com/docs/en/sql-reference/syntax#string>).
 pub(crate) fn escape_clickhouse_string_literal(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
-}
-
-fn clickhouse_relation_sql_name(schema: &str, identifier: &str) -> String {
-    let identifier = quote_identifier(identifier, AdapterType::ClickHouse);
-    if schema.is_empty() {
-        identifier
-    } else {
-        let schema = quote_identifier(schema, AdapterType::ClickHouse);
-        format!("{schema}.{identifier}")
-    }
 }
 
 /// Mirrors dbt-clickhouse util.py `engine_can_atomic_exchange`.
@@ -413,7 +403,7 @@ impl MetadataAdapter for ClickHouseMetadataAdapter {
                 let semantic_fqn = relation.semantic_fqn();
                 let schema = relation.schema_as_str().unwrap_or_default();
                 let identifier = relation.identifier_as_str().unwrap_or_default();
-                let sql_name = clickhouse_relation_sql_name(&schema, &identifier);
+                let sql_name = QualifiedRelationName::new(schema, identifier).to_string();
                 (semantic_fqn, sql_name)
             })
             .collect();
@@ -1300,10 +1290,10 @@ mod tests {
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
 
     #[test]
-    fn clickhouse_relation_sql_name_keeps_adversarial_values_in_one_statement() {
+    fn clickhouse_qualified_relation_name_keeps_adversarial_values_in_one_statement() {
         let sql = format!(
             "DESCRIBE TABLE {};",
-            clickhouse_relation_sql_name(r#"schema\"; SELECT 1; --"#, r#"table\"; SELECT 2; --"#,)
+            QualifiedRelationName::new(r#"schema\"; SELECT 1; --"#, r#"table\"; SELECT 2; --"#)
         );
 
         assert!(sql.contains("\"schema\\\\\"\"; SELECT 1; --\".\"table\\\\\"\"; SELECT 2; --\""));

@@ -1,12 +1,17 @@
 import { type MouseEvent, type ReactNode } from 'react';
-import { Link as RouterLink, type To } from 'react-router-dom';
 
+import {
+  type LinkTo,
+  type NavigationLinkProps,
+  useNavigation,
+} from '../../context/NavigationProvider';
 import { cn } from '../../utils';
 
 export interface LinkProps {
-  /** Renders a react-router `<Link>` for in-app navigation, or a plain `<a>` for external URLs. */
+  /** Renders the host's link (from `NavigationProvider`) for in-app navigation, or a
+   *  plain `<a>` for external URLs. */
   isInternal: boolean;
-  to: To;
+  to: LinkTo;
   state?: unknown;
   target?: string;
   shouldOpenNewTab?: boolean;
@@ -37,7 +42,7 @@ export function Link({
 
   if (isInternal) {
     return (
-      <RouterLink
+      <InternalLink
         to={to}
         state={state}
         target={resolvedTarget}
@@ -46,7 +51,7 @@ export function Link({
         className={linkClassName}
       >
         {children}
-      </RouterLink>
+      </InternalLink>
     );
   }
 
@@ -62,4 +67,10 @@ export function Link({
       {children}
     </a>
   );
+}
+
+/** Split out so only internal links need a `NavigationProvider` above them. */
+function InternalLink(props: NavigationLinkProps) {
+  const { Link: HostLink } = useNavigation();
+  return <HostLink {...props} />;
 }

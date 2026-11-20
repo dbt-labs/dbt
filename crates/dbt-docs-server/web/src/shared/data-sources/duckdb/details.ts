@@ -23,7 +23,8 @@
  * letting an escaped string reach the wire.
  */
 
-import type { Asset, ResourceType } from '../../typings/domain/asset';
+import type { Asset, ResourceType } from 'dbt-docs-lib/domain';
+
 import {
   fromExposureDetail,
   fromGroupDetail,
@@ -104,6 +105,15 @@ const NODE_BASE = `n.unique_id, n.name, n.resource_type, n.package_name, n.descr
   n.original_file_path, n.properties_yml_file_path AS patch_path, n.tags, n.fqn,
   n.meta, n.config, n.database_name, n.schema_name, n.identifier`;
 
+/**
+ * {@link NODE_BASE} without `patch_path`. A source is declared in YAML, so
+ * `original_file_path` is that file and `dbt.sources` has no
+ * `properties_yml_file_path`.
+ */
+const SOURCE_BASE = `n.unique_id, n.name, n.resource_type, n.package_name, n.description,
+  n.original_file_path, n.tags, n.fqn, n.meta, n.config, n.database_name,
+  n.schema_name, n.identifier`;
+
 export const DETAIL_REGISTRY: Partial<Record<ResourceType, DetailSpec>> = {
   model: {
     sql: nodeDetail(
@@ -129,7 +139,8 @@ export const DETAIL_REGISTRY: Partial<Record<ResourceType, DetailSpec>> = {
   snapshot: {
     sql: nodeDetail(
       'dbt.snapshots',
-      `${NODE_BASE}, n.materialized, n.raw_code, n.compiled_code`,
+      // `dbt.snapshots` has no `materialized`: for a snapshot it is always `snapshot`.
+      `${NODE_BASE}, 'snapshot' AS materialized, n.raw_code, n.compiled_code`,
     ),
     tables: ['dbt.snapshots'],
     wantsColumns: true,
@@ -141,7 +152,7 @@ export const DETAIL_REGISTRY: Partial<Record<ResourceType, DetailSpec>> = {
     // Freshness is flat here and nested by the caller, matching the wire shape the
     // mapper expects.
     sql: (uniqueId) => `
-SELECT ${NODE_BASE}, n.source_name, n.loader, n.source_description,
+SELECT ${SOURCE_BASE}, n.source_name, n.loader, n.source_description,
        sf.status, CAST(sf.snapshotted_at AS VARCHAR) AS snapshotted_at,
        CAST(sf.max_loaded_at AS VARCHAR) AS max_loaded_at
 FROM dbt.sources n

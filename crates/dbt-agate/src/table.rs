@@ -469,7 +469,7 @@ impl TableRepr {
         self.select_rows(&indices, None)
     }
 
-    #[cold]
+    #[inline(never)]
     pub(crate) fn select_rows(
         &self,
         indices: &UInt64Array,
@@ -532,7 +532,7 @@ impl TableRepr {
     /// Stability matters because rows can have different names in a table and
     /// a non-stable sorter could create non-determinism in the names of the
     /// sorted rows.
-    #[cold]
+    #[inline(never)]
     pub(crate) fn sort_to_indices(
         &self,
         keys: &[(usize, SortOptions)],
@@ -562,7 +562,7 @@ impl TableRepr {
         Ok(Box::new(indices))
     }
 
-    #[cold]
+    #[inline(never)]
     pub(crate) fn distinct(&self, column_indices: &[usize]) -> Result<Arc<Self>, ArrowError> {
         // TODO: cast the values in `column` according to `key_type`, create a new
         // table with the casted column, and use that table to create the grouper

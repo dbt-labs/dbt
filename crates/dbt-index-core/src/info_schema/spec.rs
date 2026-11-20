@@ -92,6 +92,8 @@ pub struct ColSpec {
     pub src: &'static str,
     /// Set only for columns with no source; such columns are null-filled.
     pub ty: Option<ColTy>,
+    /// The first element of the list column `src`, or null for an empty list.
+    pub first: bool,
 }
 
 /// One output table.
@@ -121,12 +123,18 @@ pub const fn c(out: &'static str) -> ColSpec {
         out,
         src: out,
         ty: None,
+        first: false,
     }
 }
 
 /// Renamed from `src`.
 pub const fn r(out: &'static str, src: &'static str) -> ColSpec {
-    ColSpec { out, src, ty: None }
+    ColSpec {
+        out,
+        src,
+        ty: None,
+        first: false,
+    }
 }
 
 /// Declared with a type but no source; emitted null-filled.
@@ -135,5 +143,16 @@ pub const fn n(out: &'static str, ty: ColTy) -> ColSpec {
         out,
         src: "",
         ty: Some(ty),
+        first: false,
+    }
+}
+
+/// The first element of the list column `src`.
+pub const fn first(out: &'static str, src: &'static str) -> ColSpec {
+    ColSpec {
+        out,
+        src,
+        ty: None,
+        first: true,
     }
 }

@@ -691,6 +691,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow (~25s) — run locally with: \
+                cargo nextest run -p dbt-lease --run-ignored all"]
     fn concurrent_lease_acquire_with_fitting_ttl() {
         // must be larger than n * d (#threads * duration)
         let (_dir, handler) = new_handler(Duration::from_secs(10 * 60));

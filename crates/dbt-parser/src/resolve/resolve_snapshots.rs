@@ -1,4 +1,4 @@
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, strip_resource_paths_from_ref_path,
@@ -7,6 +7,7 @@ use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
     render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
@@ -22,6 +23,7 @@ use crate::utils::{
     update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
@@ -34,7 +36,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs, unexpected_fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_schemas::schemas::common::{
     DbtChecksum, DbtQuoting, ModelFreshnessRules, NodeDependsOn,
@@ -62,6 +64,50 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// How a package's snapshots resolve.
+pub(crate) struct Snapshots;
+
+#[async_trait]
+impl ResolvableNode for Snapshots {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["snapshots"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // TODO: resolve_snapshots still creates its own local JinjaTypeCheckingEventListenerFactory
+        // instead of receiving the top-level one, so snapshot macro dependencies are populated
+        // locally rather than via update_manifest_with_macro_depends_on. Out of scope for now.
+        // Resolve snapshots based on the dbt_state, database, schema, and project name
+        let (snapshots, disabled_snapshots) = resolve_snapshots(
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.properties.take_entries("snapshots"),
+            &ctx.macros.macros,
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            &mut ctx.node_resolver,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            ctx.token,
+        )
+        .await?;
+        ctx.nodes.snapshots.extend(snapshots);
+        ctx.disabled_nodes.snapshots.extend(disabled_snapshots);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
 pub async fn resolve_snapshots(
     arg: &ResolveArgs,
@@ -69,15 +115,15 @@ pub async fn resolve_snapshots(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    mut snapshot_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    mut snapshot_properties: BTreeMap<String, PropertiesEntry>,
     macros: &BTreeMap<String, DbtMacro>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     jinja_env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, MinijinjaValue>,
+    base_ctx: &Arc<BTreeMap<String, MinijinjaValue>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     node_resolver: &mut NodeResolver,
@@ -228,7 +274,7 @@ pub async fn resolve_snapshots(
                 schema_value,
                 false,
                 &jinja_env,
-                base_ctx,
+                base_ctx.as_ref(),
                 &[],
                 dependency_package_name,
                 true,
@@ -318,7 +364,7 @@ pub async fn resolve_snapshots(
             package_quoting,
             uses_snapshot_fqn: true,
             defer_render_errors_to_compile: true,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -370,7 +416,6 @@ pub async fn resolve_snapshots(
         alias_adapter,
         raw_code,
         macro_dependencies,
-        macro_spans: _macro_spans,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -623,7 +668,7 @@ pub async fn resolve_snapshots(
                         .clone(),
                     table_format: snapshot_config.table_format.clone(),
                 },
-                __adapter_attr__: AdapterAttr::from_config_and_dialect(
+                __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(
                     &snapshot_config.__warehouse_specific_config__,
                     selected_adapter,
                 ),

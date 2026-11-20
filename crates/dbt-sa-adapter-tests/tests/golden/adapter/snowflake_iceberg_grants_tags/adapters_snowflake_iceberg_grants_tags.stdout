@@ -8,7 +8,7 @@
  Succeeded model icebergrestschemafusion.rest_copy_grants (table) [1 of 3 in duration]
  Rendering models/glue_copy_grants.sql
    Running models/glue_copy_grants.sql
- Succeeded model icebergrestschemafusion.glue_copy_grants (table) [2 of 3 in duration]
+ Succeeded model icebergrestschemafusion.glue_copy_grants (table) [2 of 3 in duration, 1 row]
  Rendering models/builtin_copy_grants.sql
    Running models/builtin_copy_grants.sql
  Succeeded model icebergrestschemafusion_icebergBuiltinTestSchema.builtin_copy_grants (table) [3 of 3 in duration]

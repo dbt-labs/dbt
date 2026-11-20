@@ -1,12 +1,17 @@
 //! Module containing the entrypoint for the resolve phase.
+pub(crate) mod properties;
+
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::properties_index::{IndexCtx, IndexedName};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::{canonicalize_source_config_keys, extract_config_map};
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 
 use dbt_adapter::load_catalogs;
 use dbt_adapter::metadata::routed_source_databases;
@@ -40,7 +45,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::{
     TestableNodeTrait, TestableTable, extract_test_unrendered_configs,
 };
@@ -205,6 +210,54 @@ fn build_source_unrendered_config(
     Ok(unrendered)
 }
 
+/// How a package's sources resolve.
+pub(crate) struct Sources;
+
+#[async_trait]
+impl ResolvableNode for Sources {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["sources"]
+    }
+
+    /// A source defines one name for each of its tables.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        ctx: &IndexCtx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        properties::index_source(key, item, ctx)
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // Resolve sources based on the dbt_state, database, schema, and project name
+        let (sources, disabled_sources) = resolve_sources(
+            ctx.arg,
+            ctx.package,
+            ctx.root_package_name,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            properties::take_source_table_entries(
+                &mut ctx.properties,
+                &ctx.jinja_env,
+                &ctx.base_ctx,
+            ),
+            ctx.database,
+            ctx.adapter_type,
+            &ctx.base_ctx,
+            &ctx.jinja_env,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            &mut ctx.node_resolver,
+        )
+        .await?;
+        ctx.nodes.sources.extend(sources);
+        ctx.disabled_nodes.sources.extend(disabled_sources);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_sources(
     arg: &ResolveArgs,
@@ -212,7 +265,7 @@ pub async fn resolve_sources(
     root_package_name: &str,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    source_properties: BTreeMap<(String, String), MinimalPropertiesEntry>,
+    source_properties: BTreeMap<(String, String), PropertiesEntry>,
     database: &str,
     adapter_type: AdapterType,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
@@ -734,7 +787,7 @@ fn merge_table_into_schema_config(
     )
     .map_err(|msg| {
         dbt_common::fs_err!(
-            ErrorCode::Unexpected,
+            ErrorCode::FreshnessConfigInvalid,
             "{} on source `{}.{}`",
             msg,
             source_name,

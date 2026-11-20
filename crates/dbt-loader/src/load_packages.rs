@@ -321,6 +321,7 @@ pub fn internal_package_names(adapter_type: AdapterType) -> Vec<String> {
         AdapterType::Redshift => packages.push("dbt-postgres".to_string()),
         AdapterType::Databricks => packages.push("dbt-spark".to_string()),
         AdapterType::LakeCompute => packages.push("dbt-duckdb".to_string()),
+        AdapterType::MotherDuck => packages.push("dbt-duckdb".to_string()),
         _ => {}
     }
     packages
@@ -429,13 +430,15 @@ pub fn construct_internal_packages(
                     package_dir_name
                 )
             })?;
-        let mut parsed: DbtProject = dbt_yaml::from_str(&yml_content).map_err(|e| {
-            fs_err!(
-                ErrorCode::InvalidConfig,
-                "Failed to parse internal dbt_project.yml: {}",
-                e
-            )
-        })?;
+        let mut parsed = dbt_yaml::from_str(&yml_content)
+            .and_then(DbtProject::from_yml_value)
+            .map_err(|e| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Failed to parse internal dbt_project.yml: {}",
+                    e
+                )
+            })?;
         // Project flags only apply from the root project.
         parsed.flags = None;
         let dbt_project = build_internal_dbt_project(parsed)?;
