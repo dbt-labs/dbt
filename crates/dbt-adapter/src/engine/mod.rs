@@ -61,9 +61,12 @@ pub fn execute_query_with_retry(
         ) {
             Ok(result) => return Ok(result),
             Err(err) => {
-                last_error = Some(err.clone());
-                thread::sleep(Duration::from_secs(1));
                 attempt += 1;
+                // Wait only when another attempt follows, as dbt-adapters does.
+                if attempt < retry_limit {
+                    thread::sleep(Duration::from_secs(1));
+                }
+                last_error = Some(err);
             }
         }
     }

@@ -845,6 +845,7 @@ mod execute_inner_txn {
     use std::cell::RefCell;
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use adbc_core::PartitionedResult;
     use adbc_core::error::{Error, Result, Status};
@@ -868,7 +869,7 @@ mod execute_inner_txn {
         open_transaction, tlocal_slot_occupied,
     };
     use crate::engine::query_comment::QueryCommentConfig;
-    use crate::engine::{AdapterEngine, AdbcEngine};
+    use crate::engine::{AdapterEngine, AdbcEngine, execute_query_with_retry};
     use crate::sql_types::DefaultTypeOps;
     use crate::stmt_splitter::DefaultStmtSplitter;
     use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
@@ -1162,6 +1163,48 @@ mod execute_inner_txn {
         assert!(result.is_err());
         assert!(!session.discarded);
         assert_eq!(session.executed, [FAILING_SQL]);
+    }
+
+    #[test]
+    fn failed_statement_returns_its_error_without_waiting() {
+        let engine = snowflake_engine();
+        let started = Instant::now();
+        let (result, session) = run_on(engine, FAILING_SQL);
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err());
+        assert_eq!(session.executed, [FAILING_SQL], "the statement was retried");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "the error took {elapsed:?} to come back"
+        );
+    }
+
+    #[test]
+    fn retry_waits_only_between_attempts() {
+        let engine = snowflake_engine();
+        let session = Arc::new(Mutex::new(Session::default()));
+        let mut conn = ScriptedConnection(Arc::clone(&session));
+        let started = Instant::now();
+        let result = execute_query_with_retry(
+            engine,
+            None,
+            &mut conn,
+            &QueryCtx::new("test"),
+            FAILING_SQL,
+            /* retry_limit = */ 2,
+            &Vec::new(),
+            false,
+            CancellationToken::never_cancels(),
+        );
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err());
+        assert_eq!(session.lock().unwrap().executed, [FAILING_SQL, FAILING_SQL]);
+        assert!(
+            (Duration::from_secs(1)..Duration::from_secs(2)).contains(&elapsed),
+            "expected one 1s wait between the two attempts, took {elapsed:?}"
+        );
     }
 
     #[test]
