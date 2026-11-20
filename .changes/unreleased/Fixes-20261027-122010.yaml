@@ -1,0 +1,7 @@
+kind: Fixes
+body: tojson now escapes non-ASCII characters as \uXXXX like dbt 1.x
+time: 2026-10-27T12:20:10.612212892Z
+custom:
+    author: yashaggarwal85d
+    issue: "16830"
+    project: dbt-core
