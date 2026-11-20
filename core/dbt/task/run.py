@@ -806,6 +806,35 @@ class MicrobatchModelRunner(ModelRunner):
     def describe_node(self) -> str:
         return f"{self.node.language} microbatch model {self.get_node_representation()}"
 
+    @staticmethod
+    def _combine_completed_batches(
+        result: RunResult, batch_results: List[RunResult]
+    ) -> Tuple[BatchResults, Dict[BatchType, str]]:
+        merged_batches = (
+            result.batch_results if result.batch_results is not None else BatchResults()
+        )
+        batch_errors: Dict[BatchType, str] = {}
+        for batch_result in batch_results:
+            result.execution_time += batch_result.execution_time
+            completed = batch_result.batch_results
+            if completed is None:
+                continue
+            merged_batches += completed
+            if batch_result.status == RunStatus.Error and batch_result.message:
+                batch_errors.update(dict.fromkeys(completed.failed, batch_result.message))
+        return merged_batches, batch_errors
+
+    @staticmethod
+    def _summarize_batches(num_successes: int, num_failures: int) -> Tuple[RunStatus, str]:
+        if num_failures == 0:
+            return RunStatus.Success, "SUCCESS"
+        if num_successes == 0:
+            return RunStatus.Error, "ERROR"
+        return (
+            RunStatus.PartialSuccess,
+            f"PARTIAL SUCCESS ({num_successes}/{num_successes + num_failures})",
+        )
+
     def merge_batch_results(
         self,
         result: RunResult,
@@ -814,50 +843,30 @@ class MicrobatchModelRunner(ModelRunner):
         expected_batches: Optional[Iterable[BatchType]] = None,
     ) -> None:
         """Merge completed results and mark unfinished batches for retry."""
-        if result.batch_results is None:
-            result.batch_results = BatchResults()
+        merged, batch_errors = self._combine_completed_batches(result, batch_results)
+        result.batch_results = merged
 
-        batch_errors: Dict[BatchType, str] = {}
-        for batch_result in batch_results:
-            if batch_result.batch_results is not None:
-                result.batch_results += batch_result.batch_results
-                if batch_result.status == RunStatus.Error and batch_result.message:
-                    batch_errors.update(
-                        dict.fromkeys(batch_result.batch_results.failed, batch_result.message)
-                    )
-            result.execution_time += batch_result.execution_time
-
-        num_successes = len(result.batch_results.successful)
-        successful_batches = set(result.batch_results.successful)
+        num_successes = len(merged.successful)
+        successful_batches = set(merged.successful)
         if self.node.previous_batch_results is not None:
             successful_batches.update(self.node.previous_batch_results.successful)
 
         if expected_batches is not None:
-            finished = successful_batches.union(result.batch_results.failed)
-            result.batch_results.failed.extend(set(expected_batches) - finished)
+            finished = successful_batches.union(merged.failed)
+            merged.failed.extend(set(expected_batches) - finished)
             # An interrupted retry includes historical successes in its summary.
             num_successes = len(successful_batches)
 
-        num_failures = len(result.batch_results.failed)
-        if num_failures == 0:
-            status = RunStatus.Success
-            msg = "SUCCESS"
-        elif num_successes == 0:
-            status = RunStatus.Error
-            msg = "ERROR"
-        else:
-            status = RunStatus.PartialSuccess
-            msg = f"PARTIAL SUCCESS ({num_successes}/{num_successes + num_failures})"
-        result.status = status
+        result.status, summary = self._summarize_batches(num_successes, len(merged.failed))
 
         details = []
         for (start, _), message in sorted(batch_errors.items()):
             label = MicrobatchBuilder.format_batch_start(start, self.node.config.batch_size)
             details.append(f"Batch {label}: {scrub_secrets(message, env_secrets())}")
-        result.message = "\n".join([msg, *details])
+        result.message = "\n".join([summary, *details])
 
-        result.batch_results.successful = sorted(successful_batches)
-        result.batch_results.failed = sorted(result.batch_results.failed)
+        merged.successful = sorted(successful_batches)
+        merged.failed = sorted(merged.failed)
 
     def get_microbatch_builder(self, model: ModelNode) -> MicrobatchBuilder:
         # Intially set the start/end to values from args
