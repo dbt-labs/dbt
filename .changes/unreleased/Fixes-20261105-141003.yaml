@@ -1,0 +1,7 @@
+kind: Fixes
+body: Record microbatch partial success and retry only the failed batches.
+time: 2026-11-05T14:10:03.393403-08:00
+custom:
+    author: colin-k-rogers
+    issue: "17061"
+    project: dbt-core
