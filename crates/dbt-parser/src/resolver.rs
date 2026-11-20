@@ -1388,9 +1388,11 @@ fn check_upstreams_reachable(
                             )
                         },
                         format!(
-                            "Materialize '{upstream_id}' as 'table' or 'incremental' with 'catalog_name' set to a \
-                             'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog', \
-                             and make BigQuery the profile's default adapter, or run '{unique_id}' on BigQuery."
+                            "Materialize '{upstream_id}' as 'table' or 'incremental' with either 'catalog_name' set to a \
+                             'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog' or \
+                             (for a SQL model only) 'table_format: iceberg' with no 'catalog_name' and a storage location \
+                             (model 'storage_uri' or 'external_volume'), and make BigQuery the profile's default adapter, \
+                             or run '{unique_id}' on BigQuery."
                         )
                     );
                 } else if no_storage {
@@ -2347,25 +2349,36 @@ catalogs:
         // hint names the node kind it rejected. Which upstreams classify as reachable is
         // `DbtModel::is_bigquery_managed_iceberg_table`'s test.
         for as_test in [false, true] {
-            for (catalog_name, format, materialized, accepted, rejected_because) in [
-                (Some("bq"), None, DbtMaterialization::Table, true, ""),
-                (
-                    Some("bq"),
-                    None,
-                    DbtMaterialization::View,
-                    false,
-                    "has no physical storage format",
-                ),
+            for (catalog_name, format, materialized, language, accepted, rejected_because) in [
                 (
                     None,
                     Some("iceberg"),
                     DbtMaterialization::Table,
+                    Some("python"),
                     false,
                     "is not reachable through a catalog",
+                ),
+                (Some("bq"), None, DbtMaterialization::Table, None, true, ""),
+                (
+                    None,
+                    Some("iceberg"),
+                    DbtMaterialization::Table,
+                    None,
+                    true,
+                    "",
+                ),
+                (
+                    Some("bq"),
+                    None,
+                    DbtMaterialization::View,
+                    None,
+                    false,
+                    "has no physical storage format",
                 ),
             ] {
                 let mut parent = DbtModel::default();
                 parent.__base_attr__.adapter = AdapterType::Bigquery;
+                parent.__common_attr__.language = language.map(str::to_string);
                 parent.__model_attr__.catalog_name = catalog_name.map(str::to_string);
                 parent.__model_attr__.table_format = format.map(str::to_string);
                 parent.__base_attr__.materialized = materialized.clone();
@@ -2409,9 +2422,13 @@ catalogs:
                     } else {
                         "model.test.child"
                     };
-                    assert!(error.context.contains(&format!(
-                        "Materialize 'model.test.parent' as 'table' or 'incremental' with 'catalog_name' set to a 'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog', and make BigQuery the profile's default adapter, or run '{unique_id}' on BigQuery."
-                    )));
+                    assert!(
+                        error.context.contains(&format!(
+                            "Materialize 'model.test.parent' as 'table' or 'incremental' with either 'catalog_name' set to a 'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog' or (for a SQL model only) 'table_format: iceberg' with no 'catalog_name' and a storage location (model 'storage_uri' or 'external_volume'), and make BigQuery the profile's default adapter, or run '{unique_id}' on BigQuery."
+                        )),
+                        "language={language:?}: {}",
+                        error.context
+                    );
                 }
             }
         }

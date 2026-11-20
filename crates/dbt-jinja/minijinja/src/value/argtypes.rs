@@ -282,14 +282,14 @@ impl<'a> From<&'a [u8]> for Value {
 ///
 /// The caller must ensure that the length of `s` is less than or equal to
 /// [SMALL_STR_CAP](crate::value::SMALL_STR_CAP).
-#[cold]
+#[inline(never)]
 unsafe fn value_from_small_str_unchecked(s: &str) -> Value {
     // SAFETY: s <= SMALL_STR_CAP is the pre-condition of this unsafe function.
     let small_str = unsafe { SmallStr::new_unchecked(s) };
     Value(ValueRepr::SmallStr(small_str))
 }
 
-#[cold]
+#[inline(never)]
 fn value_from_large_string(s: &str) -> Value {
     Value(ValueRepr::String(Arc::from(s), StringType::Normal))
 }
@@ -298,10 +298,9 @@ impl<'a> From<&'a str> for Value {
     #[inline(always)]
     fn from(val: &'a str) -> Self {
         let len = val.len();
-        // The branch is inlined at every callsite, but the two arms are cold function calls,
-        // so their implementations don't get inlined everywhere. Inlined conditional branches
-        // are friendly to branch prediction, so this is a good tradeoff between code size and
-        // performance.
+        // The branch is inlined at every callsite, but the two arms are calls to
+        // out-of-line functions, so their implementations aren't copied everywhere.
+        // Both arms are common, so neither is marked cold.
         if len <= SMALL_STR_CAP {
             // SAFETY: len <= SMALL_STR_CAP is checked here, so this is safe.
             unsafe { value_from_small_str_unchecked(val) }

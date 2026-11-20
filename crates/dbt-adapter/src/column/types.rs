@@ -609,7 +609,7 @@ impl Column {
         }
     }
 
-    #[cold]
+    #[inline(never)]
     pub fn new_boxed(
         adapter_type: AdapterType,
         name: String,
@@ -683,7 +683,7 @@ impl Column {
     /// Create a new BigQuery column
     ///
     /// `mode` ias a field is seen in BQ (https://cloud.google.com/bigquery/docs/schemas#modes)
-    #[cold]
+    #[inline(never)]
     pub fn new_bigquery(
         name: String,
         original_sql_str: String,

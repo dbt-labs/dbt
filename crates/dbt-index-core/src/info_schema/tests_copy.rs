@@ -1685,6 +1685,70 @@ fn generic_test_config_and_path_reach_data_tests_on_both_materializers() {
     }
 }
 
+/// A check view returns the rows of the published table, cut to the columns it offers. Check
+/// views extract fewer payload paths than the published tables; that must not change a row.
+#[test]
+fn check_views_return_the_published_rows() {
+    if crate::db::Db::open_memory().is_err() {
+        eprintln!("skipping: DuckDB driver unavailable");
+        return;
+    }
+    let metadata = tempfile::tempdir().unwrap();
+    write_node_config_corpus(metadata.path());
+
+    let open = |statements: &[String]| {
+        let mut db = crate::db::Db::open_memory().unwrap();
+        for stmt in statements {
+            db.execute_update(stmt)
+                .unwrap_or_else(|e| panic!("executing\n{stmt}\n{e}"));
+        }
+        db
+    };
+    let rows = |db: &mut crate::db::Db, sql: &str| {
+        let mut rows: Vec<String> = Vec::new();
+        for batch in db
+            .execute_query(sql)
+            .unwrap_or_else(|e| panic!("{sql}\n{e}"))
+        {
+            for row in 0..batch.num_rows() {
+                let cells: Vec<String> = (0..batch.num_columns())
+                    .map(|col| crate::format::cell_to_string(&batch, row, col))
+                    .collect();
+                rows.push(cells.join(" | "));
+            }
+        }
+        rows.sort();
+        rows
+    };
+    let checks = super::epoch_views::parse_safe_statements(metadata.path()).unwrap();
+    let mut published = open(
+        &super::epoch_views::generate(metadata.path())
+            .unwrap()
+            .statements,
+    );
+    let mut check_db = open(&checks);
+
+    let mut compared = Vec::new();
+    for view in super::parse_safe::VIEWS {
+        let target = format!("dbt.{}", view.name);
+        if !checks
+            .iter()
+            .any(|s| s.starts_with(&format!("CREATE OR REPLACE VIEW {target} AS")))
+        {
+            continue;
+        }
+        let cols: Vec<String> = view.cols.iter().map(|c| format!("\"{c}\"")).collect();
+        let sql = format!("SELECT {} FROM {target}", cols.join(", "));
+        assert_eq!(
+            rows(&mut check_db, &sql),
+            rows(&mut published, &sql),
+            "{target}"
+        );
+        compared.push(view.name);
+    }
+    assert!(compared.contains(&"models"), "compared {compared:?}");
+}
+
 /// Parse nodes written straight to `parse/nodes`, one JSON object per row with the fixed
 /// column set below.
 fn write_node_rows(metadata_dir: &Path, rows: &[Value]) {
