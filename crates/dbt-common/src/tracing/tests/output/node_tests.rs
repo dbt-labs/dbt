@@ -170,7 +170,7 @@ fn node_results(cases: &mut Vec<Case>) {
                     ),
                 );
 
-                // The adapter is only reported when nodes of one invocation can run on different ones.
+                // The adapter is only named when nodes of one invocation can run on different ones.
                 let mut warned = model("live_orders", NodeMaterialization::StreamingTable);
                 warned.adapter = Some("bigquery".to_string());
                 warned.duration_ms = Some(3_725_000);
@@ -181,19 +181,19 @@ fn node_results(cases: &mut Vec<Case>) {
                 ));
                 cases.push(
                     node_case(
-                        "streaming table on another adapter, with warnings",
+                        "streaming table with warnings, adapter not named",
                         warned,
                     )
                     .expect(
                         DBT_LOG,
                         indoc! {"
                             03:04:05.678901 [info ]: Started model analytics.live_orders
-                            04:06:10.678901 [info ]:     Warned model analytics.live_orders (streaming, bigquery) [3 of 12 in 1h 2m]
+                            04:06:10.678901 [info ]:     Warned model analytics.live_orders (streaming) [3 of 12 in 1h 2m]
                         "},
                     )
                     .expect(
                         TERMINAL,
-                        "<yellow+bold>    Warned</> model <cyan+bold>analytics.</><blue+bold>live_orders</> (streaming, bigquery) [3 of 12 in 1h 2m]\n",
+                        "<yellow+bold>    Warned</> model <cyan+bold>analytics.</><blue+bold>live_orders</> (streaming) [3 of 12 in 1h 2m]\n",
                     ),
                 );
             }
@@ -512,19 +512,19 @@ fn reused_nodes(cases: &mut Vec<Case>) {
                 let mut cloned = model("orders", NodeMaterialization::View);
                 cloned.adapter = Some("snowflake".to_string());
                 node_case(
-                    "view cloned from another environment, on another adapter",
+                    "view cloned from another environment, adapter not named",
                     reused(cloned, cache_detail(reason)),
                 )
                 .expect(
                     DBT_LOG,
                     indoc! {"
                         03:04:05.678901 [info ]: Started model analytics.orders
-                        03:04:05.928901 [info ]:     Reused model analytics.orders (view, snowflake - Cloned from other environment) [3 of 12]
+                        03:04:05.928901 [info ]:     Reused model analytics.orders (view - Cloned from other environment) [3 of 12]
                     "},
                 )
                 .expect(
                     TERMINAL,
-                    "<green+bold>    Reused</> model <cyan+bold>analytics.</><blue+bold>orders</> (view, snowflake - Cloned from other environment) [3 of 12]\n",
+                    "<green+bold>    Reused</> model <cyan+bold>analytics.</><blue+bold>orders</> (view - Cloned from other environment) [3 of 12]\n",
                 )
             }
             NodeCacheReason::ClonedExistingStillFresh => node_case(
@@ -1149,7 +1149,7 @@ fn aggregated_tests(cases: &mut Vec<Case>) {
     );
 
     cases.push(
-        Case::new("batched tests of a versioned model on another adapter")
+        Case::new("batched tests of a versioned model, adapter not named")
             .run(|clock| {
                 node_group(|| {
                     aggregated_test_group("unique", "model.jaffle_shop.customers.v2", || {
@@ -1165,9 +1165,9 @@ fn aggregated_tests(cases: &mut Vec<Case>) {
             .expect(
                 TERMINAL,
                 indoc! {"
-                    <green+bold>    Passed</> test  <cyan+bold></><blue+bold>unique on customers.v2</> (snowflake - 2 batched) [0.06s]
-                        ├─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>unique_customers_id</> (snowflake)
-                        └─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>unique_customers_email</> (snowflake)
+                    <green+bold>    Passed</> test  <cyan+bold></><blue+bold>unique on customers.v2</> (2 batched) [0.06s]
+                        ├─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>unique_customers_id</>
+                        └─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>unique_customers_email</>
                 "},
             ),
     );

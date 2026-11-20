@@ -31,7 +31,7 @@ use crate::{
     constants::DBT_GENERIC_TESTS_DIR_NAME, tracing::event_classifiers::is_exit_with_status_log,
 };
 use crate::{
-    io_args::{FsCommand, LogFormat, ShowOptions},
+    io_args::{FsCommand, LogFormat, ShowOptions, multi_adapter_enabled},
     tracing::{
         data_provider::DataProvider,
         dbt_metrics::CompatibilityProbe,
@@ -1588,10 +1588,12 @@ impl TuiLayer {
             duration: max_duration,
             // Every member shares the one invocation-wide denominator.
             node_count_total: members.first().and_then(|(node, _)| node.node_count_total),
-            // Batches are split by adapter, so members share one.
+            // Batches are split by adapter, so members share one. Only named when nodes can
+            // run on different adapters.
             adapter: members
                 .first()
-                .and_then(|(node, _)| node.adapter.as_deref()),
+                .and_then(|(node, _)| node.adapter.as_deref())
+                .filter(|_| multi_adapter_enabled()),
             colorize: self.colorize,
         };
 

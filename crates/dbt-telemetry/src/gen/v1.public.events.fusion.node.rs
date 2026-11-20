@@ -619,8 +619,8 @@ pub struct NodeProcessed {
     /// Mirrors dbt core's `num_nodes`.
     #[prost(uint32, optional, tag = "47")]
     pub node_count_total: ::core::option::Option<u32>,
-    /// Adapter type this node runs on (e.g. "snowflake"). Only set when the
-    /// project can run nodes on more than one adapter.
+    /// Adapter type this node runs on (e.g. "snowflake"): its `+adapter` config if
+    /// it sets one, else the target's adapter type.
     #[prost(string, optional, tag = "48")]
     pub adapter: ::core::option::Option<::prost::alloc::string::String>,
     /// If node_type == NODE_TYPE_EXPERIMENTAL, the kind of node the experimental added

@@ -551,8 +551,8 @@ message NodeProcessed {
   // Mirrors dbt core's `num_nodes`.
   optional uint32 node_count_total = 47;
 
-  // Adapter type this node runs on (e.g. "snowflake"). Only set when the
-  // project can run nodes on more than one adapter.
+  // Adapter type this node runs on (e.g. "snowflake"): its `+adapter` config if
+  // it sets one, else the target's adapter type.
   optional string adapter = 48;
 
   // If node_type == NODE_TYPE_EXPERIMENTAL, the kind of node the experimental added
