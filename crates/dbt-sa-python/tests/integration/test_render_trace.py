@@ -5,6 +5,7 @@ import json
 import duckdb
 import pytest
 
+TRACE_TABLE = "info_schema/v1/dbt.render_traces.parquet"
 TRACE_EPOCHS = "private/metadata/compile/render_traces/v1_*.parquet"
 
 
@@ -66,7 +67,7 @@ def test_render_trace_matches_compile_and_preserves_provenance(tmp_project, invo
         project / "traced" / f"{relative}.sql"
     ).read_text()
 
-    trace = read_trace(project, invoke, f"traced/{TRACE_EPOCHS}", "model.render_trace.probe")
+    trace = read_trace(project, invoke, f"traced/{TRACE_TABLE}", "model.render_trace.probe")
     assert trace["protocol_version"] == 2
     assert trace["unique_id"] == "model.render_trace.probe"
     assert trace["render_stage"] == "jinja_before_ephemeral_injection"
@@ -101,7 +102,7 @@ def test_render_trace_matches_compile_and_preserves_provenance(tmp_project, invo
         "write_render_trace",
     )
     assert repeated.success, repeated.exception
-    refreshed = read_trace(project, invoke, f"traced/{TRACE_EPOCHS}", "model.render_trace.probe")
+    refreshed = read_trace(project, invoke, f"traced/{TRACE_TABLE}", "model.render_trace.probe")
     assert refreshed["invocation_id"] != trace["invocation_id"]
     assert refreshed["rendered"] != trace["rendered"]
     assert "select 11 as value" in refreshed["rendered"]
@@ -129,7 +130,7 @@ def test_selected_compiles_retain_unselected_traces(tmp_project, invoke, partial
     ]
     if not partial_load:
         flags.append("--no-partial-load")
-    parquet_path = f"target/{TRACE_EPOCHS}"
+    parquet_path = f"target/{TRACE_TABLE}"
     probe_id = "model.render_trace.probe"
     retained_id = "model.render_trace.retained"
     base_id = "model.render_trace.base"
@@ -343,3 +344,18 @@ def test_trace_write_error_warns_without_failing_compile(tmp_project, invoke, ca
     assert result.success, result.exception
     assert "render_traces" in captured.out + captured.err
     assert trace_dir.is_file()
+
+
+@pytest.mark.parametrize("full_info_schema", [False, True])
+def test_public_trace_table_survives_info_schema_generation(tmp_project, invoke, full_info_schema):
+    project = tmp_project("render_trace")
+    args = ["compile", "--select", "probe", "--feature", "write_render_trace"]
+    if full_info_schema:
+        args.append("--generate-info-schema")
+    result = invoke(project, *args)
+    assert result.success, result.exception
+    public = read_trace(project, invoke, f"target/{TRACE_TABLE}", "model.render_trace.probe")
+    private = read_trace(project, invoke, f"target/{TRACE_EPOCHS}", "model.render_trace.probe")
+    assert public == private
+    if full_info_schema:
+        assert "dbt.render_traces" in (project / "target/info_schema/v1/views.sql").read_text()

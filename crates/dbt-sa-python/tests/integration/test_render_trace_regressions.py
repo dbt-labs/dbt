@@ -290,7 +290,7 @@ def test_review_regression_artifact(case, tmp_project, invoke):
     assert (project / "normal" / f"{relative}.sql").read_bytes() == (
         project / "traced" / f"{relative}.sql"
     ).read_bytes()
-    epochs = project / "traced/private/metadata/compile/render_traces/v1_*.parquet"
+    epochs = project / "traced/info_schema/v1/dbt.render_traces.parquet"
     with duckdb.connect() as connection:
         row = connection.execute(
             "select to_json(t) from read_parquet(?) t "

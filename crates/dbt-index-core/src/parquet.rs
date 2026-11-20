@@ -2367,6 +2367,7 @@ define_row! {
 /// Get schema for a given table name.
 pub fn schema_for(table: &str) -> SchemaRef {
     match table {
+        "render_traces" => Arc::new(Schema::new(dbt_metadata_parquet::render_traces::fields())),
         "generation" => schema_generation(),
         "project" => schema_project(),
         "packages" => schema_packages(),

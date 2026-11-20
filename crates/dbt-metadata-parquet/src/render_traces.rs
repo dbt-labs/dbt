@@ -35,7 +35,7 @@ pub struct RenderTraceRow {
     pub events: Vec<RenderTraceEventRow>,
 }
 
-fn fields() -> Vec<Field> {
+pub fn fields() -> Vec<Field> {
     let event_fields = Fields::from(vec![
         Field::new("kind", DataType::Utf8, false),
         Field::new("source_start", DataType::Int64, false),

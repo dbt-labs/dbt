@@ -282,6 +282,20 @@ fn duckdb_type(ty: &DataType) -> Result<String, IndexError> {
         DataType::Float64 => "DOUBLE".into(),
         DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => "TIMESTAMP WITH TIME ZONE".into(),
         DataType::Timestamp(TimeUnit::Microsecond, None) => "TIMESTAMP".into(),
+        DataType::Struct(fields) => format!(
+            "STRUCT({})",
+            fields
+                .iter()
+                .map(|field| {
+                    Ok(format!(
+                        "\"{}\" {}",
+                        field.name().replace('"', "\"\""),
+                        duckdb_type(field.data_type())?
+                    ))
+                })
+                .collect::<Result<Vec<_>, IndexError>>()?
+                .join(", ")
+        ),
         DataType::List(f) | DataType::LargeList(f) => format!("{}[]", duckdb_type(f.data_type())?),
         other => {
             return Err(IndexError::Other(format!(

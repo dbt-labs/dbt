@@ -174,6 +174,34 @@ pub fn write_info_schema_with(
     }
 }
 
+/// Publish the latest retained trace per model, independently of full info-schema generation.
+/// Private epochs remain the incremental store; this public snapshot is replaced atomically.
+pub fn refresh_render_traces(
+    metadata_dir: &Path,
+    info_schema_dir: &Path,
+) -> Result<(), IndexError> {
+    let spec = INFO_SCHEMA
+        .iter()
+        .find(|spec| spec.name == "render_traces")
+        .ok_or_else(|| IndexError::Other("info schema: no dbt.render_traces spec".into()))?;
+    let out = project::out_schema(spec)?;
+    let batches = project::project_table(spec, &render_trace_batches(metadata_dir)?, &out)?;
+    write_output(&versioned_dir(info_schema_dir), spec, &out, &batches)
+}
+
+fn render_trace_batches(metadata_dir: &Path) -> Result<Vec<RecordBatch>, IndexError> {
+    let rows = dbt_metadata_parquet::render_traces::read_render_traces_latest(
+        &metadata_dir.join("compile/render_traces"),
+    );
+    let schema = crate::parquet::schema_for("render_traces");
+    rows.chunks(256)
+        .map(|chunk| {
+            serde_arrow::to_record_batch(schema.fields(), &chunk)
+                .map_err(|e| IndexError::Other(format!("info schema render traces: {e}")))
+        })
+        .collect()
+}
+
 /// Refresh `dbt_rt.invocations` on its own, after the current invocation's row
 /// has landed under `metadata/run/invocations/`.
 ///
@@ -217,7 +245,7 @@ fn write_via_arrow(
     ingest_from_metadata_direct(metadata_dir, staging_dir, &mut state)?;
     let out_dir = versioned_dir(info_schema_dir);
     let written = timings::time(timings::Stage::Projection, || {
-        project_all(staging_dir, &out_dir)
+        project_all(metadata_dir, staging_dir, &out_dir)
     })?;
     timings::time(timings::Stage::ViewsSql, || {
         views::write_views_sql(&out_dir)
@@ -303,13 +331,21 @@ pub(super) fn write_parquet(
 }
 
 /// Project every table in the schema.
-fn project_all(staging_dir: &Path, out_dir: &Path) -> Result<usize, IndexError> {
+fn project_all(
+    metadata_dir: &Path,
+    staging_dir: &Path,
+    out_dir: &Path,
+) -> Result<usize, IndexError> {
     let mut count = 0;
     for spec in INFO_SCHEMA {
         let out = project::out_schema(spec)?;
         let batches = match spec.src {
             Src::Table(table) => {
-                let src = read_source(staging_dir, table);
+                let src = if table == "render_traces" {
+                    render_trace_batches(metadata_dir)?
+                } else {
+                    read_source(staging_dir, table)
+                };
                 let mut projected = project::project_table(spec, &src, &out)?;
                 if spec.name == "project" {
                     fill_last_full_parse_at(staging_dir, &out, &mut projected)?;
