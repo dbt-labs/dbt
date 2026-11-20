@@ -39,6 +39,9 @@ message SubmitEnrichedSQLRequest {
   optional bool allow_clones = 24;
   bool is_defer_to_profile = 25;
   bool defer_enabled = 26;
+  repeated TableSchema table_schemas = 27;
+  bool compare_selected_columns = 28;
+  bool target_table_missing = 29;
 }
 
 message SubmitValuesRequest {

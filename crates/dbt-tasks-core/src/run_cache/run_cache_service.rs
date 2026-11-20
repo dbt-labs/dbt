@@ -72,7 +72,8 @@ use dbt_state::proto::query_cache::{
     ClientTelemetryEvent, ConfirmExecutionRequest, ExplainedDecision, NodeFuncMapping,
     QueryDependency, RecordExecutionsRequest, SkipExecutionResponse, Struct,
     SubmitEnrichedSqlRequest, SubmitSqlResponse, SubmitValuesRequest, TableModifiedInfo, Value,
-    submit_sql_response, submit_sql_speculative_response, value::Kind,
+    submit_sql_response, submit_sql_speculative_response, table_modified_info::DependencyKind,
+    value::Kind,
 };
 use dbt_state::request_builder::{
     ExecutionOutcomeInput, SessionEndResult, enriched_sql_prepared_event, session_end_event,
@@ -4021,6 +4022,7 @@ async fn collect_table_modified_infos(
             table_infos.push(TableModifiedInfo {
                 name,
                 last_modified_epoch,
+                kind: DependencyKind::Unknown as i32,
             });
         }
     }
@@ -7045,10 +7047,12 @@ mod tests {
         assert!(tables.tables.contains(&TableModifiedInfo {
             name: target_fqn,
             last_modified_epoch: Some(123),
+            kind: DependencyKind::Unknown as i32,
         }));
         assert!(tables.tables.contains(&TableModifiedInfo {
             name: upstream_fqn,
             last_modified_epoch: None,
+            kind: DependencyKind::Unknown as i32,
         }));
     }
 
@@ -7108,6 +7112,7 @@ mod tests {
         assert!(tables.tables.contains(&TableModifiedInfo {
             name: upstream_fqn.clone(),
             last_modified_epoch: None,
+            kind: DependencyKind::Unknown as i32,
         }));
         // A speculative build issues no blocking per-node freshness query, so an
         // unresolved upstream stays a genuine cache miss (never inserted).
@@ -7140,6 +7145,7 @@ mod tests {
         assert!(tables.tables.contains(&TableModifiedInfo {
             name: upstream_fqn.clone(),
             last_modified_epoch: None,
+            kind: DependencyKind::Unknown as i32,
         }));
         // A non-speculative build resolves the miss with a blocking freshness
         // lookup; with no adapter wired in the test env it records an explicit
@@ -7518,10 +7524,12 @@ mod tests {
                 TableModifiedInfo {
                     name: warm_fqn.clone(),
                     last_modified_epoch: Some(111),
+                    kind: DependencyKind::Unknown as i32,
                 },
                 TableModifiedInfo {
                     name: cold_fqn.clone(),
                     last_modified_epoch: Some(222),
+                    kind: DependencyKind::Unknown as i32,
                 },
             ],
             ..Default::default()
@@ -7536,12 +7544,14 @@ mod tests {
                 TableModifiedInfo {
                     name: warm_fqn.clone(),
                     last_modified_epoch: Some(999),
+                    kind: DependencyKind::Unknown as i32,
                 },
                 // The post-prefetch refresh resolved this as unknown, so the
                 // stale speculative value is cleared to unset rather than kept.
                 TableModifiedInfo {
                     name: cold_fqn.clone(),
                     last_modified_epoch: None,
+                    kind: DependencyKind::Unknown as i32,
                 },
             ],
         );
@@ -7646,6 +7656,7 @@ mod tests {
             execute_hooks_on_any_reuse: Some(true),
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
 
         assert!(should_execute_hooks_for_skip_reuse(&model, false));
@@ -7661,6 +7672,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
 
         assert!(should_execute_hooks_for_skip_reuse(&model, true));
@@ -7680,6 +7692,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
 
         assert_eq!(freshness_tolerance_seconds_for_node(&model, 2700), 7200);
@@ -7695,6 +7708,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
         model.__model_attr__.freshness = Some(ModelFreshness {
             build_after: Some(ModelFreshnessRules {
@@ -7722,6 +7736,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
         model.__model_attr__.freshness = Some(ModelFreshness {
             build_after: Some(ModelFreshnessRules {
@@ -7755,6 +7770,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
         model.__model_attr__.freshness = Some(ModelFreshness {
             build_after: Some(ModelFreshnessRules {
@@ -7781,6 +7797,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
         model.__common_attr__.meta.insert(
             "run_cache_tolerate_nondeterminism".to_string(),
@@ -7812,6 +7829,7 @@ mod tests {
             execute_hooks_on_any_reuse: Some(true),
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
 
         assert!(should_execute_hooks_for_skip_reuse(&snapshot, false));
@@ -7832,13 +7850,14 @@ mod tests {
 
     #[test]
     fn data_test_state_config_is_honored_by_run_cache() {
-        // Data tests carry the restricted `DataTestState` (2 keys). The two supported configs are
-        // honored; the 5-key-only configs (e.g. execute_hooks_on_any_reuse) are not modeled and fall
+        // Data tests carry the restricted `DataTestState` (4 keys). The supported configs are
+        // honored; the model-only configs (e.g. execute_hooks_on_any_reuse) are not modeled and fall
         // back to the service default.
         let test = data_test_with_state(DataTestState {
             require_fresh_data_from: Some(UpdatesOn::All),
             evaluate_volatile_sql: Some(true),
             compare_unrendered_code: None,
+            compare_selected_columns: None,
         });
 
         assert!(!resolve_tolerate_nondeterminism(&test, true));
@@ -7860,6 +7879,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
 
         assert!(resolve_compare_unrendered_code(&model, true));
@@ -7879,6 +7899,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: Some(true),
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
         let disabled = model_with_state(ModelState {
             lag_tolerance: None,
@@ -7888,6 +7909,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: Some(false),
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
 
         assert!(resolve_compare_unrendered_code(&enabled, false));
@@ -7904,11 +7926,13 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: Some(true),
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
         let test = data_test_with_state(DataTestState {
             require_fresh_data_from: None,
             evaluate_volatile_sql: None,
             compare_unrendered_code: Some(true),
+            compare_selected_columns: None,
         });
 
         assert!(resolve_compare_unrendered_code(&snapshot, false));
@@ -7925,6 +7949,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: Some(true),
+            compare_selected_columns: None,
         });
         view.__base_attr__.materialized = DbtMaterialization::View;
         assert!(resolve_ignore_external_modifications(&view, false));
@@ -7954,6 +7979,7 @@ mod tests {
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
                 ignore_external_modifications: Some(true),
+                compare_selected_columns: None,
             });
             assert!(resolve_ignore_external_modifications(&view, false));
         }
@@ -7966,11 +7992,13 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: Some(true),
+            compare_selected_columns: None,
         });
         let data_test = data_test_with_state(DataTestState {
             require_fresh_data_from: None,
             evaluate_volatile_sql: None,
             compare_unrendered_code: None,
+            compare_selected_columns: None,
         });
         assert!(resolve_ignore_external_modifications(&snapshot, false));
         assert!(!resolve_ignore_external_modifications(&data_test, false));
@@ -7986,6 +8014,7 @@ mod tests {
         let tables = vec![TableModifiedInfo {
             name: "prod.analytics.customers".to_string(),
             last_modified_epoch: Some(123),
+            kind: DependencyKind::Unknown as i32,
         }];
         let query_dependencies = vec![QueryDependency {
             name: "prod.analytics.orders".to_string(),
@@ -8450,6 +8479,7 @@ mod tests {
             tables: vec![TableModifiedInfo {
                 name: "db.schema.dependency".to_string(),
                 last_modified_epoch: Some(1),
+                kind: DependencyKind::Unknown as i32,
             }],
             ..Default::default()
         };
@@ -9640,6 +9670,7 @@ mod tests {
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
                 ignore_external_modifications: Some(ignore),
+                compare_selected_columns: None,
             });
 
             let result = verify_clone_source_freshness(&ctx, &model, &clone).await;

@@ -9545,6 +9545,7 @@ mod seed_has_same_content_tests {
                         require_fresh_data_from: Some(UpdatesOn::All),
                         evaluate_volatile_sql: Some(true),
                         compare_unrendered_code: None,
+                        compare_selected_columns: None,
                     })
                 }),
             ),

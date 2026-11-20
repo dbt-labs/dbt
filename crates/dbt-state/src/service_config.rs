@@ -77,6 +77,7 @@ pub struct RunCacheServiceConfig {
     pub metadata_cache_ttl_seconds: i64,
     pub run_hooks_on_no_op: bool,
     pub compare_unrendered_code: bool,
+    pub compare_selected_columns: bool,
     pub ignore_external_modifications: bool,
     pub snowflake_get_view_ddl_override: Option<String>,
     pub snowflake_metadata_warehouse: Option<String>,
@@ -217,6 +218,12 @@ impl RunCacheServiceConfig {
                 None => true,
             };
 
+        let compare_selected_columns = match config_value(&mut get_env, "COMPARE_SELECTED_COLUMNS")
+        {
+            Some(value) => parse_bool("COMPARE_SELECTED_COLUMNS", &value)?,
+            None => false,
+        };
+
         Ok(Self {
             enabled,
             api_url,
@@ -255,6 +262,7 @@ impl RunCacheServiceConfig {
             metadata_cache_ttl_seconds,
             run_hooks_on_no_op,
             compare_unrendered_code,
+            compare_selected_columns,
             ignore_external_modifications,
             snowflake_get_view_ddl_override: config_value(
                 &mut get_env,
@@ -305,6 +313,7 @@ impl RunCacheServiceConfig {
             metadata_cache_ttl_seconds: DEFAULT_METADATA_CACHE_TTL_SECONDS,
             run_hooks_on_no_op: false,
             compare_unrendered_code: false,
+            compare_selected_columns: false,
             ignore_external_modifications: true,
             snowflake_get_view_ddl_override: None,
             snowflake_metadata_warehouse: None,
@@ -722,6 +731,7 @@ mod tests {
         assert_eq!(config.metadata_cache_ttl_seconds, 0);
         assert!(!config.run_hooks_on_no_op);
         assert!(!config.compare_unrendered_code);
+        assert!(!config.compare_selected_columns);
         assert!(config.ignore_external_modifications);
         assert_eq!(config.snowflake_get_view_ddl_override, None);
         assert_eq!(config.snowflake_metadata_warehouse, None);
@@ -954,6 +964,7 @@ mod tests {
             ("RUN_CACHE_ENABLE_DATA_TESTS", "0"),
             ("RUN_CACHE_RUN_HOOKS_ON_NO_OP", "true"),
             ("RUN_CACHE_COMPARE_UNRENDERED_CODE", "true"),
+            ("RUN_CACHE_COMPARE_SELECTED_COLUMNS", "true"),
             ("RUN_CACHE_IGNORE_EXTERNAL_MODIFICATIONS", "true"),
         ])
         .unwrap();
@@ -968,7 +979,13 @@ mod tests {
         assert!(!config.enable_data_tests);
         assert!(config.run_hooks_on_no_op);
         assert!(config.compare_unrendered_code);
+        assert!(config.compare_selected_columns);
         assert!(config.ignore_external_modifications);
+    }
+
+    #[test]
+    fn compare_selected_columns_rejects_unparseable_values() {
+        assert!(config_from_pairs(&[("RUN_CACHE_COMPARE_SELECTED_COLUMNS", "maybe")]).is_err());
     }
 
     #[test]

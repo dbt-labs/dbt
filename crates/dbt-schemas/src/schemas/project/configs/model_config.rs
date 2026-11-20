@@ -2450,6 +2450,7 @@ __warehouse_specific_config__: {}
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
                 ignore_external_modifications: Some(true),
+                compare_selected_columns: None,
             }),
             ..Default::default()
         };
@@ -2462,6 +2463,7 @@ __warehouse_specific_config__: {}
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
                 ignore_external_modifications: None,
+                compare_selected_columns: None,
             }),
             ..Default::default()
         };

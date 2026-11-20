@@ -597,6 +597,9 @@ fn build_sql_request_input(
         allow_clones: context.allow_clones,
         is_defer_to_profile: context.is_defer_to_profile,
         defer_enabled: context.defer_enabled,
+        table_schemas: Vec::new(),
+        compare_selected_columns: false,
+        target_table_missing: false,
     })
 }
 
@@ -906,6 +909,7 @@ mod tests {
         IntrospectionKind, NodeBaseAttributes,
     };
     use dbt_state::proto::query_cache::ModelExecutionType;
+    use dbt_state::proto::query_cache::table_modified_info::DependencyKind;
     use dbt_state::request_builder::execution_type_from_input;
     use dbt_yaml::Spanned;
     use indexmap::IndexMap;
@@ -1065,6 +1069,7 @@ mod tests {
             tables: vec![TableModifiedInfo {
                 name: "raw.orders".to_string(),
                 last_modified_epoch: Some(123),
+                kind: DependencyKind::Unknown as i32,
             }],
             query_dependencies: vec![],
             freshness_tolerance_seconds: 2700,

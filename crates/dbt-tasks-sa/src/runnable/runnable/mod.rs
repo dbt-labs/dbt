@@ -1572,6 +1572,7 @@ mod tests {
             execute_hooks_on_any_reuse,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
         model.deprecated_config.pre_hook =
             Verbatim::from(Some(Hooks::String("select 1".to_string())));

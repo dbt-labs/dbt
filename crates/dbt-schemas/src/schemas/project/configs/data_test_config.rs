@@ -1023,6 +1023,7 @@ __warehouse_specific_config__: {}
                 require_fresh_data_from: Some(UpdatesOn::All),
                 evaluate_volatile_sql: Some(true),
                 compare_unrendered_code: None,
+                compare_selected_columns: None,
             }),
             ..Default::default()
         };
@@ -1048,6 +1049,7 @@ __warehouse_specific_config__: {}
                 require_fresh_data_from: None,
                 evaluate_volatile_sql: Some(true),
                 compare_unrendered_code: Some(true),
+                compare_selected_columns: Some(true),
             }),
             ..Default::default()
         };
@@ -1056,6 +1058,7 @@ __warehouse_specific_config__: {}
                 require_fresh_data_from: Some(UpdatesOn::All),
                 evaluate_volatile_sql: None,
                 compare_unrendered_code: None,
+                compare_selected_columns: None,
             }),
             ..Default::default()
         };
@@ -1065,6 +1068,21 @@ __warehouse_specific_config__: {}
         assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
         assert_eq!(state.evaluate_volatile_sql, Some(true));
         assert_eq!(state.compare_unrendered_code, Some(true));
+        assert_eq!(state.compare_selected_columns, Some(true));
+
+        // A child's explicit `false` overrides the parent's `true`.
+        let mut child = DataTestConfig {
+            state: Some(DataTestState {
+                require_fresh_data_from: None,
+                evaluate_volatile_sql: None,
+                compare_unrendered_code: None,
+                compare_selected_columns: Some(false),
+            }),
+            ..Default::default()
+        };
+        child.default_to(&parent);
+        let state = child.state.expect("state should survive the merge");
+        assert_eq!(state.compare_selected_columns, Some(false));
     }
 
     #[test]

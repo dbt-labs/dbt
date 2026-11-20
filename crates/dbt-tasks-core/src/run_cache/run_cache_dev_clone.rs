@@ -699,6 +699,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
         let candidate = DevCloneCandidate::Model {
             local: Arc::new(local),
@@ -770,6 +771,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         });
         let candidate = DevCloneCandidate::Snapshot {
             local: Arc::new(local),

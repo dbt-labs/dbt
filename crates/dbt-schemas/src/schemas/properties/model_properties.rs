@@ -217,6 +217,8 @@ pub struct ModelState {
     pub compare_unrendered_code: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub ignore_external_modifications: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub compare_selected_columns: Option<bool>,
 }
 
 impl PartialEq for ModelState {
@@ -231,13 +233,15 @@ impl PartialEq for ModelState {
             && self.execute_hooks_on_any_reuse == other.execute_hooks_on_any_reuse
             && self.compare_unrendered_code == other.compare_unrendered_code
             && self.ignore_external_modifications == other.ignore_external_modifications
+            && self.compare_selected_columns == other.compare_selected_columns
     }
 }
 
 impl Eq for ModelState {}
 
 /// The dbt State configs supported on data tests: only `require_fresh_data_from`,
-/// `evaluate_volatile_sql` and `compare_unrendered_code` (snapshots reuse the full `ModelState`).
+/// `evaluate_volatile_sql`, `compare_unrendered_code` and `compare_selected_columns` (snapshots
+/// reuse the full `ModelState`).
 /// Other keys are not fields here, so they are flagged as unknown keys at parse time.
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
@@ -245,6 +249,8 @@ pub struct DataTestState {
     pub require_fresh_data_from: Option<UpdatesOn>,
     pub evaluate_volatile_sql: Option<bool>,
     pub compare_unrendered_code: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub compare_selected_columns: Option<bool>,
 }
 
 impl PartialEq for DataTestState {
@@ -254,6 +260,7 @@ impl PartialEq for DataTestState {
             &other.require_fresh_data_from,
         ) && self.evaluate_volatile_sql == other.evaluate_volatile_sql
             && self.compare_unrendered_code == other.compare_unrendered_code
+            && self.compare_selected_columns == other.compare_selected_columns
     }
 }
 
@@ -325,6 +332,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         };
         let other = ModelState {
             require_fresh_data_from: Some(UpdatesOn::Any),
@@ -334,6 +342,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         };
 
         assert_eq!(base, other);
@@ -349,6 +358,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         };
         let other = ModelState {
             require_fresh_data_from: Some(UpdatesOn::All),
@@ -358,6 +368,7 @@ mod tests {
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         };
 
         assert_ne!(base, other);
@@ -394,6 +405,7 @@ execute_hooks_on_reuse: true
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         };
         let other = ModelState {
             compare_unrendered_code: Some(true),
@@ -406,12 +418,59 @@ execute_hooks_on_reuse: true
             require_fresh_data_from: None,
             evaluate_volatile_sql: None,
             compare_unrendered_code: None,
+            compare_selected_columns: None,
         };
         let other_test = DataTestState {
             compare_unrendered_code: Some(true),
             ..base_test.clone()
         };
 
+        assert_ne!(base_test, other_test);
+    }
+
+    #[test]
+    fn compare_selected_columns_parses_on_models_and_data_tests() {
+        let yaml = "compare_selected_columns: true\n";
+        let model_state: ModelState = dbt_yaml::from_str(yaml).unwrap();
+        let data_test_state: DataTestState = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(model_state.compare_selected_columns, Some(true));
+        assert_eq!(data_test_state.compare_selected_columns, Some(true));
+
+        let yaml = "compare_selected_columns: \"true\"\n";
+        let model_state: ModelState = dbt_yaml::from_str(yaml).unwrap();
+        let data_test_state: DataTestState = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(model_state.compare_selected_columns, Some(true));
+        assert_eq!(data_test_state.compare_selected_columns, Some(true));
+    }
+
+    #[test]
+    fn compare_selected_columns_participates_in_state_eq() {
+        let base = ModelState {
+            require_fresh_data_from: None,
+            lag_tolerance: None,
+            evaluate_volatile_sql: None,
+            pre_clone: None,
+            execute_hooks_on_any_reuse: None,
+            compare_unrendered_code: None,
+            ignore_external_modifications: None,
+            compare_selected_columns: None,
+        };
+        let other = ModelState {
+            compare_selected_columns: Some(true),
+            ..base.clone()
+        };
+        assert_ne!(base, other);
+
+        let base_test = DataTestState {
+            require_fresh_data_from: None,
+            evaluate_volatile_sql: None,
+            compare_unrendered_code: None,
+            compare_selected_columns: None,
+        };
+        let other_test = DataTestState {
+            compare_selected_columns: Some(true),
+            ..base_test.clone()
+        };
         assert_ne!(base_test, other_test);
     }
 
@@ -429,6 +488,7 @@ execute_hooks_on_reuse: true
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
             ignore_external_modifications: None,
+            compare_selected_columns: None,
         };
         let other = ModelState {
             ignore_external_modifications: Some(true),
