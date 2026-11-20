@@ -2,6 +2,7 @@
 
 import json
 
+import duckdb
 import pytest
 
 TRACE_EPOCHS = "private/metadata/compile/render_traces/v1_*.parquet"
@@ -11,48 +12,26 @@ def events(trace):
     return trace["events"]
 
 
-def preview_json(result, prefix):
-    assert result.success, result.exception
-    body = b"".join(result.preview)
-    start = body.index(prefix)
-    value, _ = json.JSONDecoder().raw_decode(body[start:].decode("utf-8", errors="ignore"))
-    return value
-
-
 def read_trace(project, invoke, parquet_path, unique_id):
-    latest = (
-        " qualify row_number() over (partition by unique_id order by ingested_at desc) = 1"
-        if "*" in parquet_path
-        else ""
-    )
-    result = invoke(
-        project,
-        "show",
-        "--inline",
-        (
-            "select to_json(t) as trace_json "
-            f"from read_parquet('{parquet_path}') t "
-            f"where unique_id = '{unique_id}'{latest}"
-        ),
-        "--limit",
-        "1",
-    )
-    return preview_json(result, b'{"protocol_version":')
+    with duckdb.connect() as connection:
+        row = connection.execute(
+            "select to_json(t) from read_parquet(?) t where unique_id = ? "
+            "order by ingested_at desc limit 1"
+            if "*" in parquet_path
+            else "select to_json(t) from read_parquet(?) t where unique_id = ? limit 1",
+            [str(project / parquet_path), unique_id],
+        ).fetchone()
+    assert row is not None
+    return json.loads(row[0])
 
 
 def read_unique_ids(project, invoke, parquet_path):
-    result = invoke(
-        project,
-        "show",
-        "--inline",
-        (
-            "select to_json(list(distinct unique_id order by unique_id)) as trace_ids "
-            f"from read_parquet('{parquet_path}')"
-        ),
-        "--limit",
-        "1",
-    )
-    return preview_json(result, b"[")
+    with duckdb.connect() as connection:
+        rows = connection.execute(
+            "select distinct unique_id from read_parquet(?) order by unique_id",
+            [str(project / parquet_path)],
+        ).fetchall()
+    return [row[0] for row in rows]
 
 
 def assert_matches_golden(project, invoke, trace):

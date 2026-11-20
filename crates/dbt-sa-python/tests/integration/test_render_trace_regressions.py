@@ -3,6 +3,7 @@
 import json
 from collections import Counter
 
+import duckdb
 import pytest
 
 
@@ -289,25 +290,15 @@ def test_review_regression_artifact(case, tmp_project, invoke):
     assert (project / "normal" / f"{relative}.sql").read_bytes() == (
         project / "traced" / f"{relative}.sql"
     ).read_bytes()
-    epoch = sorted(project.glob("traced/private/metadata/compile/render_traces/v1_*.parquet"))[
-        -1
-    ].relative_to(project)
-    preview = invoke(
-        project,
-        "show",
-        "--inline",
-        (
-            "select to_json(t) as trace_json "
-            f"from read_parquet('{epoch}') t "
-            "where unique_id = 'model.render_trace.probe'"
-        ),
-        "--limit",
-        "1",
-    )
-    assert preview.success, preview.exception
-    body = b"".join(preview.preview)
-    start = body.index(b'{"protocol_version":')
-    trace, _ = json.JSONDecoder().raw_decode(body[start:].decode("utf-8", errors="ignore"))
+    epochs = project / "traced/private/metadata/compile/render_traces/v1_*.parquet"
+    with duckdb.connect() as connection:
+        row = connection.execute(
+            "select to_json(t) from read_parquet(?) t "
+            "where unique_id = 'model.render_trace.probe' order by ingested_at desc limit 1",
+            [str(epochs)],
+        ).fetchone()
+    assert row is not None
+    trace = json.loads(row[0])
     manifest = json.loads((project / "traced/manifest.json").read_bytes())
     assert trace["protocol_version"] == 2
     assert trace["render_stage"] == "jinja_before_ephemeral_injection"
