@@ -1495,14 +1495,24 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
               -> AdapterResult<Arc<Schema>> {
             let (_, rendered) = key;
             let sql = format!("describe table {};", rendered);
-            let mut ctx = QueryCtx::new_metadata().with_desc("Get table schema");
+            let mut ctx = QueryCtx::new_metadata();
             if let Some(node_id) = unique_id.clone() {
                 ctx = ctx.with_node_id(&node_id);
             }
             if let Some(phase) = phase {
                 ctx = ctx.with_phase(phase.as_str());
             }
-            let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+            let tbl_ctx = ctx.clone().with_desc("Get table schema");
+            let (_, table) = match adapter.query(&tbl_ctx, conn, &sql, None, token_clone.clone()) {
+                Err(err) if is_describe_table_invalid_object_type(&err) => {
+                    let ctx = ctx.with_desc("Get stream schema");
+                    let sql = format!("select * from {rendered} limit 0;");
+                    let (resp, _) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+                    let sql = format!("describe result '{}';", resp.query_id().ok_or(err)?);
+                    adapter.query(&ctx, conn, &sql, None, token_clone.clone())?
+                }
+                result => result?,
+            };
             let batch = table.original_record_batch();
             let schema = build_schema_from_desc_table(batch, adapter.engine().type_ops().as_ref())?;
             Ok(schema)
@@ -2092,6 +2102,12 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
     }
 }
 
+/// `describe table` on a Snowflake stream fails with `Invalid object type: 'TABLE'`; the caller
+/// then describes a `limit 0` select by that select's own query id.
+fn is_describe_table_invalid_object_type(err: &AdapterError) -> bool {
+    err.message().contains("Invalid object type: 'TABLE'")
+}
+
 fn discover_database_identifier_case_sensitivity(
     adapter: &AdapterImpl,
     conn: &mut ConnectionGuard<'_>,
@@ -2425,6 +2441,20 @@ mod tests {
                 }
             }),
         )
+    }
+
+    #[test]
+    fn describe_table_invalid_object_type_matches_only_table_error() {
+        let err = |msg: &str| AdapterError::new(AdapterErrorKind::Driver, msg);
+        assert!(is_describe_table_invalid_object_type(&err(
+            "Unknown: SQL compilation error:\nInvalid object type: 'TABLE'."
+        )));
+        assert!(!is_describe_table_invalid_object_type(&err(
+            "SQL compilation error:\nTable 'DB.S.T' does not exist or not authorized."
+        )));
+        assert!(!is_describe_table_invalid_object_type(&err(
+            "SQL compilation error:\nInvalid object type: 'VIEW'."
+        )));
     }
 
     #[test]
