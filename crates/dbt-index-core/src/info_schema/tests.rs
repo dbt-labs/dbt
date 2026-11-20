@@ -511,7 +511,7 @@ fn resource_types_split_into_their_own_tables() {
             node_row("snapshot.pkg.snap", "snap", "snapshot"),
         ],
     );
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     assert_eq!(out_rows(out.path(), "dbt.models.parquet").len(), 2);
     assert_eq!(out_rows(out.path(), "dbt.seeds.parquet").len(), 1);
@@ -540,7 +540,7 @@ fn node_columns_are_renamed_and_carry_their_data() {
     row["group_name"] = json!("finance");
     row["patch_path"] = json!("models/schema.yml");
     write_source(staging.path(), "nodes", &[row]);
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     let cols = out_columns(out.path(), "dbt.models.parquet");
     for new in ["access", "group", "properties_yml_file_path"] {
@@ -606,7 +606,7 @@ fn data_tests_keeps_tests_without_detail() {
             }),
         ],
     );
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     let rows = out_rows(out.path(), "dbt.data_tests.parquet");
     assert_eq!(rows.len(), 3, "the singular test must not be dropped");
@@ -670,7 +670,7 @@ fn dag_nodes_spans_the_whole_graph() {
             "ingested_at": "2026-08-21T00:00:00Z",
         })],
     );
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     let rows = out_rows(out.path(), "dbt.dag_nodes.parquet");
     let ids: Vec<&str> = rows
@@ -745,7 +745,7 @@ fn relations_pivots_the_catalog_stats() {
         ],
     );
 
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
     let rows = out_rows(out.path(), "dbt_rt.relations.parquet");
     assert_eq!(rows.len(), 2, "one row per catalogued relation");
 
@@ -792,7 +792,7 @@ fn operations_land_in_hooks() {
             node_row("model.pkg.a", "a", "model"),
         ],
     );
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     let hooks = out_rows(out.path(), "dbt.hooks.parquet");
     assert_eq!(hooks.len(), 1);
@@ -824,7 +824,7 @@ fn packages_is_one_row_per_installed_package() {
             }),
         ],
     );
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     let rows = out_rows(out.path(), "dbt.packages.parquet");
     assert_eq!(rows.len(), 2);
@@ -865,7 +865,7 @@ fn project_vars_is_projected_row_for_row() {
         json!({"project_name": "dbt_utils", "var_name": "region", "var_value": "apac", "ingested_at": "2026-08-21T00:00:00Z"}),
     ];
     write_source(staging.path(), "project_vars", &rows);
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     let got = out_rows(out.path(), "dbt.project_vars.parquet");
     let triple = |r: &Value| {
@@ -898,7 +898,7 @@ fn column_lineage_is_renamed() {
             "ingested_at": "2026-08-21T00:00:00Z",
         })],
     );
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     let rows = out_rows(out.path(), "dbt.column_lineage.parquet");
     assert_eq!(rows.len(), 1);
@@ -913,7 +913,7 @@ fn column_lineage_is_renamed() {
 fn every_table_is_written_even_when_empty() {
     let staging = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
     super::views::write_views_sql(out.path()).unwrap();
 
     for table in INFO_SCHEMA {
@@ -955,7 +955,7 @@ fn out_kv(dir: &Path, file: &str) -> Vec<(String, Option<String>)> {
 fn every_file_carries_the_version_in_its_metadata() {
     let staging = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     let want = super::INFO_SCHEMA_VERSION.to_string();
     for table in INFO_SCHEMA {
@@ -986,7 +986,7 @@ fn project_carries_the_schema_version() {
             "ingested_at": "2026-08-21T00:00:00Z",
         })],
     );
-    super::project_all(staging.path(), staging.path(), out.path()).unwrap();
+    super::project_all(staging.path(), staging.path(), out.path(), false).unwrap();
 
     let rows = out_rows(out.path(), "dbt.project.parquet");
     assert_eq!(rows.len(), 1);
@@ -1184,18 +1184,10 @@ fn render_traces_materializers_agree_on_latest_rows() {
         vec![trace("model.keep", 10), trace("model.update", 20)],
         &HashSet::new(),
         None,
-        None,
     )
     .unwrap();
     // A later epoch can contain an older timestamp; ingestion time wins.
-    write_render_traces(
-        &dir,
-        vec![trace("model.update", 5)],
-        &HashSet::new(),
-        None,
-        None,
-    )
-    .unwrap();
+    write_render_traces(&dir, vec![trace("model.update", 5)], &HashSet::new(), None).unwrap();
     let read = || {
         let path = output.path().join("v1/dbt.render_traces.parquet");
         let reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(path).unwrap())
@@ -1210,38 +1202,58 @@ fn render_traces_materializers_agree_on_latest_rows() {
         rows.sort_by(|a, b| a.unique_id.cmp(&b.unique_id));
         rows
     };
-    super::write_info_schema_with(
+    super::write_info_schema_with_render_traces(
         super::Materializer::Arrow,
         metadata.path(),
         output.path(),
         staging.path(),
+        true,
     )
     .unwrap();
     assert_eq!(read(), expected);
+    super::write_info_schema_with_render_traces(
+        super::Materializer::Arrow,
+        metadata.path(),
+        output.path(),
+        staging.path(),
+        false,
+    )
+    .unwrap();
+    assert!(
+        read().is_empty(),
+        "flag-off publication must not expose retained epochs"
+    );
     if crate::db::Db::open_memory().is_ok() {
-        super::write_info_schema_with(
+        super::write_info_schema_with_render_traces(
             super::Materializer::Copy,
             metadata.path(),
             output.path(),
             staging.path(),
+            true,
         )
         .unwrap();
         assert_eq!(read(), expected);
+        super::write_info_schema_with_render_traces(
+            super::Materializer::Copy,
+            metadata.path(),
+            output.path(),
+            staging.path(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            read().is_empty(),
+            "COPY must also gate retained trace publication"
+        );
     }
     // A failed recomputation invalidates only its old trace, including publicly.
-    write_render_traces(
-        &dir,
-        vec![],
-        &HashSet::from(["model.update".into()]),
-        None,
-        None,
-    )
-    .unwrap();
-    super::write_info_schema_with(
+    write_render_traces(&dir, vec![], &HashSet::from(["model.update".into()]), None).unwrap();
+    super::write_info_schema_with_render_traces(
         super::Materializer::Arrow,
         metadata.path(),
         output.path(),
         staging.path(),
+        true,
     )
     .unwrap();
     assert_eq!(read(), vec![trace("model.keep", 10)]);

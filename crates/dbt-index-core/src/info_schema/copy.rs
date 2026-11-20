@@ -36,8 +36,9 @@ use super::{
 pub(super) fn write_via_copy(
     metadata_dir: &Path,
     info_schema_dir: &Path,
+    include_render_traces: bool,
 ) -> Result<usize, IndexError> {
-    let generated = epoch_views::generate(metadata_dir)?;
+    let generated = epoch_views::generate_with_render_traces(metadata_dir, include_render_traces)?;
     let out_dir = versioned_dir(info_schema_dir);
     std::fs::create_dir_all(&out_dir)?;
 

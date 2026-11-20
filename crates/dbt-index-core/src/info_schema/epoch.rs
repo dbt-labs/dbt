@@ -619,7 +619,7 @@ pub fn origin(staging_table: &str) -> Option<Origin> {
         "render_traces" => Relation {
             view: "epoch_render_traces",
             keep: None,
-            alive_on: None,
+            alive_on: Some("unique_id"),
             join: None,
             unnest: None,
         },

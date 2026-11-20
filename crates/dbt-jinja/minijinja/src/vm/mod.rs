@@ -184,26 +184,6 @@ fn explicit_return_value(
     value
 }
 
-fn notify_loop_boundary(
-    state: &mut State<'_, '_>,
-    listeners: &[Rc<dyn RenderingEventListener>],
-    instruction: &Instruction<'_>,
-    enabled: bool,
-) {
-    match instruction {
-        Instruction::JinjaLayoutLoopRecursionSkippedEnd(span) => {
-            notify_empty_loop_recursion(state, listeners, span, enabled)
-        }
-        Instruction::JinjaLayoutLoopRecursionStart(span) => {
-            notify_loop_recursion(state, listeners, span, enabled)
-        }
-        Instruction::JinjaLayoutLoopIterationStart(span) => {
-            notify_loop_iteration(state, listeners, span, enabled)
-        }
-        _ => unreachable!("not a loop layout boundary"),
-    }
-}
-
 fn notify_loop_iteration(
     state: &mut State<'_, '_>,
     listeners: &[Rc<dyn RenderingEventListener>],
@@ -1169,7 +1149,8 @@ impl<'env> Vm<'env> {
                 }
                 Instruction::PushDidNotIterate => {
                     let l = state.ctx.current_loop().unwrap();
-                    stack.push(Value::from(!l.did_iterate));
+                    // Preserve render semantics; did_iterate tracks observer boundaries only.
+                    stack.push(Value::from(l.object.idx.load(Ordering::Relaxed) == 0));
                 }
                 Instruction::Jump(jump_target, _) => {
                     pc = *jump_target;
@@ -1831,10 +1812,44 @@ impl<'env> Vm<'env> {
                             .for_each(|listener| listener.on_jinja_loop_skipped_end(&source_span));
                     }
                 }
-                Instruction::JinjaLayoutLoopRecursionSkippedEnd(_)
-                | Instruction::JinjaLayoutLoopRecursionStart(_)
-                | Instruction::JinjaLayoutLoopIterationStart(_) => {
-                    notify_loop_boundary(state, listeners, instr, current_macro_name.is_none());
+                Instruction::JinjaLayoutLoopElseStart(start_span, else_span) => {
+                    let loop_ctx = state.ctx.current_loop().unwrap();
+                    if loop_ctx.object.idx.load(Ordering::Relaxed) == 0
+                        && current_macro_name.is_none()
+                    {
+                        // A first-item break closed the body; reopen its source scope for else.
+                        if loop_ctx.did_iterate {
+                            let span =
+                                span_with_current_offset(start_span, &state.ctx.current_span);
+                            for listener in listeners {
+                                listener.on_jinja_layout_event(
+                                    crate::JinjaLayoutEventKind::BlockStart,
+                                    &span,
+                                );
+                            }
+                        }
+                        let span = span_with_current_offset(else_span, &state.ctx.current_span);
+                        for listener in listeners {
+                            listener.on_jinja_layout_event(
+                                crate::JinjaLayoutEventKind::BlockMid,
+                                &span,
+                            );
+                        }
+                    }
+                }
+                Instruction::JinjaLayoutLoopRecursionSkippedEnd(span) => {
+                    notify_empty_loop_recursion(
+                        state,
+                        listeners,
+                        span,
+                        current_macro_name.is_none(),
+                    );
+                }
+                Instruction::JinjaLayoutLoopRecursionStart(span) => {
+                    notify_loop_recursion(state, listeners, span, current_macro_name.is_none());
+                }
+                Instruction::JinjaLayoutLoopIterationStart(span) => {
+                    notify_loop_iteration(state, listeners, span, current_macro_name.is_none());
                 }
                 Instruction::MacroName(name, _) => {
                     current_macro_name = Some((*name).to_string());

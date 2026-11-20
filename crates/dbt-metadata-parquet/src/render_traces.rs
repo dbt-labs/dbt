@@ -73,28 +73,13 @@ fn compact(
     valid_ids: Option<&HashSet<String>>,
 ) -> FsResult<()> {
     let epochs = existing_epochs(dir);
-    let mut latest = HashMap::<String, RenderTraceRow>::new();
-    for (_, path) in &epochs {
-        for row in epoch_io::read_rows::<RenderTraceRow>(path) {
-            latest
-                .entry(row.unique_id.clone())
-                .and_modify(|current| {
-                    if row.ingested_at >= current.ingested_at {
-                        *current = row.clone();
-                    }
-                })
-                .or_insert(row);
-        }
-    }
-    let mut rows: Vec<_> = latest
-        .into_values()
+    let rows: Vec<_> = read_render_traces_latest(dir)
+        .into_iter()
         .filter(|row| valid_ids.is_none_or(|ids| ids.contains(&row.unique_id)))
         .filter(|row| {
             !recomputed_ids.contains(&row.unique_id) || written_ids.contains(&row.unique_id)
         })
         .collect();
-    rows.sort_by(|left, right| left.unique_id.cmp(&right.unique_id));
-
     let path = dir.join(format!("{VERSION_PREFIX}0.parquet"));
     epoch_io::write_rows(&path, &fields(), &rows)?;
     for (epoch, path) in epochs {
@@ -109,7 +94,6 @@ pub fn write_render_traces(
     dir: &Path,
     mut rows: Vec<RenderTraceRow>,
     recomputed_ids: &HashSet<String>,
-    alive_node_count: Option<usize>,
     valid_ids: Option<&HashSet<String>>,
 ) -> FsResult<()> {
     let epochs_before = existing_epochs(dir);
@@ -136,7 +120,7 @@ pub fn write_render_traces(
     });
     if missing_recomputed
         || has_deleted
-        || epoch_io::should_compact(rows.len(), alive_node_count.unwrap_or(0), file_count)
+        || epoch_io::should_compact(rows.len(), valid_ids.map_or(0, HashSet::len), file_count)
     {
         compact(dir, recomputed_ids, &written_ids, valid_ids)?;
     }
@@ -201,7 +185,7 @@ mod tests {
             rendered_start: 7,
             rendered_end: 8,
         });
-        write_render_traces(dir.path(), vec![trace.clone()], &HashSet::new(), None, None).unwrap();
+        write_render_traces(dir.path(), vec![trace.clone()], &HashSet::new(), None).unwrap();
         assert_eq!(read_render_traces_latest(dir.path()), vec![trace]);
 
         let file = std::fs::File::open(dir.path().join("v1_0.parquet")).unwrap();
@@ -244,7 +228,6 @@ mod tests {
             ],
             &HashSet::new(),
             None,
-            None,
         )
         .unwrap();
         let mut changed = vec![row("model.example.keep", "second", 2, "macro")];
@@ -260,7 +243,6 @@ mod tests {
             dir.path(),
             changed,
             &HashSet::new(),
-            Some(1),
             Some(&HashSet::from(["model.example.keep".to_owned()])),
         )
         .unwrap();
@@ -278,14 +260,12 @@ mod tests {
             vec![row("model.example.trace", "newer", 2, "macro")],
             &HashSet::new(),
             None,
-            None,
         )
         .unwrap();
         write_render_traces(
             dir.path(),
             vec![row("model.example.trace", "older", 1, "literal")],
             &HashSet::new(),
-            None,
             None,
         )
         .unwrap();
@@ -304,17 +284,9 @@ mod tests {
             vec![row(&unique_id, "first", 1, "literal")],
             &HashSet::new(),
             None,
-            None,
         )
         .unwrap();
-        write_render_traces(
-            dir.path(),
-            Vec::new(),
-            &HashSet::from([unique_id]),
-            None,
-            None,
-        )
-        .unwrap();
+        write_render_traces(dir.path(), Vec::new(), &HashSet::from([unique_id]), None).unwrap();
         assert!(read_render_traces_latest(dir.path()).is_empty());
     }
 
@@ -326,14 +298,12 @@ mod tests {
             vec![row("model.example.deleted", "first", 1, "literal")],
             &HashSet::new(),
             None,
-            None,
         )
         .unwrap();
         write_render_traces(
             dir.path(),
             Vec::new(),
             &HashSet::new(),
-            Some(0),
             Some(&HashSet::new()),
         )
         .unwrap();

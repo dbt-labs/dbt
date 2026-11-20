@@ -174,10 +174,10 @@ import pytest
         pytest.param(
             (
                 "{% for n in [1, 2] %}select {{ n }};{% break %}{% else %}select 0{% endfor %}",
-                "select 1;",
-                {"block_end": 1, "loop_skipped": 0},
+                "select 1;select 0",
+                {"loop_skipped": 0},
             ),
-            id="first-item-break-does-not-run-else",
+            id="first-item-break-preserves-else",
         ),
         pytest.param(
             (

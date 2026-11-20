@@ -164,13 +164,43 @@ pub fn write_info_schema_with(
     info_schema_dir: &Path,
     staging_dir: &Path,
 ) -> Result<usize, IndexError> {
+    write_info_schema_with_render_traces(
+        how,
+        metadata_dir,
+        info_schema_dir,
+        staging_dir,
+        dbt_flags::WRITE_RENDER_TRACE.enabled(),
+    )
+}
+
+fn write_info_schema_with_render_traces(
+    how: Materializer,
+    metadata_dir: &Path,
+    info_schema_dir: &Path,
+    staging_dir: &Path,
+    include_render_traces: bool,
+) -> Result<usize, IndexError> {
     match how {
-        Materializer::Arrow => write_via_arrow(metadata_dir, info_schema_dir, staging_dir),
-        Materializer::Copy => copy::write_via_copy(metadata_dir, info_schema_dir),
-        Materializer::Auto => match copy::write_via_copy(metadata_dir, info_schema_dir) {
-            Ok(n) => Ok(n),
-            Err(_) => write_via_arrow(metadata_dir, info_schema_dir, staging_dir),
-        },
+        Materializer::Arrow => write_via_arrow(
+            metadata_dir,
+            info_schema_dir,
+            staging_dir,
+            include_render_traces,
+        ),
+        Materializer::Copy => {
+            copy::write_via_copy(metadata_dir, info_schema_dir, include_render_traces)
+        }
+        Materializer::Auto => {
+            match copy::write_via_copy(metadata_dir, info_schema_dir, include_render_traces) {
+                Ok(n) => Ok(n),
+                Err(_) => write_via_arrow(
+                    metadata_dir,
+                    info_schema_dir,
+                    staging_dir,
+                    include_render_traces,
+                ),
+            }
+        }
     }
 }
 
@@ -178,6 +208,18 @@ fn render_trace_batches(metadata_dir: &Path) -> Result<Vec<RecordBatch>, IndexEr
     let rows = dbt_metadata_parquet::render_traces::read_render_traces_latest(
         &metadata_dir.join("compile/render_traces"),
     );
+    let alive = dbt_metadata_parquet::parse_alive::read_alive_ids(
+        &metadata_dir.join("parse/alive.parquet"),
+    )
+    .map_err(|e| IndexError::Other(format!("info schema render-trace liveness: {e}")))?;
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|row| {
+            alive
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&row.unique_id))
+        })
+        .collect();
     let schema = crate::parquet::schema_for("render_traces");
     rows.chunks(256)
         .map(|chunk| {
@@ -225,12 +267,13 @@ fn write_via_arrow(
     metadata_dir: &Path,
     info_schema_dir: &Path,
     staging_dir: &Path,
+    include_render_traces: bool,
 ) -> Result<usize, IndexError> {
     let mut state = IngestState::default();
     ingest_from_metadata_direct(metadata_dir, staging_dir, &mut state)?;
     let out_dir = versioned_dir(info_schema_dir);
     let written = timings::time(timings::Stage::Projection, || {
-        project_all(metadata_dir, staging_dir, &out_dir)
+        project_all(metadata_dir, staging_dir, &out_dir, include_render_traces)
     })?;
     timings::time(timings::Stage::ViewsSql, || {
         views::write_views_sql(&out_dir)
@@ -320,6 +363,7 @@ fn project_all(
     metadata_dir: &Path,
     staging_dir: &Path,
     out_dir: &Path,
+    include_render_traces: bool,
 ) -> Result<usize, IndexError> {
     let mut count = 0;
     for spec in INFO_SCHEMA {
@@ -327,7 +371,11 @@ fn project_all(
         let batches = match spec.src {
             Src::Table(table) => {
                 let src = if table == "render_traces" {
-                    render_trace_batches(metadata_dir)?
+                    if include_render_traces {
+                        render_trace_batches(metadata_dir)?
+                    } else {
+                        Vec::new()
+                    }
                 } else {
                     read_source(staging_dir, table)
                 };

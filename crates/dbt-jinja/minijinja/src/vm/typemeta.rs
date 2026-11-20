@@ -2041,6 +2041,7 @@ impl<'src> TypeChecker<'src> {
                 Instruction::JinjaLayoutEvent(_, span)
                 | Instruction::JinjaLayoutEventIfLoopDidNotIterate(_, span)
                 | Instruction::JinjaLayoutLoopIterationStart(span)
+                | Instruction::JinjaLayoutLoopElseStart(_, span)
                 | Instruction::JinjaLayoutLoopRecursionStart(span)
                 | Instruction::JinjaLayoutLoopRecursionSkippedEnd(span) => {
                     // TYPECHECK: NO

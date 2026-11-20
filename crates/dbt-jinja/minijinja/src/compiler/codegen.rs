@@ -234,7 +234,7 @@ impl<'source> CodeGenerator<'source> {
 
     /// Ends the open for loop
     pub fn end_for_loop(&mut self, push_did_not_iterate: bool, span: Span) {
-        self.end_for_loop_with_layout(push_did_not_iterate, span, None);
+        self.end_for_loop_with_layout(push_did_not_iterate, span, None, None);
     }
 
     fn end_for_loop_with_layout(
@@ -242,6 +242,7 @@ impl<'source> CodeGenerator<'source> {
         push_did_not_iterate: bool,
         span: Span,
         skipped_end_tag_span: Option<Span>,
+        else_tag_span: Option<(Span, Span)>,
     ) {
         if let Some(PendingBlock::Loop {
             iter_instr,
@@ -263,6 +264,12 @@ impl<'source> CodeGenerator<'source> {
                 }
             }
             if push_did_not_iterate {
+                if let Some((start_tag_span, else_tag_span)) = else_tag_span {
+                    self.add(Instruction::JinjaLayoutLoopElseStart(
+                        start_tag_span,
+                        else_tag_span,
+                    ));
+                }
                 self.add(Instruction::PushDidNotIterate);
             };
             self.add(Instruction::PopFrame);
@@ -1148,7 +1155,7 @@ impl<'source> CodeGenerator<'source> {
             self.start_else(span);
             self.add(Instruction::DiscardTop);
             self.end_if();
-            self.end_for_loop_with_layout(false, span, None);
+            self.end_for_loop_with_layout(false, span, None, None);
             self.add(Instruction::BuildList(None, span));
         } else {
             self.compile_expr(&for_loop.iter)?;
@@ -1170,15 +1177,12 @@ impl<'source> CodeGenerator<'source> {
             !for_loop.else_body.is_empty(),
             span,
             Some(for_loop.end_tag_span),
+            for_loop
+                .else_tag_span
+                .map(|else_span| (for_loop.start_tag_span, else_span)),
         );
         if !for_loop.else_body.is_empty() {
             self.start_if(span);
-            if let Some(else_tag_span) = for_loop.else_tag_span {
-                self.add(Instruction::JinjaLayoutEvent(
-                    JinjaLayoutEventKind::BlockMid,
-                    else_tag_span,
-                ));
-            }
             self.compile_layout_body(&for_loop.else_body, (for_loop.end_tag_span, false))?;
             self.add(Instruction::JinjaLayoutEvent(
                 JinjaLayoutEventKind::BlockEnd,

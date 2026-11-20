@@ -4,6 +4,7 @@ import json
 
 import duckdb
 import pytest
+from render_trace_goldens import normalize_trace
 
 TRACE_TABLE = "info_schema/v1/dbt.render_traces.parquet"
 TRACE_EPOCHS = "private/metadata/compile/render_traces/v1_*.parquet"
@@ -36,13 +37,11 @@ def read_unique_ids(project, invoke, parquet_path):
 
 
 def assert_matches_golden(project, invoke, trace):
-    normalized = dict(trace)
-    normalized["dbt_version"] = "0.0.0-example"
-    normalized["invocation_id"] = "00000000-0000-4000-8000-000000000001"
-    normalized["source_path"] = normalized["filename"]
-    normalized.pop("ingested_at")
-    golden = read_trace(project, invoke, "goldens/render_traces.parquet", trace["unique_id"])
-    assert normalized == golden, json.dumps(normalized, indent=2, ensure_ascii=False)
+    normalized = normalize_trace(trace)
+    goldens = json.loads((project / "goldens/render_traces.json").read_text())
+    assert normalized == goldens[trace["unique_id"]], json.dumps(
+        normalized, indent=2, ensure_ascii=False
+    )
 
 
 def test_render_trace_matches_compile_and_preserves_provenance(tmp_project, invoke):
@@ -364,3 +363,62 @@ def test_public_trace_table_requires_info_schema_generation(tmp_project, invoke,
         assert "dbt.render_traces" in (project / "target/info_schema/v1/views.sql").read_text()
     else:
         assert not (project / "target" / TRACE_TABLE).exists()
+
+
+def test_info_schema_without_trace_flag_does_not_publish_retained_rows(tmp_project, invoke):
+    project = tmp_project("render_trace")
+    args = ["compile", "--select", "probe", "--generate-info-schema", "--static-analysis", "off"]
+    first = invoke(project, *args, "--feature", "write_render_trace")
+    assert first.success, first.exception
+    assert read_unique_ids(project, invoke, f"target/{TRACE_TABLE}")
+    (project / "models/probe.sql").unlink()
+    second = invoke(
+        project, "compile", "--select", "base", "--generate-info-schema", "--static-analysis", "off"
+    )
+    assert second.success, second.exception
+    assert read_unique_ids(project, invoke, f"target/{TRACE_TABLE}") == []
+
+
+def test_unit_override_render_preserves_canonical_trace(tmp_project, invoke):
+    project = tmp_project("render_trace")
+    (project / "models/probe.sql").write_text("select {{ var('trace_value', 1) }} as value")
+    (project / "models/unit.yml").write_text(
+        "unit_tests:\n  - name: override_trace\n    model: probe\n    overrides:\n"
+        "      vars:\n        trace_value: 9\n    given: []\n"
+        "    expect:\n      rows:\n        - {value: 9}\n"
+    )
+    flags = [
+        "--feature",
+        "write_render_trace",
+        "--generate-info-schema",
+        "--static-analysis",
+        "off",
+    ]
+    first = invoke(project, "compile", "--select", "probe", *flags)
+    assert first.success, first.exception
+    canonical = read_trace(project, invoke, f"target/{TRACE_TABLE}", "model.render_trace.probe")
+    tested = invoke(project, "test", "--select", "test_type:unit", *flags)
+    assert tested.success, tested.exception
+    assert read_trace(project, invoke, f"target/{TRACE_TABLE}", canonical["unique_id"]) == canonical
+
+
+def test_python_conversion_removes_retained_sql_trace(tmp_project, invoke):
+    project = tmp_project("render_trace")
+    flags = [
+        "--feature",
+        "write_render_trace",
+        "--generate-info-schema",
+        "--static-analysis",
+        "off",
+    ]
+    first = invoke(project, "compile", "--select", "probe", *flags)
+    assert first.success, first.exception
+    (project / "models/probe.sql").unlink()
+    (project / "models/probe.py").write_text(
+        'def model(dbt, session):\n    dbt.config(materialized="table")\n    return None\n'
+    )
+    converted = invoke(project, "compile", "--select", "probe", *flags)
+    assert converted.success, converted.exception
+    assert "model.render_trace.probe" not in read_unique_ids(
+        project, invoke, f"target/{TRACE_TABLE}"
+    )

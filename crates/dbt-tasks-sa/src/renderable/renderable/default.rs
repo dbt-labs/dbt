@@ -80,6 +80,12 @@ fn render_default(
 
     // Python models skip Jinja rendering and use raw Python code + py_script_postfix
     if node.common().language.as_deref() == Some("python") {
+        if dbt_flags::WRITE_RENDER_TRACE.enabled() {
+            ctx.inner
+                .render_trace_attempts
+                .lock()
+                .insert(node.unique_id());
+        }
         return render_python_model(node, ctx, &raw_sql, &base_context);
     }
 
@@ -107,6 +113,7 @@ fn render_default(
         &compile_context,
         &ModelRenderInput {
             source: &raw_sql,
+            capture_trace: local_exec_unit_test_overrides.is_none(),
             filename: &render_file_path,
             source_path: &absolute_path,
         },
@@ -188,6 +195,7 @@ fn cached_render(
 /// The exact Jinja input and its display and on-disk source identities.
 struct ModelRenderInput<'a> {
     source: &'a str,
+    capture_trace: bool,
     filename: &'a Path,
     source_path: &'a Path,
 }
@@ -198,7 +206,8 @@ fn render_model_sql(
     compile_context: &BTreeMap<String, MinijinjaValue>,
     input: &ModelRenderInput<'_>,
 ) -> FsResult<String> {
-    if dbt_flags::WRITE_RENDER_TRACE.enabled() {
+    // Unit-test overrides are not the model's canonical render context.
+    if input.capture_trace && dbt_flags::WRITE_RENDER_TRACE.enabled() {
         ctx.inner
             .render_trace_attempts
             .lock()
@@ -211,8 +220,7 @@ fn render_model_sql(
             input.filename,
         )
         .map_err(|error| error.with_location(input.filename.to_path_buf()))?;
-        write_model_render_trace(node, ctx, input, &trace)?;
-        Ok(trace.rendered)
+        Ok(write_model_render_trace(node, ctx, input, trace))
     } else {
         Ok(render_sql(
             input.source,
@@ -229,8 +237,9 @@ fn write_model_render_trace(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &TaskRunnerCtx,
     input: &ModelRenderInput<'_>,
-    trace: &RenderTrace,
-) -> FsResult<()> {
+    trace: RenderTrace,
+) -> String {
+    let rendered = trace.rendered.clone();
     let artifact = ModelRenderTrace {
         protocol_version: 2,
         dbt_version: env!("CARGO_PKG_VERSION"),
@@ -239,10 +248,10 @@ fn write_model_render_trace(
         filename: input.filename.to_path_buf(),
         source_path: input.source_path.to_path_buf(),
         render_stage: "jinja_before_ephemeral_injection",
-        trace: trace.clone(),
+        trace,
     };
     ctx.inner.render_traces.lock().push(artifact);
-    Ok(())
+    rendered
 }
 
 fn report_rendering_progress(node: &Arc<dyn InternalDbtNodeAttributes>, ctx: &TaskRunnerCtx) {

@@ -54,11 +54,5 @@ pub(crate) fn write_collected_render_traces(ctx: &TaskRunnerCtx) -> FsResult<()>
         .join("compile")
         .join("render_traces");
     let recomputed_ids = std::mem::take(&mut *ctx.inner.render_trace_attempts.lock());
-    write_render_traces(
-        &dir,
-        rows,
-        &recomputed_ids,
-        valid_ids.as_ref().map(|ids| ids.len()),
-        valid_ids.as_ref(),
-    )
+    write_render_traces(&dir, rows, &recomputed_ids, valid_ids.as_ref())
 }

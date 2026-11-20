@@ -26,42 +26,6 @@ pub struct RenderTraceEvent {
     pub rendered_end: usize,
 }
 
-/// Render events exposed as typed rows to Rust callers.
-#[derive(Debug, Clone)]
-pub struct RenderTraceEvents(Vec<RenderTraceEvent>);
-
-impl From<Vec<RenderTraceEvent>> for RenderTraceEvents {
-    fn from(events: Vec<RenderTraceEvent>) -> Self {
-        Self(events)
-    }
-}
-
-impl std::ops::Deref for RenderTraceEvents {
-    type Target = [RenderTraceEvent];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl IntoIterator for RenderTraceEvents {
-    type Item = RenderTraceEvent;
-    type IntoIter = std::vec::IntoIter<RenderTraceEvent>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a RenderTraceEvents {
-    type Item = &'a RenderTraceEvent;
-    type IntoIter = std::slice::Iter<'a, RenderTraceEvent>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
-    }
-}
-
 /// Exact input, output and ordered observations from a successful render.
 #[derive(Debug, Clone)]
 pub struct RenderTrace {
@@ -70,7 +34,7 @@ pub struct RenderTrace {
     /// Jinja output, before ephemeral CTE injection.
     pub rendered: String,
     /// Execution events; source ranges may repeat or move backwards in loops.
-    pub events: RenderTraceEvents,
+    pub events: Vec<RenderTraceEvent>,
 }
 
 impl Serialize for RenderTrace {
@@ -186,7 +150,7 @@ impl RenderTraceListener {
         RenderTrace {
             source: source.to_owned(),
             rendered,
-            events: RenderTraceEvents(self.events.take()),
+            events: self.events.take(),
         }
     }
 }
@@ -485,6 +449,19 @@ mod tests {
         assert_eq!(observer.position(), position);
         assert!(observer.buffers.borrow().is_empty());
         assert!(observer.templates.borrow().is_empty());
+    }
+
+    #[test]
+    fn first_iteration_break_preserves_else_rendering() {
+        let source = "{% for n in [1,2] %}select {{ n }};{% break %}{% else %}select 0{% endfor %}";
+        let trace = render(source, true);
+        assert_eq!(trace.rendered, "select 1;select 0");
+        assert!(
+            !trace
+                .events
+                .iter()
+                .any(|event| event.kind == "loop_skipped")
+        );
     }
 
     #[test]
@@ -835,7 +812,7 @@ mod tests {
                     if control == "continue" {
                         "select 1;select 2;select 9"
                     } else {
-                        "select 1;select 9"
+                        "select 1;unusedselect 9"
                     }
                 );
                 assert_balanced_layout(&trace);
