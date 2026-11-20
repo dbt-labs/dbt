@@ -1,0 +1,7 @@
+kind: Fixes
+body: Match seed column_types keys to column names case-insensitively, so upper-case keys apply on adapters that lower-case seed columns
+time: 2026-09-25T18:28:52.350719+02:00
+custom:
+    author: David-Banquet
+    issue: "16459"
+    project: dbt-core
