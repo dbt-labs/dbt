@@ -39,13 +39,13 @@ def _validate_event_time(node: ManifestNode) -> None:
 def _coerce_begin_string_to_datetime(node: ManifestNode) -> None:
     """If the `begin` config is a plain string, coerce it to `datetime` in place.
 
-    A `begin` config is only guaranteed to already be a native `datetime` when it
-    is provided as an unquoted YAML timestamp (e.g. in a `.yml` properties file or
-    `dbt_project.yml`), since PyYAML resolves those to `datetime.date`/`datetime.datetime`
-    automatically. A `begin` provided as a quoted string -- including via a Jinja
-    `{{ config(begin='2024-01-01') }}` call, which is never passed through YAML's
-    timestamp resolver -- arrives here as a plain `str`, because `NodeConfig.begin`
-    is typed `Any` and gets no automatic coercion from mashumaro.
+    Under `--use-v2-parser`, `begin` is always loaded from manifest.json as a
+    string. On the native parser path, an unquoted YAML timestamp (e.g. in a
+    `.yml` properties file or `dbt_project.yml`) may already be a
+    `datetime.date`/`datetime.datetime` via PyYAML; a quoted string -- including
+    via Jinja `{{ config(begin='2024-01-01') }}` -- arrives as a plain `str`,
+    because `NodeConfig.begin` is typed `Any` and gets no automatic coercion
+    from mashumaro.
     """
     begin: Any = node.config.begin
     if not isinstance(begin, str):
