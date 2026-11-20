@@ -485,7 +485,7 @@ async fn prepare_dev_clone_request(
     }))
 }
 
-async fn relation_exists(
+pub(crate) async fn relation_exists(
     ctx: &TaskRunnerCtx,
     name: &str,
     relation: Arc<dyn BaseRelation>,

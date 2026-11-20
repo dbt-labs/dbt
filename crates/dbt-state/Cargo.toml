@@ -32,6 +32,7 @@ dbt-schemas = { workspace = true }
 dbt-telemetry = { workspace = true }
 dbt-yaml = { workspace = true }
 
+arrow-schema = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
@@ -65,7 +66,6 @@ tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
 crossbeam-queue = { workspace = true }
 dbt-adapter-core = { workspace = true }
 dbt-runtime = { workspace = true }

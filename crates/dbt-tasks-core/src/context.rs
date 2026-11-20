@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -35,6 +35,7 @@ use dbt_schemas::schemas::{BatchResults, InternalDbtNode, InternalDbtNodeAttribu
 use dbt_schemas::state::{DbtProfile, DbtRuntimeConfig, NodeResolverTracker, ResolverState};
 use dbt_state::explain::StateExplainDevClone;
 use dbt_state::metadata_cache::RunCacheMetadataCache;
+use dbt_state::proto::query_cache::table_modified_info::DependencyKind;
 use dbt_state::service_client::SharedRunCacheServiceClient;
 use dbt_state::service_config::RunCacheServiceConfig;
 use dbt_state::telemetry::SharedEventOrder;
@@ -72,6 +73,13 @@ pub struct RunCacheCtx {
     /// Tracks the background dependency last-modified prefetch so per-node
     /// submits can observe its progress and await it on demand.
     pub prefetch: RunCachePrefetchState,
+    /// Background schema prefetch for column-aware reuse. Separate from
+    /// `prefetch` so it never delays speculative submits.
+    pub schema_prefetch: RunCachePrefetchState,
+    /// Dependency kind by `semantic_fqn`, built once (see `dependency_kinds_by_fqn`).
+    pub dependency_kinds: std::sync::OnceLock<HashMap<String, DependencyKind>>,
+    /// Targets of the selected models and snapshots, built once.
+    pub selected_target_fqns: std::sync::OnceLock<BTreeSet<String>>,
     /// Shared telemetry event order counter for monotonic ordering across
     /// state selector (compilation phase) and task execution (run phase).
     ///

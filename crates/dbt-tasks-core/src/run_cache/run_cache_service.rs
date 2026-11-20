@@ -60,6 +60,7 @@ use dbt_schemas::schemas::{
     DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, FreshnessNodeRef, InternalDbtNode,
     InternalDbtNodeAttributes,
 };
+use dbt_state::column_aware::apply_dependency_kinds;
 use dbt_state::explain::{
     StateExplainExecutionConfirmed, StateExplainLogRecord, StateExplainNode, StateExplainNodeInfo,
     append_state_explain_log_record,
@@ -83,6 +84,9 @@ use dbt_state::request_builder::{
 use dbt_state::service_client::RunCacheServiceError;
 use dbt_telemetry::{ExecutionPhase, NodeEvaluated, NodeType};
 
+use crate::run_cache::column_aware::{
+    ColumnAwareFields, collect_column_aware_fields, dependency_kinds_by_fqn,
+};
 use crate::run_cache::run_cache_request::{
     DbtProjectInfo, SeedRunCacheRequestContext, SqlRunCacheRequestContext, build_model_sql_request,
     build_seed_values_request, build_snapshot_sql_request, build_test_sql_request,
@@ -1152,6 +1156,9 @@ pub async fn run_cache_service_before_run(
         prefetch_ctx.inner.run_cache_ctx.prefetch.mark_done();
     });
     prefetch.set_handle(handle).await;
+
+    // Column-aware reuse: start the schema prefetch. A no-op unless a node needs it.
+    super::column_aware::start_prefetch_schemas(ctx).await;
 
     if let Some(clock) = HeuristicClock::bootstrap(ctx).await {
         let _ = ctx.inner.run_cache_ctx.heuristic_clock.set(clock);
@@ -2815,7 +2822,7 @@ async fn submit_model(
         return Ok(None);
     }
 
-    if full_refresh && full_refresh_blocks_model_submit(model.materialized()) {
+    if model_takes_full_refresh_bail(ctx.inner.arg.full_refresh, model) {
         // `--full-refresh` is an explicit instruction to rebuild, so this node
         // must never be skipped. The service cannot enforce that for us: the
         // request carries no full-refresh flag, only `execution_type=FULL`, so
@@ -3143,7 +3150,11 @@ async fn build_sql_request(
         sql.to_string(),
         is_view,
         full_refresh,
-        speculative,
+        if speculative {
+            SqlContextPurpose::Speculative
+        } else {
+            SqlContextPurpose::Decision
+        },
     )
     .await?;
     if !context.metadata_complete {
@@ -3200,7 +3211,7 @@ async fn prepare_write_only_execution_record(
             task_result.sql_instruction.sql.clone(),
             model_is_view(model, &ctx.inner.materialization_resolver),
             full_refresh,
-            false,
+            SqlContextPurpose::ExecutionRecord,
         )
         .await?;
         if !context.metadata_complete {
@@ -3227,7 +3238,7 @@ async fn prepare_write_only_execution_record(
                 ctx.inner.arg.full_refresh,
                 snapshot.deprecated_config.full_refresh,
             ),
-            false,
+            SqlContextPurpose::ExecutionRecord,
         )
         .await?;
         if !context.metadata_complete {
@@ -3474,7 +3485,7 @@ async fn build_sql_context(
     sql: String,
     is_view: bool,
     full_refresh: bool,
-    speculative: bool,
+    purpose: SqlContextPurpose,
 ) -> FsResult<BuiltSqlRunCacheContext> {
     let Some(config) = ctx.inner.run_cache_ctx.run_cache_service_config.as_ref() else {
         return Err(fs_err!(
@@ -3484,17 +3495,34 @@ async fn build_sql_context(
     };
 
     let query_dependencies = collect_query_dependencies(ctx, node, &sql, is_view).await?;
-    let tables = collect_table_modified_infos(
+    let mut tables = collect_table_modified_infos(
         ctx,
         node,
         is_view,
         &query_dependencies.seen_tables,
         &query_dependencies.parser_seen_relations,
         &query_dependencies.unresolvable_tables,
-        speculative,
+        purpose == SqlContextPurpose::Speculative,
     )
     .await?;
     let metadata_complete = tables.metadata_complete && query_dependencies.metadata_complete;
+    // An incomplete context is never submitted, so don't fetch schemas for it.
+    let column_aware = if metadata_complete {
+        collect_column_aware_fields(
+            ctx,
+            node,
+            is_view,
+            purpose,
+            &query_dependencies.seen_tables,
+            &query_dependencies.parser_seen_relations,
+        )
+        .await
+    } else {
+        ColumnAwareFields::default()
+    };
+    if column_aware.compare_selected_columns {
+        apply_dependency_kinds(&mut tables.tables, dependency_kinds_by_fqn(ctx));
+    }
     let lenient_dependencies = build_lenient_dependencies(
         config.enable_lenient_dependencies,
         &ctx.inner.run_cache_ctx.run_cache_deferred_fqns,
@@ -3551,6 +3579,9 @@ async fn build_sql_context(
             // Populated by the model submit paths for microbatch models; other
             // node types never carry a window.
             microbatch_window: None,
+            compare_selected_columns: column_aware.compare_selected_columns,
+            table_schemas: column_aware.table_schemas,
+            target_exists: column_aware.target_exists,
             dbt_project_info: DbtProjectInfo::from(ctx),
         },
         metadata_complete,
@@ -4080,6 +4111,10 @@ async fn last_modified_epoch_for_node(
     last_modified_epoch_for_relation(ctx, &name).await
 }
 
+/// Re-reads a node's target epoch from the warehouse, first dropping all of
+/// the target's cached metadata, including existence and column schema. The
+/// build may have created the table or changed its columns, and the metadata
+/// cache outlives the invocation.
 pub async fn refresh_final_last_modified_epoch_for_node(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
@@ -4088,7 +4123,7 @@ pub async fn refresh_final_last_modified_epoch_for_node(
     ctx.inner
         .run_cache_ctx
         .run_cache_metadata
-        .remove_last_modified_epoch(&name);
+        .invalidate_relation_metadata(&name);
     refresh_last_modified_epoch_for_relation(ctx, &name, relation).await
 }
 
@@ -4097,19 +4132,28 @@ pub fn clear_stale_missing_last_modified_epoch_for_node(
     node: &dyn InternalDbtNodeAttributes,
 ) {
     if let Ok((name, _)) = relation_for_node(node) {
-        // Only clear a known-stale placeholder (`Some(None)`), cached when the
-        // submit-time probe found no target table yet. A real cached epoch
-        // (`Some(Some(_))`) is still valid and may be relied on by sibling nodes
-        // later in this same run.
         let run_cache_metadata = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        // A cached "missing" is stale once the node has built the target, and the
+        // cache outlives the invocation. Drop all of its metadata.
+        if run_cache_metadata.relation_exists(&name) == Some(false) {
+            run_cache_metadata.invalidate_relation_metadata(&name);
+            return;
+        }
+        // Otherwise only clear a known-stale placeholder (`Some(None)`), cached
+        // when the submit-time probe found no target table yet. A real cached
+        // epoch (`Some(Some(_))`) is still valid and may be relied on by sibling
+        // nodes later in this same run.
         if matches!(run_cache_metadata.last_modified_epoch(&name), Some(None)) {
             run_cache_metadata.remove_last_modified_epoch(&name);
         }
+        // The build may have changed the target's columns.
+        run_cache_metadata.remove_table_schema(&name);
     }
 }
 
-/// Evicts a node's cached warehouse metadata (last-modified epoch and existence)
-/// when it rebuilds without the dbt State service observing it.
+/// Evicts a node's cached warehouse metadata (last-modified epoch, existence
+/// and column schema) when it rebuilds without the dbt State service observing
+/// it.
 ///
 /// An untracked rebuild makes the cached value stale; without eviction,
 /// downstream nodes in the same invocation report the relation's pre-build
@@ -4141,14 +4185,15 @@ fn stamp_final_last_modified_epoch_for_node_heuristic(
     let epoch = clock.now_ms();
     // Mirror the plugin's `clear_cache` + `cache_last_modified_epoch(table, H)`:
     // replace the stale prefetch value (often None for newly-created tables) with H
-    // so downstream submissions in the same run have metadata_complete=true.
+    // so downstream submissions in the same run have metadata_complete=true. The
+    // clear also drops cached existence and the column schema.
     let Ok((name, _)) = relation_for_node(node) else {
         return None;
     };
     ctx.inner
         .run_cache_ctx
         .run_cache_metadata
-        .remove_last_modified_epoch(&name);
+        .invalidate_relation_metadata(&name);
     ctx.inner
         .run_cache_ctx
         .run_cache_metadata
@@ -4875,7 +4920,7 @@ async fn table_type_for_node(node: &dyn InternalDbtNodeAttributes) -> FsResult<O
     Ok(config_derived_table_type(node, node.node_adapter()))
 }
 
-fn relation_for_node(
+pub(crate) fn relation_for_node(
     node: &dyn InternalDbtNodeAttributes,
 ) -> FsResult<(String, Arc<dyn BaseRelation>)> {
     let relation = create_relation_from_node(node.node_adapter(), node, None)?;
@@ -5310,7 +5355,7 @@ pub fn run_cache_dialect(ctx: &TaskRunnerCtx) -> String {
     }
 }
 
-fn should_honor_service_skip(ctx: &TaskRunnerCtx) -> bool {
+pub(crate) fn should_honor_service_skip(ctx: &TaskRunnerCtx) -> bool {
     effective_run_cache_service_use_cache(
         &ctx.inner.arg.run_cache_mode,
         ctx.inner.run_cache_ctx.run_cache_service_requested,
@@ -5326,8 +5371,28 @@ fn remove_cache_decision_fields(context: &mut SqlRunCacheRequestContext) {
     context.clone_table_properties = None;
 }
 
-fn effective_full_refresh(cli_full_refresh: bool, config_full_refresh: Option<bool>) -> bool {
+pub(crate) fn effective_full_refresh(
+    cli_full_refresh: bool,
+    config_full_refresh: Option<bool>,
+) -> bool {
     config_full_refresh.unwrap_or(cli_full_refresh)
+}
+
+/// Why a SQL context is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SqlContextPurpose {
+    /// A submit asking the service for a decision.
+    Decision,
+    /// A speculative submit, built from cache reads only.
+    Speculative,
+    /// Reports an execution afterwards (`RecordExecutions`); asks for no decision.
+    ExecutionRecord,
+}
+
+/// Whether `model` is rebuilt under full refresh without asking the service.
+pub(crate) fn model_takes_full_refresh_bail(cli_full_refresh: bool, model: &DbtModel) -> bool {
+    effective_full_refresh(cli_full_refresh, model.deprecated_config.full_refresh)
+        && full_refresh_blocks_model_submit(model.materialized())
 }
 
 fn full_refresh_blocks_model_submit(materialization: DbtMaterialization) -> bool {
@@ -5352,7 +5417,7 @@ fn effective_run_cache_service_use_cache(
 
 /// Materializations that are inlined into their consumers and therefore never
 /// get a warehouse relation of their own.
-fn is_no_op_model_materialization(materialization: DbtMaterialization) -> bool {
+pub(crate) fn is_no_op_model_materialization(materialization: DbtMaterialization) -> bool {
     matches!(
         materialization,
         DbtMaterialization::Ephemeral | DbtMaterialization::Inline
@@ -5565,7 +5630,7 @@ fn record_submit_skipped(node: &dyn InternalDbtNodeAttributes, reason: &'static 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use dbt_adapter::metadata::CatalogAndSchema;
     use dbt_adapter::time_machine::{
@@ -5638,6 +5703,118 @@ mod tests {
         model.__common_attr__.unique_id = "model.test.orders".to_string();
         model.__model_attr__.state = Some(state);
         model
+    }
+
+    /// A model in `db.analytics` whose `state:` config sets `compare_selected_columns`
+    /// to `flag`.
+    fn model_comparing_selected_columns(
+        unique_id: &str,
+        materialized: DbtMaterialization,
+        flag: bool,
+    ) -> DbtModel {
+        let mut model = model_with_state(ModelState {
+            lag_tolerance: None,
+            require_fresh_data_from: None,
+            evaluate_volatile_sql: None,
+            pre_clone: None,
+            execute_hooks_on_any_reuse: None,
+            compare_unrendered_code: None,
+            ignore_external_modifications: None,
+            compare_selected_columns: Some(flag),
+        });
+        model.__common_attr__.unique_id = unique_id.to_string();
+        model.__common_attr__.language = Some("sql".to_string());
+        model.__base_attr__.database = "db".to_string();
+        model.__base_attr__.schema = "analytics".to_string();
+        model.__base_attr__.alias = unique_id
+            .rsplit('.')
+            .next()
+            .unwrap_or(unique_id)
+            .to_string();
+        model.__base_attr__.materialized = materialized;
+        model
+    }
+
+    #[dbt_runtime::test]
+    async fn tables_carry_dependency_kinds_when_flag_on() {
+        let cases = [
+            ("model.test.flag_on", DbtMaterialization::Table, true, false),
+            (
+                "model.test.flag_off",
+                DbtMaterialization::Table,
+                false,
+                false,
+            ),
+            (
+                "model.test.view_flag_on",
+                DbtMaterialization::View,
+                true,
+                true,
+            ),
+        ];
+        let mut nodes = Nodes::default();
+        for (unique_id, materialized, flag, _) in &cases {
+            nodes.models.insert(
+                unique_id.to_string(),
+                Arc::new(model_comparing_selected_columns(
+                    unique_id,
+                    materialized.clone(),
+                    *flag,
+                )),
+            );
+        }
+        let ctx = test_task_runner_ctx_with_nodes(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(EmptySourcesExtractor),
+            nodes,
+            cases.iter().map(|(id, ..)| id.to_string()).collect(),
+        );
+        let kinds = dependency_kinds_by_fqn(&ctx).clone();
+
+        for (unique_id, _, flag, is_view) in cases {
+            let node = ctx.nodes().get_node(unique_id).expect("node");
+            let (target, _) = relation_for_node(node).expect("relation");
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .insert_last_modified_epoch(target.clone(), Some(1));
+            for purpose in [
+                SqlContextPurpose::Decision,
+                SqlContextPurpose::ExecutionRecord,
+            ] {
+                let built =
+                    build_sql_context(&ctx, node, "select 1".to_string(), is_view, false, purpose)
+                        .await
+                        .expect("context");
+                let request = built.request;
+                assert_eq!(
+                    request.compare_selected_columns,
+                    flag && !is_view,
+                    "{unique_id}"
+                );
+                assert_eq!(request.tables.len(), 1, "{unique_id}: the target only");
+                for table in &request.tables {
+                    let expected = if flag && !is_view {
+                        kinds
+                            .get(&table.name)
+                            .copied()
+                            .unwrap_or(DependencyKind::Unknown)
+                    } else {
+                        DependencyKind::Unknown
+                    };
+                    assert_eq!(table.kind, expected as i32, "{unique_id}: {}", table.name);
+                }
+                if flag && !is_view {
+                    assert_eq!(
+                        request.tables[0].kind,
+                        DependencyKind::Model as i32,
+                        "the flagged model's own target is a model"
+                    );
+                }
+            }
+        }
     }
 
     /// Seeds resolve with materialized: Table (see resolve_seeds.rs).
@@ -6921,6 +7098,223 @@ mod tests {
                 .last_modified_epoch(&target_fqn),
             Some(None)
         );
+    }
+
+    /// Caches "target missing" as a first build's submit-time probe would.
+    fn cache_target_as_missing(ctx: &TaskRunnerCtx, target_fqn: &str) {
+        let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        cache.insert_relation_exists(target_fqn, false);
+        cache.insert_last_modified_epoch(target_fqn, None);
+    }
+
+    /// After the post-execution refresh, the run's relation lookup must not
+    /// still answer "missing" for the target the node just built: the cache
+    /// outlives the invocation, and a stale `Some(false)` would send
+    /// `target_table_missing=true` on a later submit.
+    async fn assert_target_not_cached_missing(
+        ctx: &TaskRunnerCtx,
+        model: &dyn InternalDbtNodeAttributes,
+    ) {
+        let (target_fqn, relation) = relation_for_node(model).expect("relation");
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .relation_exists(&target_fqn),
+            None
+        );
+        // With no adapter in the test ctx, a re-query fails open to `None`.
+        assert_ne!(
+            crate::run_cache::run_cache_dev_clone::relation_exists(ctx, &target_fqn, relation)
+                .await,
+            Some(false)
+        );
+    }
+
+    /// Tracked and write-only executions resolve the final epoch through
+    /// `refresh_final_last_modified_epoch_for_node` when there is no heuristic
+    /// clock.
+    #[dbt_runtime::test]
+    async fn refresh_final_epoch_drops_cached_missing_target_existence() {
+        let ctx = test_task_runner_ctx(None);
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Incremental,
+        );
+        cache_target_as_missing(&ctx, &fqn_of("db", "dbt_test", "user_name_model"));
+
+        refresh_final_last_modified_epoch_for_node(&ctx, model.as_ref())
+            .await
+            .unwrap();
+
+        assert_target_not_cached_missing(&ctx, model.as_ref()).await;
+    }
+
+    /// ...and through the heuristic stamp when the clock is set.
+    #[dbt_runtime::test]
+    async fn final_epoch_heuristic_stamp_drops_cached_missing_target_existence() {
+        let ctx = test_task_runner_ctx(None);
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Incremental,
+        );
+        let target_fqn = fqn_of("db", "dbt_test", "user_name_model");
+        cache_target_as_missing(&ctx, &target_fqn);
+        ctx.inner
+            .run_cache_ctx
+            .heuristic_clock
+            .set(HeuristicClock {
+                start_ts_ms: 1_700_000_000_000,
+                start_instant: Instant::now(),
+            })
+            .unwrap();
+
+        let epoch = final_last_modified_epoch_for_node(&ctx, model.as_ref())
+            .await
+            .unwrap();
+
+        assert!(epoch.is_some());
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&target_fqn),
+            Some(epoch)
+        );
+        assert_target_not_cached_missing(&ctx, model.as_ref()).await;
+    }
+
+    /// Executions without a confirmation or record (`RunCacheAfterSuccess::None`)
+    /// go through `clear_stale_missing_last_modified_epoch_for_node`.
+    #[dbt_runtime::test]
+    async fn clear_stale_missing_epoch_drops_cached_missing_target_existence() {
+        let ctx = test_task_runner_ctx(None);
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Incremental,
+        );
+        let target_fqn = fqn_of("db", "dbt_test", "user_name_model");
+        cache_target_as_missing(&ctx, &target_fqn);
+
+        clear_stale_missing_last_modified_epoch_for_node(&ctx, model.as_ref());
+
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&target_fqn),
+            None
+        );
+        assert_target_not_cached_missing(&ctx, model.as_ref()).await;
+    }
+
+    #[test]
+    fn clear_stale_missing_epoch_preserves_cached_existing_target() {
+        let ctx = test_task_runner_ctx(None);
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Table,
+        );
+        let target_fqn = fqn_of("db", "dbt_test", "user_name_model");
+        let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        cache.insert_relation_exists(&target_fqn, true);
+        cache.insert_last_modified_epoch(&target_fqn, Some(1_700_000_000_000));
+
+        clear_stale_missing_last_modified_epoch_for_node(&ctx, model.as_ref());
+
+        assert_eq!(cache.relation_exists(&target_fqn), Some(true));
+        assert_eq!(
+            cache.last_modified_epoch(&target_fqn),
+            Some(Some(1_700_000_000_000))
+        );
+    }
+
+    /// Every post-build path drops the target's cached column schema, so a table
+    /// rebuilt in the run (e.g. a seed under `--full-refresh`) isn't sent stale
+    /// downstream.
+    #[dbt_runtime::test]
+    async fn post_build_paths_drop_cached_target_schema() {
+        use dbt_state::proto::query_cache::ColumnInfo;
+
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Table,
+        );
+        let target_fqn = fqn_of("db", "dbt_test", "user_name_model");
+        let fresh_ctx_with_cached_schema = || {
+            let ctx = test_task_runner_ctx(None);
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .insert_table_schema(
+                    target_fqn.clone(),
+                    Some(Arc::from(vec![ColumnInfo {
+                        name: "ID".to_string(),
+                        r#type: "NUMBER(38,0)".to_string(),
+                    }])),
+                );
+            assert!(
+                ctx.inner
+                    .run_cache_ctx
+                    .run_cache_metadata
+                    .table_schema(&target_fqn)
+                    .is_some()
+            );
+            ctx
+        };
+        let assert_schema_dropped = |ctx: &TaskRunnerCtx, path: &str| {
+            assert!(
+                ctx.inner
+                    .run_cache_ctx
+                    .run_cache_metadata
+                    .table_schema(&target_fqn)
+                    .is_none(),
+                "{path} left the target's schema cached"
+            );
+        };
+
+        let ctx = fresh_ctx_with_cached_schema();
+        refresh_final_last_modified_epoch_for_node(&ctx, model.as_ref())
+            .await
+            .unwrap();
+        assert_schema_dropped(&ctx, "refresh_final_last_modified_epoch_for_node");
+
+        let ctx = fresh_ctx_with_cached_schema();
+        ctx.inner
+            .run_cache_ctx
+            .heuristic_clock
+            .set(HeuristicClock {
+                start_ts_ms: 1_700_000_000_000,
+                start_instant: Instant::now(),
+            })
+            .unwrap();
+        final_last_modified_epoch_for_node(&ctx, model.as_ref())
+            .await
+            .unwrap();
+        assert_schema_dropped(&ctx, "the heuristic stamp");
+
+        let ctx = fresh_ctx_with_cached_schema();
+        clear_stale_missing_last_modified_epoch_for_node(&ctx, model.as_ref());
+        assert_schema_dropped(&ctx, "clear_stale_missing_last_modified_epoch_for_node");
+
+        let ctx = fresh_ctx_with_cached_schema();
+        evict_node_metadata_for_untracked_rebuild(&ctx, model.as_ref());
+        assert_schema_dropped(&ctx, "evict_node_metadata_for_untracked_rebuild");
     }
 
     #[test]
@@ -8263,7 +8657,7 @@ mod tests {
         }
     }
 
-    struct RecordingRunCacheClient {
+    pub(crate) struct RecordingRunCacheClient {
         submitted: Mutex<Vec<SubmitEnrichedSqlRequest>>,
         speculative_submitted: Mutex<Vec<SubmitEnrichedSqlRequest>>,
         response: SubmitSqlResponse,
@@ -8662,7 +9056,7 @@ mod tests {
         }
     }
 
-    struct EmptySourcesExtractor;
+    pub(crate) struct EmptySourcesExtractor;
 
     impl SourcesExtractor for EmptySourcesExtractor {
         fn extract_upstreams(
@@ -8986,7 +9380,7 @@ mod tests {
         )
     }
 
-    fn test_task_runner_ctx_with_nodes(
+    pub(crate) fn test_task_runner_ctx_with_nodes(
         run_cache_service_client: Option<dbt_state::service_client::SharedRunCacheServiceClient>,
         run_cache_mode: RunCacheMode,
         full_refresh: bool,
@@ -9038,6 +9432,9 @@ mod tests {
                 view_traverser: None,
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
+                schema_prefetch: Default::default(),
+                dependency_kinds: std::sync::OnceLock::new(),
+                selected_target_fqns: std::sync::OnceLock::new(),
                 shared_event_order: SharedEventOrder::new(),
                 telemetry_session_start: std::sync::OnceLock::new(),
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
