@@ -1,0 +1,7 @@
+kind: Fixes
+body: Keep BigQuery STRUCT columns whole in get_columns_in_select_sql so ingestion-time partitioned table DDL is valid
+time: 2026-09-30T10:48:12.439661-04:00
+custom:
+    author: dandres2929
+    issue: "16549"
+    project: dbt-core
