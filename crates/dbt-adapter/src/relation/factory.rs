@@ -17,7 +17,7 @@ pub fn create_static_relation(
     use AdapterType::*;
     let result = match adapter_type {
         Snowflake | Databricks | Spark | Fabric | DuckDB | LakeCompute | Exasol | Postgres
-        | Redshift | Salesforce | Bigquery | ClickHouse | MotherDuck => {
+        | Redshift | Salesforce | Bigquery | ClickHouse | MariaDB | MotherDuck => {
             let relation_type = RelationStatic {
                 adapter_type,
                 quoting,

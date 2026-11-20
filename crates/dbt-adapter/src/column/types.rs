@@ -1105,6 +1105,11 @@ impl Column {
                 }
                 bigquery_data_type_inner(self)
             }
+            // `mariadb__get_columns_in_relation` keeps the server's full type
+            // text (`text`, `varchar(20)`, `int(10) unsigned`, `enum(...)`),
+            // which is valid DDL as-is; rebuilding it from parts would turn
+            // `text` into `character varying(256)`.
+            AdapterType::MariaDB => self.core_dtype.to_string(),
             // v1 `DatabricksColumn.data_type` never renders through `string_type`, which would
             // turn Databricks strings into `character varying(256)`.
             // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L140-L142
@@ -1415,6 +1420,7 @@ mod tests {
             AdapterType::Spark,
             AdapterType::Databricks,
             AdapterType::Bigquery,
+            AdapterType::MariaDB,
         ] {
             let col = Column::new(
                 adapter,
@@ -1537,6 +1543,27 @@ mod tests {
         );
         for dtype in ["string", "STRING", "decimal(10,2)", "int"] {
             assert_eq!(databricks_column(dtype).data_type(), dtype);
+        }
+    }
+
+    #[test]
+    fn test_mariadb_data_type_keeps_server_type_text() {
+        for (dtype, char_size) in [
+            ("text", None),
+            ("varchar(20)", Some(20)),
+            ("int(10) unsigned", None),
+            ("enum('a','b')", None),
+            ("datetime(6)", None),
+        ] {
+            let col = Column::new(
+                AdapterType::MariaDB,
+                "c".to_string(),
+                dtype.to_string(),
+                char_size,
+                None,
+                None,
+            );
+            assert_eq!(col.data_type(), dtype);
         }
     }
 

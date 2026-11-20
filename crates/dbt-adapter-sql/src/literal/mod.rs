@@ -7,9 +7,12 @@ use dbt_adapter_core::AdapterType;
 /// which handle identifiers.
 pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
     match backend {
-        AdapterType::Snowflake | AdapterType::Redshift | AdapterType::Postgres => {
-            s.replace('\\', "\\\\").replace('\'', "''")
-        }
+        // Backslash is a string escape on MariaDB unless the
+        // NO_BACKSLASH_ESCAPES sql_mode is set.
+        AdapterType::Snowflake
+        | AdapterType::Redshift
+        | AdapterType::Postgres
+        | AdapterType::MariaDB => s.replace('\\', "\\\\").replace('\'', "''"),
         AdapterType::Bigquery
         | AdapterType::Databricks
         | AdapterType::Spark
@@ -109,6 +112,14 @@ mod tests {
     }
 
     #[test]
+    fn escape_string_literal_escapes_backslashes_on_mariadb() {
+        let e = |s: &str| escape_string_literal(s, AdapterType::MariaDB);
+        assert_eq!(e("o'brien"), "o''brien");
+        assert_eq!(e("a\\'b"), "a\\\\''b");
+        assert_eq!(e("plain"), "plain");
+    }
+
+    #[test]
     fn escape_string_literal_doubles_redshift_backslashes_and_quotes() {
         assert_eq!(
             escape_string_literal(r"a\b'c", AdapterType::Redshift),
@@ -133,6 +144,7 @@ mod tests {
             AdapterType::Snowflake,
             AdapterType::Redshift,
             AdapterType::Postgres,
+            AdapterType::MariaDB,
         ] {
             for value in values {
                 let escaped = escape_string_literal(value, backend);

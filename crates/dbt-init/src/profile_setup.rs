@@ -307,6 +307,7 @@ impl ProfileSetup {
             AdapterType::ClickHouse,
             AdapterType::DuckDB,
             AdapterType::Exasol,
+            AdapterType::MariaDB,
             AdapterType::Postgres,
             AdapterType::Redshift,
             AdapterType::Fabric,

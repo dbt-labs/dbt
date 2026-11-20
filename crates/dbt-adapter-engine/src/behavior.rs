@@ -52,7 +52,7 @@ pub fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<Behavio
         Fabric => fabric_behavior_flags(),
         Redshift => redshift_behavior_flags(),
         Postgres | Salesforce | Spark | DuckDB | LakeCompute | ClickHouse | Exasol | Starburst
-        | Athena | Trino | Datafusion | Dremio | Oracle | MotherDuck => vec![],
+        | Athena | Trino | Datafusion | Dremio | Oracle | MariaDB | MotherDuck => vec![],
     }
 }
 

@@ -50,7 +50,8 @@ pub fn config_aliases(adapter_type: AdapterType) -> &'static [(&'static str, &'s
         | AdapterType::Datafusion
         | AdapterType::Dremio
         | AdapterType::Oracle
-        | AdapterType::LakeCompute => &[],
+        | AdapterType::LakeCompute
+        | AdapterType::MariaDB => &[],
     }
 }
 
