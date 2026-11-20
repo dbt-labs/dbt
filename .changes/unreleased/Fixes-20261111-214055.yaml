@@ -1,0 +1,7 @@
+kind: Fixes
+body: Raise an error when a model sets a group that is not defined, matching dbt v1
+time: 2026-11-11T21:40:55.509494-05:00
+custom:
+    author: wilu222
+    issue: "17154"
+    project: dbt-core
