@@ -14,6 +14,11 @@ use minijinja::Value;
 use crate::macro_test_harness::{MacroTestHarness, default_mock_config, executed_sql};
 
 mod databricks {
+    use std::sync::Arc;
+
+    use dbt_agate::AgateTable;
+    use dbt_jinja_utils::mock_object::MockJinjaObject;
+
     use super::*;
 
     fn render_primary_key_constraint(expression: Option<&str>) -> String {
@@ -410,12 +415,6 @@ mod databricks {
         .expect("disabled legacy column metadata must not be validated");
         assert_eq!(disabled.trim(), "[]");
     }
-    const STATEMENT_STUB: &str = r#"
-{% macro statement(name=none, fetch_result=False, auto_begin=True, language='sql') -%}
-  [statement:{{ name }}]{{ caller() }}[/statement]
-{%- endmacro %}
-"#;
-
     fn build_comment_clause_harness() -> MacroTestHarness {
         let databricks_comment_sql =
             include_str!("../../src/dbt_macro_assets/dbt-databricks/macros/relations/comment.sql");
@@ -568,25 +567,57 @@ __additional_properties__: {}
             .expect("location clause harness should build")
     }
 
-    fn build_optimize_harness() -> MacroTestHarness {
-        let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
-            .load_all_macros()
-            .with_macro("dbt", "statement", STATEMENT_STUB)
-            .build()
-            .expect("optimize harness should build");
+    const OPTIMIZE_TARGET: &str = "optimize `test_db`.`test_schema`.`target`";
+    const DESCRIBE_TARGET: &str = "describe extended `test_db`.`test_schema`.`target`";
 
-        harness
-            .mock()
-            .on("resolve_file_format", |_| Ok(Value::from("delta")));
-
-        harness
-    }
+    const MANAGED_PO_DISABLED: &[[&str; 2]] = &[
+        ["# Detailed Table Information", ""],
+        ["Type", "MANAGED"],
+        ["Predictive Optimization", "DISABLE"],
+    ];
 
     fn render_optimize(
         config_values: BTreeMap<String, Value>,
         vars: BTreeMap<String, bool>,
-    ) -> String {
-        let mut harness = build_optimize_harness();
+        describe_rows: Option<&[[&str; 2]]>,
+    ) -> (Vec<String>, Vec<String>) {
+        let exceptions = Arc::new(MockJinjaObject::new());
+        exceptions.on("warn", |_| Ok(Value::UNDEFINED));
+        let mut harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+            .load_all_macros()
+            .with_stub_functions()
+            .with_global("execute", Value::from(true))
+            .with_global("exceptions", Value::from_dyn_object(exceptions.clone()))
+            .build()
+            .expect("optimize harness should build");
+        let mock = harness.mock();
+        mock.on("resolve_file_format", |_| Ok(Value::from("delta")));
+
+        let metadata = describe_rows.map(|rows| {
+            let names: Vec<_> = rows.iter().map(|row| row[0]).collect();
+            let values: Vec<_> = rows.iter().map(|row| row[1]).collect();
+            let batch =
+                arrow_array::record_batch!(("col_name", Utf8, names), ("data_type", Utf8, values))
+                    .expect("describe batch should build");
+            Value::from_object(AgateTable::from_record_batch(Arc::new(batch)))
+        });
+
+        let execute_metadata = metadata.clone();
+        mock.on("execute", move |args| {
+            let sql = args[0].as_str().expect("statement SQL");
+            let fetch = args[1].get_attr("fetch").expect("statement fetch flag");
+            let table = if sql.trim() == DESCRIBE_TARGET {
+                assert!(fetch.is_true());
+                execute_metadata
+                    .clone()
+                    .expect("unexpected Predictive Optimization lookup")
+            } else {
+                assert!(!fetch.is_true());
+                Value::UNDEFINED
+            };
+            Ok(Value::from(vec![Value::UNDEFINED, table]))
+        });
+
         let config = default_mock_config();
         config.on("get", move |args| {
             let key = args.first().and_then(Value::as_str);
@@ -595,22 +626,26 @@ __additional_properties__: {}
                 .and_then(|key| config_values.get(key).cloned())
                 .unwrap_or(default))
         });
-
-        harness
-            .env_mut()
-            .env
-            .add_function("var", move |name: Value, default: Option<Value>| {
-                let value = name
-                    .as_str()
-                    .and_then(|name| vars.get(name))
-                    .copied()
-                    .map(Value::from);
-                Ok(value.unwrap_or_else(|| default.unwrap_or(Value::UNDEFINED)))
-            });
+        let env = &mut harness.env_mut().env;
+        env.add_function("var", move |name: Value, default: Option<Value>| {
+            let value = name
+                .as_str()
+                .and_then(|name| vars.get(name))
+                .copied()
+                .map(Value::from);
+            Ok(value.unwrap_or_else(|| default.unwrap_or(Value::UNDEFINED)))
+        });
+        env.add_function("load_result", move |name: String| {
+            assert_eq!(name, "describe_table_extended_without_caching");
+            let table = metadata
+                .clone()
+                .expect("unexpected Predictive Optimization result");
+            Ok(Value::from_serialize(BTreeMap::from([("table", table)])))
+        });
 
         let relation = RelationObject::new(harness.relation(
-            "TEST_DB",
-            "TEST_SCHEMA",
+            "test_db",
+            "test_schema",
             "target",
             Some(RelationType::Table),
         ))
@@ -623,21 +658,72 @@ __additional_properties__: {}
                     ("relation".to_string(), relation),
                 ]),
             )
-            .expect("optimize should render")
+            .expect("optimize should render");
+
+        let statements = executed_sql(harness.mock())
+            .iter()
+            .map(|sql| sql.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        let warnings = exceptions
+            .observed_calls()
+            .to("warn")
+            .map(|call| call.args[0].as_str().expect("warning text").to_owned())
+            .collect();
+        (statements, warnings)
     }
 
     #[test]
-    fn optimize_macro_skips_auto_liquid_clustering() {
-        for skip_optimize in [None, Some(false)] {
-            let mut config =
-                BTreeMap::from([("auto_liquid_cluster".to_string(), Value::from(true))]);
-            if let Some(skip_optimize) = skip_optimize {
-                config.insert("skip_optimize".to_string(), Value::from(skip_optimize));
-            }
-            let rendered = render_optimize(config, BTreeMap::new());
-            assert!(
-                rendered.trim().is_empty(),
-                "automatic clustering alone must not submit OPTIMIZE, got: {rendered:?}"
+    fn optimize_macro_auto_liquid_clustering_respects_explicit_override() {
+        let mut config = BTreeMap::from([("auto_liquid_cluster".to_string(), Value::from(true))]);
+
+        let (statements, _) = render_optimize(config.clone(), BTreeMap::new(), None);
+        assert!(statements.is_empty());
+
+        config.insert("skip_optimize".to_string(), Value::from(false));
+        let (statements, _) = render_optimize(config, BTreeMap::new(), None);
+        assert_eq!(statements, [OPTIMIZE_TARGET]);
+    }
+
+    #[test]
+    fn optimize_macro_leaves_managed_liquid_tables_to_predictive_optimization() {
+        let config = BTreeMap::from([
+            (
+                "liquid_clustered_by".to_string(),
+                Value::from_serialize(["id"]),
+            ),
+            ("auto_liquid_cluster".to_string(), Value::from(true)),
+            ("zorder".to_string(), Value::from("id")),
+        ]);
+        let managed_enabled = &[
+            ["# Detailed Table Information", ""],
+            ["Type", "MANAGED"],
+            [
+                "Predictive Optimization",
+                "ENABLE (inherited from SCHEMA test_schema)",
+            ],
+        ];
+        let external_enabled = &[
+            ["# Detailed Table Information", ""],
+            ["Type", "EXTERNAL"],
+            ["Predictive Optimization", "ENABLE"],
+        ];
+
+        for (rows, expected_statements) in [
+            (managed_enabled.as_slice(), vec![DESCRIBE_TARGET]),
+            (
+                external_enabled.as_slice(),
+                vec![DESCRIBE_TARGET, OPTIMIZE_TARGET],
+            ),
+            (MANAGED_PO_DISABLED, vec![DESCRIBE_TARGET, OPTIMIZE_TARGET]),
+        ] {
+            let (statements, warnings) =
+                render_optimize(config.clone(), BTreeMap::new(), Some(rows));
+            assert_eq!(statements, expected_statements);
+            assert_eq!(
+                warnings,
+                [
+                    "Both zorder and liquid_clustering are set but they are incompatible. zorder will be ignored.",
+                ]
             );
         }
     }
@@ -646,83 +732,59 @@ __additional_properties__: {}
     fn optimize_macro_skips_configured_clustering() {
         for (cluster_key, cluster_value) in [
             ("zorder", Value::from("id")),
-            (
-                "liquid_clustered_by",
-                Value::from_serialize(vec!["id".to_string()]),
-            ),
+            ("liquid_clustered_by", Value::from_serialize(["id"])),
             ("auto_liquid_cluster", Value::from(true)),
         ] {
-            let rendered = render_optimize(
+            let (statements, _) = render_optimize(
                 BTreeMap::from([
                     (cluster_key.to_string(), cluster_value),
                     ("skip_optimize".to_string(), Value::from(true)),
                 ]),
                 BTreeMap::new(),
+                None,
             );
-            assert!(
-                !rendered.to_lowercase().contains("optimize"),
-                "skip_optimize must suppress post-materialization OPTIMIZE for {cluster_key}, got: {rendered:?}"
-            );
+            assert!(statements.is_empty(), "{cluster_key}: {statements:?}");
         }
     }
 
     #[test]
     fn optimize_macro_preserves_existing_guards() {
-        let cluster = BTreeMap::from([(String::from("zorder"), Value::from("id"))]);
+        let zorder = BTreeMap::from([("zorder".to_string(), Value::from("id"))]);
+        let (statements, _) = render_optimize(zorder.clone(), BTreeMap::new(), None);
+        assert_eq!(statements, [format!("{OPTIMIZE_TARGET} zorder by (id)")]);
 
-        let rendered = render_optimize(cluster.clone(), BTreeMap::new());
-        assert!(
-            rendered.to_lowercase().contains("optimize"),
-            "absent skip_optimize must preserve optimize, got: {rendered:?}"
-        );
+        let mut forced = zorder;
+        forced.insert("skip_optimize".to_string(), Value::from(false));
+        let (statements, _) = render_optimize(forced.clone(), BTreeMap::new(), None);
+        assert_eq!(statements, [format!("{OPTIMIZE_TARGET} zorder by (id)")]);
 
-        let rendered = render_optimize(
-            BTreeMap::from([
-                (String::from("zorder"), Value::from("id")),
-                (String::from("skip_optimize"), Value::from(false)),
-            ]),
+        let (statements, _) = render_optimize(
+            BTreeMap::from([("zorder".to_string(), Value::from_serialize(["id", "label"]))]),
             BTreeMap::new(),
+            None,
         );
-        assert!(
-            rendered.to_lowercase().contains("optimize"),
-            "false skip_optimize must preserve optimize, got: {rendered:?}"
+        assert_eq!(
+            statements,
+            [format!("{OPTIMIZE_TARGET} zorder by ( id, label )")]
         );
 
-        assert!(rendered.contains("zorder by (id)"));
-
-        for (config, expected_clause) in [
-            (
-                BTreeMap::from([(
-                    "zorder".to_string(),
-                    Value::from_serialize(vec!["id", "label"]),
-                )]),
-                "zorderby(id,label)",
-            ),
-            (
-                BTreeMap::from([(
-                    "liquid_clustered_by".to_string(),
-                    Value::from_serialize(vec!["id"]),
-                )]),
-                "optimize",
-            ),
-        ] {
-            let rendered = render_optimize(config, BTreeMap::new());
-            let compact = rendered.split_whitespace().collect::<String>();
-            assert!(
-                compact.contains(expected_clause),
-                "explicit clustering must preserve {expected_clause}, got: {rendered:?}"
-            );
-        }
+        let (statements, _) = render_optimize(
+            BTreeMap::from([(
+                "liquid_clustered_by".to_string(),
+                Value::from_serialize(["id"]),
+            )]),
+            BTreeMap::new(),
+            Some(MANAGED_PO_DISABLED),
+        );
+        assert_eq!(statements, [DESCRIBE_TARGET, OPTIMIZE_TARGET]);
 
         for variable in ["DATABRICKS_SKIP_OPTIMIZE", "databricks_skip_optimize"] {
-            let rendered = render_optimize(
-                cluster.clone(),
+            let (statements, _) = render_optimize(
+                forced.clone(),
                 BTreeMap::from([(variable.to_string(), true)]),
+                None,
             );
-            assert!(
-                !rendered.to_lowercase().contains("optimize"),
-                "{variable} must still suppress optimize, got: {rendered:?}"
-            );
+            assert!(statements.is_empty(), "{variable}: {statements:?}");
         }
     }
 

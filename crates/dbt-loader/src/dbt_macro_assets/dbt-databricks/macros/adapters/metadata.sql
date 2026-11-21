@@ -143,3 +143,24 @@ WHERE table_catalog = '{{ relation.database|lower }}'
 {% macro describe_table_extended_as_json_sql(relation) %}
 DESCRIBE TABLE EXTENDED {{ relation.render() }} AS JSON
 {% endmacro %}
+
+{% macro is_predictive_optimization_enabled(relation) %}
+  {%- set ns = namespace(in_details=false, table_type='', predictive_optimization='') -%}
+  {%- if not relation.is_hive_metastore() -%}
+    {%- for row in describe_table_extended_without_caching(relation).rows -%}
+      {%- if row[0] == '# Detailed Table Information' -%}
+        {%- set ns.in_details = true -%}
+      {%- elif ns.in_details -%}
+        {%- if row[0] == 'Type' -%}
+          {%- set ns.table_type = row[1] or '' -%}
+        {%- elif row[0] == 'Predictive Optimization' -%}
+          {%- set ns.predictive_optimization = row[1] or '' -%}
+        {%- endif -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {{ return(
+      (ns.table_type | trim | upper) == 'MANAGED'
+      and (ns.predictive_optimization | trim | upper).startswith('ENABLE')
+  ) }}
+{% endmacro %}
