@@ -1,0 +1,6 @@
+kind: Fixes
+body: 'Fix a `KeyError` in the `state:modified` selector (`recursively_check_macros_modified`) when a node depends on a macro that is absent from `manifest.macros` (for example, a v2/fusion-parser manifest that omits an adapter-dispatched macro). The macro is now skipped instead of raising, since it was already confirmed not to be in `modified_macros`.'
+time: 2026-09-11T08:41:59.629696+03:00
+custom:
+    Author: vmaasalo
+    Issue: "N/A"
