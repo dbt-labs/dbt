@@ -23,8 +23,11 @@ fn to_jinja(v: &String) -> Value {
 }
 
 // Reference: https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-snowflake/src/dbt/adapters/snowflake/relation.py#L137-L144
+// A desired AUTO matches whatever concrete mode Snowflake resolved it to. DIVERGENCE: except
+// CUSTOM_INCREMENTAL, which AUTO only resolves to with REFRESH USING, so a desired AUTO against a
+// live CUSTOM_INCREMENTAL table is a switch from a custom incremental to a regular dynamic table.
 fn diff_refresh_mode(desired: &String, current: &String) -> Option<String> {
-    if desired.eq_ignore_ascii_case("AUTO") {
+    if desired.eq_ignore_ascii_case("AUTO") && !current.eq_ignore_ascii_case("CUSTOM_INCREMENTAL") {
         return None;
     }
     diff::desired_state(desired, current)
@@ -110,5 +113,32 @@ mod tests {
         });
         let loaded = from_local_config(&local_state).unwrap();
         assert_eq!(loaded.value, "FULL");
+    }
+
+    fn diff(desired: &str, current: &str) -> Option<String> {
+        diff_refresh_mode(&desired.to_string(), &current.to_string())
+    }
+
+    #[test]
+    fn desired_auto_matches_a_resolved_mode() {
+        assert_eq!(diff("AUTO", "INCREMENTAL"), None);
+        assert_eq!(diff("AUTO", "FULL"), None);
+        assert_eq!(diff("AUTO", "AUTO"), None);
+    }
+
+    #[test]
+    fn desired_auto_against_custom_incremental_is_a_switch() {
+        // A custom incremental dynamic table switching to a regular one.
+        assert_eq!(diff("AUTO", "CUSTOM_INCREMENTAL"), Some("AUTO".to_string()));
+    }
+
+    #[test]
+    fn custom_incremental_against_another_mode_is_a_switch() {
+        // A regular dynamic table switching to a custom incremental one.
+        assert_eq!(
+            diff("CUSTOM_INCREMENTAL", "INCREMENTAL"),
+            Some("CUSTOM_INCREMENTAL".to_string())
+        );
+        assert_eq!(diff("CUSTOM_INCREMENTAL", "CUSTOM_INCREMENTAL"), None);
     }
 }

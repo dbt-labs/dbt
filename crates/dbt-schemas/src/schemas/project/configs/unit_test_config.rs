@@ -59,6 +59,8 @@ pub struct ProjectUnitTestConfig {
     pub snowflake_initialization_warehouse: Option<String>,
     #[serde(rename = "+immutable_where")]
     pub immutable_where: Option<String>,
+    #[serde(rename = "+delete_condition")]
+    pub delete_condition: Option<String>,
     #[serde(rename = "+snowflake_warehouse")]
     pub snowflake_warehouse: Option<String>,
     #[serde(rename = "+refresh_warehouse")]
@@ -313,6 +315,7 @@ impl TypedRecursiveConfig for ProjectUnitTestConfig {
             || self.target_lag.is_some()
             || self.snowflake_initialization_warehouse.is_some()
             || self.immutable_where.is_some()
+            || self.delete_condition.is_some()
             || self.snowflake_warehouse.is_some()
             || self.refresh_warehouse.is_some()
             || self.refresh_mode.is_some()
@@ -421,6 +424,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 target_lag: config.target_lag,
                 snowflake_initialization_warehouse: config.snowflake_initialization_warehouse,
                 immutable_where: config.immutable_where,
+                delete_condition: config.delete_condition,
                 snowflake_warehouse: config.snowflake_warehouse,
                 refresh_warehouse: config.refresh_warehouse,
                 refresh_mode: config.refresh_mode,
@@ -572,6 +576,7 @@ impl From<UnitTestConfig> for ProjectUnitTestConfig {
             snowflake_initialization_warehouse: warehouse_specific
                 .snowflake_initialization_warehouse,
             immutable_where: warehouse_specific.immutable_where,
+            delete_condition: warehouse_specific.delete_condition,
             snowflake_warehouse: warehouse_specific.snowflake_warehouse,
             refresh_warehouse: warehouse_specific.refresh_warehouse,
             refresh_mode: warehouse_specific.refresh_mode,

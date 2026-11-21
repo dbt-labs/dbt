@@ -1,0 +1,12 @@
+4c939c56:
+- sequence: 0
+  type: execute
+  sql: select count(*) from ((select order_id, note from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column minus select column1, column2 from values (1, 'short')) union all (select column1, column2 from values (1, 'short') minus select order_id, note from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column))
+87f14668:
+- sequence: 0
+  type: execute
+  sql: select count(*) from ((select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys minus select column1, column2 from values (1, 10.00), (2, 20.00)) union all (select column1, column2 from values (1, 10.00), (2, 20.00) minus select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys))
+aad7bfd3:
+- sequence: 0
+  type: execute
+  sql: select count(*) from ((select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table minus select column1, column2 from values (1, 15.00), (2, 20.00), (3, 30.00)) union all (select column1, column2 from values (1, 15.00), (2, 20.00), (3, 30.00) minus select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table))

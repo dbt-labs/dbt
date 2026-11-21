@@ -157,6 +157,9 @@ pub enum ErrorCode {
     ConstraintNotEnforced = 1109,
     /// A constraint type is not supported by the adapter at all and is dropped from the rendered DDL.
     ConstraintNotSupported = 1110,
+    /// `refresh_mode='CUSTOM_INCREMENTAL'` on a Snowflake model that isn't a `dynamic_table`,
+    /// where the materialization ignores it.
+    CustomIncrementalOutsideDynamicTable = 1111,
 
     // --------------------------------------------------------------------------------------------
     // CLI args/config [1100–1149]

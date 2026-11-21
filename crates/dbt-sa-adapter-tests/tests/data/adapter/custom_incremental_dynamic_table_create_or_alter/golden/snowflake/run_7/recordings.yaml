@@ -1,0 +1,92 @@
+182fbf95:
+- sequence: 0
+  type: execute
+  sql: select column_name || ' ' || data_type || coalesce('(' || character_maximum_length || ')', '') from development.information_schema.columns where table_schema = upper('adapters_snowflake_custom_incremental_dynamic_table_create_or_alter') and table_name = upper('ok_drop') order by ordinal_position
+28e90f9f:
+- sequence: 0
+  type: execute
+  sql: select "created_on" from table(result_scan(last_query_id()))
+- sequence: 1
+  type: execute
+  sql: select "created_on" from table(result_scan(last_query_id()))
+- sequence: 2
+  type: execute
+  sql: select "created_on" from table(result_scan(last_query_id()))
+- sequence: 3
+  type: execute
+  sql: select "created_on" from table(result_scan(last_query_id()))
+2f350228:
+- sequence: 0
+  type: execute
+  sql: select system$get_tag('development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.mytag', 'development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.attrs_kept', 'table')
+3b4cc6eb:
+- sequence: 0
+  type: execute
+  sql: select created_on from development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.created_on where name = 'ok_widen'
+3f673fae:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ATTRS_KEPT' in schema development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter
+- sequence: 1
+  type: execute
+  sql: show dynamic tables like 'ATTRS_KEPT' in schema development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter
+5ed8f4f9:
+- sequence: 0
+  type: execute
+  sql: select policy_name from table(development.information_schema.policy_references(ref_entity_name => 'development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.attrs_kept', ref_entity_domain => 'table'))
+60edc8d9:
+- sequence: 0
+  type: execute
+  sql: select "cluster_by" from table(result_scan(last_query_id()))
+67ccb999:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'BODY_EDIT' in schema development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter
+69df61a2:
+- sequence: 0
+  type: execute
+  sql: select created_on from development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.created_on where name = 'attrs_kept'
+6a6e7c10:
+- sequence: 0
+  type: execute
+  sql: select created_on from development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.created_on where name = 'body_edit'
+7cc72d44:
+- sequence: 0
+  type: execute
+  sql: show grants on dynamic table development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.attrs_kept
+7f4bea41:
+- sequence: 0
+  type: execute
+  sql: select count(*) from table(result_scan(last_query_id())) where "privilege" = 'SELECT' and "grantee_name" = 'PUBLIC'
+97152c39:
+- sequence: 0
+  type: execute
+  sql: select count(*) from ((select order_id, amount_cents from development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.body_edit minus select column1, column2 from values (1, 1500.00), (2, null), (3, 3000.00)) union all (select column1, column2 from values (1, 1500.00), (2, null), (3, 3000.00) minus select order_id, amount_cents from development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.body_edit))
+984e15e1:
+- sequence: 0
+  type: execute
+  sql: select column_name || ' ' || data_type || coalesce('(' || character_maximum_length || ')', '') from development.information_schema.columns where table_schema = upper('adapters_snowflake_custom_incremental_dynamic_table_create_or_alter') and table_name = upper('err_type_narrow') order by ordinal_position
+c7d3def3:
+- sequence: 0
+  type: execute
+  sql: select created_on from development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.created_on where name = 'ok_drop'
+d373d4cd:
+- sequence: 0
+  type: execute
+  sql: select column_name || ' ' || data_type || coalesce('(' || character_maximum_length || ')', '') from development.information_schema.columns where table_schema = upper('adapters_snowflake_custom_incremental_dynamic_table_create_or_alter') and table_name = upper('err_type_change') order by ordinal_position
+da7b5000:
+- sequence: 0
+  type: execute
+  sql: select column_name || ' ' || data_type || coalesce('(' || character_maximum_length || ')', '') from development.information_schema.columns where table_schema = upper('adapters_snowflake_custom_incremental_dynamic_table_create_or_alter') and table_name = upper('ok_widen') order by ordinal_position
+e1c6399b:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'OK_WIDEN' in schema development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter
+e1d8dbdd:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'OK_DROP' in schema development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter
+fa114d85:
+- sequence: 0
+  type: execute
+  sql: select column_name || ' ' || data_type || coalesce('(' || character_maximum_length || ')', '') from development.information_schema.columns where table_schema = upper('adapters_snowflake_custom_incremental_dynamic_table_create_or_alter') and table_name = upper('err_reorder') order by ordinal_position

@@ -1,0 +1,39 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/sources.yml
+   Parsing models/customers_dim.sql
+   Parsing models/orders_attrs.sql
+   Parsing models/orders_empty.sql
+   Parsing models/orders_merge.sql
+   Parsing models/orders_switch.sql
+   Parsing models/orders_transient.sql
+   Parsing models/orders_with_region.sql
+   Parsing models/stock_merge.sql
+ Rendering models/stock_merge.sql
+   Running models/stock_merge.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.stock_merge (dynamic_table) [1 of 7 in duration]
+ Rendering models/orders_transient.sql
+   Running models/orders_transient.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_transient (dynamic_table) [2 of 7 in duration]
+ Rendering models/orders_switch.sql
+   Running models/orders_switch.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_switch (dynamic_table) [3 of 7 in duration]
+ Rendering models/orders_merge.sql
+   Running models/orders_merge.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_merge (dynamic_table) [4 of 7 in duration]
+ Rendering models/orders_empty.sql
+   Running models/orders_empty.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_empty (dynamic_table) [5 of 7 in duration]
+ Rendering models/orders_attrs.sql
+   Running models/orders_attrs.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_attrs (dynamic_table) [6 of 7 in duration]
+ Rendering models/customers_dim.sql
+   Running models/customers_dim.sql
+ Rendering models/orders_with_region.sql
+   Running models/orders_with_region.sql
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table.orders_with_region (dynamic_table) [7 of 7 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 8 models
+Summary: 8 total | 7 success | 1 no-op

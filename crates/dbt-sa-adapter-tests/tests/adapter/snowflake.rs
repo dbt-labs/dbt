@@ -425,6 +425,126 @@ async fn adapters_snowflake_dynamic_table() -> FsResult<()> {
     .await
 }
 
+/// Merge custom incremental dynamic tables with `snowflake_dynamic_table_create_or_alter` off, one
+/// model per scenario (see the project's README): merges across two rounds of source changes,
+/// `append_only`, an ephemeral upstream, `--empty`, dynamic table attributes and ALTER, a switch to a
+/// regular dynamic table and back, and `--full-refresh`. `verify` prints [PASS]/[FAIL] lines.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table() -> FsResult<()> {
+    const PROJECT: &str = "dbt_project.yml";
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: sources, tag, policy
+            AdapterRecordReplayTurn::new("run --empty --select orders_empty", &[]), // run_1
+            AdapterRecordReplayTurn::new("run", &[]), // run_2: create, columns discovered
+            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_3: round 1, a grant
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: PROJECT,
+                    overriding_file: "_project_overrides/round_1.yml",
+                }],
+            ), // run_4: refreshes; orders_attrs altered; orders_switch to a regular DT
+            AdapterRecordReplayTurn::new(
+                "run-operation verify --args {{\"stage\":\"after_round_1\"}}",
+                &[],
+            ), // run_5
+            AdapterRecordReplayTurn::new("run-operation apply_more_changes", &[]), // run_6: round 2
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: PROJECT,
+                    overriding_file: "_project_overrides/round_2.yml",
+                }],
+            ), // run_7: refreshes; orders_switch back to a CI DT
+            AdapterRecordReplayTurn::new(
+                "run-operation verify --args {{\"stage\":\"after_round_2\"}}",
+                &[],
+            ), // run_8
+            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_9: CREATE OR REPLACE
+            AdapterRecordReplayTurn::new(
+                "run-operation verify --args {{\"stage\":\"after_full_refresh\"}}",
+                &[],
+            ), // run_10
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// Custom incremental dynamic tables with `snowflake_dynamic_table_create_or_alter` on, one model per
+/// change (see the project's README): a body edit and a `cluster_by` change sync in place, a widened
+/// or dropped column is applied in place, and a reorder, a narrowed type or a type change fails
+/// with dbt's `--full-refresh` hint, which recovers. `verify` prints [PASS]/[FAIL] lines.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_create_or_alter() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_create_or_alter",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0
+            AdapterRecordReplayTurn::new("run", &[]),                  // run_1: create
+            AdapterRecordReplayTurn::new("run-operation prepare", &[]), // run_2: created_on, attributes out of band
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: "dbt_project.yml",
+                    overriding_file: "_project_overrides/evolved.yml",
+                }],
+            ), // run_3: the evolved models; the three err_ models fail with the hint
+            AdapterRecordReplayTurn::new("run-operation apply_changes", &[]), // run_4
+            AdapterRecordReplayTurn::new(
+                "run --exclude err_reorder err_type_narrow err_type_change",
+                &[],
+            ), // run_5: the edited body merges the changes
+            AdapterRecordReplayTurn::new(
+                "run --full-refresh --select err_reorder err_type_narrow err_type_change",
+                &[],
+            ), // run_6: --full-refresh recovers
+            AdapterRecordReplayTurn::new("run-operation verify", &[]),  // run_7
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// Snowflake behaviors a CI DT runs into, one model each (see the project's README): no change
+/// tracking, `{{ this }}`, changes not deduplicated per key, a widened source column, an upstream
+/// `table` model dbt replaces, and the dbt1111 warning. The goldies pin the errors.
+#[dbt_runtime::test]
+async fn adapters_snowflake_custom_incremental_dynamic_table_edge_cases() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/custom_incremental_dynamic_table_edge_cases",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            "run-operation set_up",
+            "run", // run_1: no_change_tracking and self_reference fail at discovery
+            "run-operation apply_changes", // run_2
+            "run --exclude no_change_tracking self_reference", // run_3: two refreshes fail; stg_orders replaced
+            "run-operation verify",                            // run_4
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
 #[dbt_runtime::test]
 async fn adapters_snowflake_seed_datatypes() -> FsResult<()> {
     run_fs_record_replay_task_seq(

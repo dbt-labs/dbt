@@ -1,0 +1,59 @@
+5b6adeb9:
+- sequence: 0
+  type: execute
+  sql: select system$get_tag('development.adapters_snowflake_custom_incremental_dynamic_table.mytag', 'development.adapters_snowflake_custom_incremental_dynamic_table.orders_attrs', 'table')
+74fcc1e3:
+- sequence: 0
+  type: execute
+  sql: select "refresh_mode", "cluster_by", "initialization_warehouse", "target_lag" from table(result_scan(last_query_id()))
+- sequence: 1
+  type: execute
+  sql: select "refresh_mode", "cluster_by", "initialization_warehouse", "target_lag" from table(result_scan(last_query_id()))
+7f4bea41:
+- sequence: 0
+  type: execute
+  sql: select count(*) from table(result_scan(last_query_id())) where "privilege" = 'SELECT' and "grantee_name" = 'PUBLIC'
+808798ac:
+- sequence: 0
+  type: execute
+  sql: select count(*) from ((select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient minus select column1, column2 from values (1, 10.00), (2, 25.00), (3, 30.00), (4, 40.00)) union all (select column1, column2 from values (1, 10.00), (2, 25.00), (3, 30.00), (4, 40.00) minus select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table.orders_transient))
+82bd20a9:
+- sequence: 0
+  type: execute
+  sql: select count(*) from ((select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch minus select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table.orders) union all (select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table.orders minus select order_id, amount from development.adapters_snowflake_custom_incremental_dynamic_table.orders_switch))
+860db471:
+- sequence: 0
+  type: execute
+  sql: select count(*) from development.adapters_snowflake_custom_incremental_dynamic_table.orders_empty
+a925771b:
+- sequence: 0
+  type: execute
+  sql: select policy_name from table(development.information_schema.policy_references(ref_entity_name => 'development.adapters_snowflake_custom_incremental_dynamic_table.orders_attrs', ref_entity_domain => 'table'))
+ab031af0:
+- sequence: 0
+  type: execute
+  sql: select count(*) from ((select order_id, customer_id, amount, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge minus select order_id, customer_id, amount, false from development.adapters_snowflake_custom_incremental_dynamic_table.orders) union all (select order_id, customer_id, amount, false from development.adapters_snowflake_custom_incremental_dynamic_table.orders minus select order_id, customer_id, amount, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders_merge))
+b57a9dc4:
+- sequence: 0
+  type: execute
+  sql: select count(*) from ((select warehouse_id, sku, quantity, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge minus select warehouse_id, sku, quantity, false from development.adapters_snowflake_custom_incremental_dynamic_table.stock) union all (select warehouse_id, sku, quantity, false from development.adapters_snowflake_custom_incremental_dynamic_table.stock minus select warehouse_id, sku, quantity, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.stock_merge))
+ca5142e5:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ORDERS_SWITCH' in schema development.adapters_snowflake_custom_incremental_dynamic_table
+d0cc25ec:
+- sequence: 0
+  type: execute
+  sql: show grants on dynamic table development.adapters_snowflake_custom_incremental_dynamic_table.orders_attrs
+da9e2ef7:
+- sequence: 0
+  type: execute
+  sql: select comment from development.information_schema.tables where table_schema = upper('adapters_snowflake_custom_incremental_dynamic_table') and table_name = 'ORDERS_ATTRS'
+de8c63b6:
+- sequence: 0
+  type: execute
+  sql: show dynamic tables like 'ORDERS_ATTRS' in schema development.adapters_snowflake_custom_incremental_dynamic_table
+fa19857b:
+- sequence: 0
+  type: execute
+  sql: select count(*) from ((select order_id, amount, region, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders_with_region minus select o.order_id, o.amount, c.region, false from development.adapters_snowflake_custom_incremental_dynamic_table.orders o join development.adapters_snowflake_custom_incremental_dynamic_table.customers c on c.customer_id = o.customer_id) union all (select o.order_id, o.amount, c.region, false from development.adapters_snowflake_custom_incremental_dynamic_table.orders o join development.adapters_snowflake_custom_incremental_dynamic_table.customers c on c.customer_id = o.customer_id minus select order_id, amount, region, is_deleted from development.adapters_snowflake_custom_incremental_dynamic_table.orders_with_region))
