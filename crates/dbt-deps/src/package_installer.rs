@@ -1,11 +1,12 @@
 //! Concurrent package installation: one trait impl per unpinned package kind.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
 use dbt_common::tracing::span_info::{SpanStatusRecorder as _, update_span_attrs};
 use dbt_common::{ErrorCode, FsResult, create_info_span, fs_err, stdfs, tokiofs};
 use dbt_telemetry::{DepsPackageInstalled, PackageType};
+use tempfile::TempDir;
 use tracing::Instrument as _;
 use vortex_events::package_install_event;
 
@@ -17,9 +18,16 @@ use crate::types::{
     GitUnpinnedPackage, HubUnpinnedPackage, LocalUnpinnedPackage, PrivateUnpinnedPackage,
     TarballUnpinnedPackage,
 };
-use crate::utils::{
-    ensure_dir, make_tempdir, move_dir, read_and_validate_dbt_project, sanitize_git_url,
-};
+use crate::utils::{ensure_dir, make_tempdir, read_and_validate_dbt_project, sanitize_git_url};
+
+/// A package installed into its own scratch dir under the install path.
+/// `install_packages` moves `path` to `<install path>/<name>`.
+pub(crate) struct StagedPackage {
+    pub name: String,
+    pub path: PathBuf,
+    /// Deletes the scratch dir on drop.
+    _scratch: TempDir,
+}
 
 /// Discovered name/version, populated as install progresses so spans keep
 /// partial progress on error.
@@ -51,10 +59,14 @@ pub(crate) trait PackageInstaller {
         ctx: &DepsOperationContext<'_>,
         dest: &Path,
         out: &mut InstallOutcome,
-    ) -> FsResult<()>;
+    ) -> FsResult<StagedPackage>;
 
     /// Owns span, telemetry, status recording, and `M016` finalization.
-    async fn install(&self, ctx: &DepsOperationContext<'_>, dest: &Path) -> FsResult<()> {
+    async fn install(
+        &self,
+        ctx: &DepsOperationContext<'_>,
+        dest: &Path,
+    ) -> FsResult<StagedPackage> {
         ctx.check_cancellation()?;
         let attrs = self.span_attrs();
         let span = create_info_span(attrs);
@@ -108,7 +120,7 @@ impl PackageInstaller for HubUnpinnedPackage {
         ctx: &DepsOperationContext<'_>,
         dest: &Path,
         out: &mut InstallOutcome,
-    ) -> FsResult<()> {
+    ) -> FsResult<StagedPackage> {
         let resolved = self.resolved(&ctx.hub_registry).await?;
         let pinned = &resolved.pinned;
         let metadata = &resolved.version;
@@ -127,26 +139,25 @@ impl PackageInstaller for HubUnpinnedPackage {
             &pinned.version,
         )?;
 
-        let final_path = dest.join(&metadata.name);
-        ensure_dir(&final_path).await?;
-
-        if let Err(e) = ctx
-            .tarball_client
+        let scratch = make_tempdir(Some(dest))?;
+        let path = scratch.path().join(&metadata.name);
+        ensure_dir(&path).await?;
+        ctx.tarball_client
             .download_and_extract_tarball(
                 &tarball_url,
-                &final_path,
+                &path,
                 true,
                 None,
                 &[],
                 expected_sha1.as_deref(),
             )
-            .await
-        {
-            let _ = tokiofs::remove_dir_all(&final_path).await;
-            return Err(e);
-        }
+            .await?;
 
-        Ok(())
+        Ok(StagedPackage {
+            name: metadata.name.clone(),
+            path,
+            _scratch: scratch,
+        })
     }
 }
 
@@ -221,7 +232,7 @@ impl PackageInstaller for GitUnpinnedPackage {
         ctx: &DepsOperationContext<'_>,
         dest: &Path,
         out: &mut InstallOutcome,
-    ) -> FsResult<()> {
+    ) -> FsResult<StagedPackage> {
         install_git_like(
             ctx,
             dest,
@@ -253,8 +264,8 @@ impl PackageInstaller for PrivateUnpinnedPackage {
         ctx: &DepsOperationContext<'_>,
         dest: &Path,
         out: &mut InstallOutcome,
-    ) -> FsResult<()> {
-        install_git_like(
+    ) -> FsResult<StagedPackage> {
+        let staged = install_git_like(
             ctx,
             dest,
             &self.private,
@@ -266,14 +277,14 @@ impl PackageInstaller for PrivateUnpinnedPackage {
         if let Some(name) = self.name.clone() {
             out.name = Some(name);
         }
-        Ok(())
+        Ok(staged)
     }
 }
 
 impl PackageInstaller for LocalUnpinnedPackage {
     fn span_attrs(&self) -> DepsPackageInstalled {
         DepsPackageInstalled::start(
-            self.name.clone(),
+            Some(self.name.clone()),
             PackageType::Local,
             None,
             Some(sanitize_git_url(&self.local.to_string_lossy())),
@@ -289,17 +300,21 @@ impl PackageInstaller for LocalUnpinnedPackage {
         ctx: &DepsOperationContext<'_>,
         dest: &Path,
         out: &mut InstallOutcome,
-    ) -> FsResult<()> {
+    ) -> FsResult<StagedPackage> {
         let package_path = ctx.io.in_dir.join(&self.local);
-        let install_path = dest.join(self.name.as_ref().unwrap());
+        let name = self.name.clone();
+        let scratch = make_tempdir(Some(dest))?;
+        let path = scratch.path().join(&name);
+        // Relative to `dest`, not the scratch dir: the link only resolves once
+        // `install_packages` moves it to `<dest>/<name>`.
         let relative_package_path = stdfs::diff_paths(&package_path, dest)?;
-        stdfs::symlink(&relative_package_path, &install_path)?;
-        out.name = Some(
-            self.name
-                .clone()
-                .unwrap_or_else(|| package_path.display().to_string()),
-        );
-        Ok(())
+        stdfs::symlink(&relative_package_path, &path)?;
+        out.name = Some(name.clone());
+        Ok(StagedPackage {
+            name,
+            path,
+            _scratch: scratch,
+        })
     }
 }
 
@@ -322,7 +337,7 @@ impl PackageInstaller for TarballUnpinnedPackage {
         ctx: &DepsOperationContext<'_>,
         dest: &Path,
         out: &mut InstallOutcome,
-    ) -> FsResult<()> {
+    ) -> FsResult<StagedPackage> {
         // Same filesystem as `dest` so the final rename is atomic.
         let tmp_extract = make_tempdir(Some(dest))?;
         let extract_path = tmp_extract.path().join("package");
@@ -342,9 +357,12 @@ impl PackageInstaller for TarballUnpinnedPackage {
         let project_name = dbt_project.name;
         out.name = Some(project_name.clone());
         out.version = Some("tarball".to_string());
-        move_dir(&extract_path, &dest.join(&project_name)).await?;
 
-        Ok(())
+        Ok(StagedPackage {
+            name: project_name,
+            path: extract_path,
+            _scratch: tmp_extract,
+        })
     }
 }
 
@@ -356,7 +374,7 @@ async fn install_git_like(
     revisions: &[String],
     subdirectory: &Option<String>,
     out: &mut InstallOutcome,
-) -> FsResult<()> {
+) -> FsResult<StagedPackage> {
     let tmp_dir = make_tempdir(Some(dest))?;
     let download_dir = tmp_dir.path().join("git_pkg");
     ensure_dir(&download_dir).await?;
@@ -369,10 +387,12 @@ async fn install_git_like(
     let dbt_project =
         read_and_validate_dbt_project(&checkout_path, false, ctx.jinja_env, ctx.vars).await?;
     out.name = Some(dbt_project.name.clone());
-    move_dir(&checkout_path, &dest.join(&dbt_project.name)).await?;
-    drop(tmp_dir);
 
-    Ok(())
+    Ok(StagedPackage {
+        name: dbt_project.name,
+        path: checkout_path,
+        _scratch: tmp_dir,
+    })
 }
 
 impl UnpinnedPackage {
@@ -380,7 +400,7 @@ impl UnpinnedPackage {
         &self,
         ctx: &DepsOperationContext<'_>,
         dest: &Path,
-    ) -> FsResult<()> {
+    ) -> FsResult<StagedPackage> {
         match self {
             UnpinnedPackage::Hub(p) => p.install(ctx, dest).await,
             UnpinnedPackage::Git(p) => p.install(ctx, dest).await,
