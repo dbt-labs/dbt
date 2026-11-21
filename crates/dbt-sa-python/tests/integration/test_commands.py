@@ -30,6 +30,16 @@ def test_kwargs_list_becomes_repeated_flags(built_project, invoke, unique_ids):
     assert unique_ids(via_kwargs.result) == unique_ids(via_flags.result)
 
 
+def test_kwargs_none_value_omits_flag(built_project, invoke, unique_ids):
+    """invoke(["build"], threads=None, select=None) must not pass flags as literal 'None'."""
+    via_kwargs = invoke(built_project(), "build", threads=None)
+    via_no_flags = invoke(built_project(), "build")
+
+    assert via_kwargs.success, via_kwargs.exception
+    assert via_no_flags.success, via_no_flags.exception
+    assert unique_ids(via_kwargs.result) == unique_ids(via_no_flags.result)
+
+
 def test_unknown_flag_is_reported_not_raised(tmp_project, invoke):
     res = invoke(tmp_project("layered"), "parse", definitely_not_a_flag="x")
 

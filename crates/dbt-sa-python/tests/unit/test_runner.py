@@ -25,6 +25,10 @@ def test_callbacks_not_implemented():
         ({"select": "my_model"}, ["--select", "my_model"]),
         ({"select": ["a", "b"]}, ["--select", "a", "--select", "b"]),
         ({"threads": 4}, ["--threads", "4"]),
+        ({"threads": None, "select": "my_model"}, ["--select", "my_model"]),
+        ({"select": None}, []),
+        ({"target": None, "threads": None}, []),
+        ({"select": ["a", None, "b"]}, ["--select", "a", "--select", "b"]),
     ],
 )
 def test_kwargs_to_cli_mapping(kwargs, expected):
