@@ -1,0 +1,7 @@
+kind: Fixes
+body: Refresh Databricks views whose queries contain * so reruns pick up upstream column additions, while preserving no-op runs for unchanged explicit projections.
+time: 2026-10-27T19:51:38.096848+05:30
+custom:
+    author: sd-db
+    issue: "16922"
+    project: dbt-core
