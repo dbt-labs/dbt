@@ -9,7 +9,7 @@ use crate::metadata::*;
 use crate::need_quotes::need_quotes;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use dbt_adapter_core::AdapterType;
-use dbt_adapter_sql::types::{SqlType, metadata_sql_type_key};
+use dbt_adapter_sql::types::{SqlType, is_timestamp_with_offsets, metadata_sql_type_key};
 
 // TODO: Add keys here as necessary
 pub const REDSHIFT_METADATA_SQL_TYPE_KEY: &str = "Type";
@@ -250,6 +250,13 @@ impl TypeOps for DefaultTypeOps {
                         self.format_arrow_type_as_sql(field.data_type(), field.is_nullable(), out)?;
                         out.push('>');
                     }
+                    return Ok(());
+                }
+                // Snowflake TIMESTAMP_TZ is stored as the timestamp-with-offsets
+                // struct (see `SqlType::pick_best_arrow_type`). Snowflake has no
+                // STRUCT type, so render the column type that the struct stands for.
+                if adapter_type == Snowflake && is_timestamp_with_offsets(data_type) {
+                    out.push_str("TIMESTAMP_TZ");
                     return Ok(());
                 }
                 // Struct types: render as STRUCT<name TYPE, ...>.
@@ -1847,6 +1854,49 @@ mod tests {
             out,
             "STRUCT<location GEOGRAPHY, events ARRAY<JSON>, created_at TIMESTAMP>"
         );
+    }
+
+    fn format_arrow_type(data_type: &DataType, adapter_type: AdapterType) -> String {
+        let mut out = String::new();
+        DefaultTypeOps::new(adapter_type)
+            .format_arrow_type_as_sql(data_type, true, &mut out)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn test_snowflake_formats_timestamp_tz_struct_as_timestamp_tz() {
+        let timestamp_tz = SqlType::parse(Snowflake, "TIMESTAMP_TZ(9)")
+            .unwrap()
+            .0
+            .pick_best_arrow_type(Snowflake);
+        assert!(is_timestamp_with_offsets(&timestamp_tz));
+        assert_eq!(format_arrow_type(&timestamp_tz, Snowflake), "TIMESTAMP_TZ");
+
+        // Other structs and other adapters keep the STRUCT<...> form.
+        let other_struct = DataType::Struct(
+            vec![
+                Field::new("timestamp", DataType::Int64, false),
+                Field::new("offset_minutes", DataType::Int16, false),
+            ]
+            .into(),
+        );
+        assert!(!is_timestamp_with_offsets(&other_struct));
+        assert!(format_arrow_type(&other_struct, Snowflake).starts_with("STRUCT<"));
+        assert!(format_arrow_type(&timestamp_tz, Redshift).starts_with("STRUCT<"));
+
+        // TIMESTAMP_NTZ and TIMESTAMP_LTZ keep their current rendering.
+        for sql in ["TIMESTAMP_NTZ(9)", "TIMESTAMP_LTZ(9)"] {
+            let data_type = SqlType::parse(Snowflake, sql)
+                .unwrap()
+                .0
+                .pick_best_arrow_type(Snowflake);
+            assert_eq!(
+                format_arrow_type(&data_type, Snowflake),
+                "timestamp without time zone",
+                "{sql}"
+            );
+        }
     }
 
     const ALL_ADAPTERS: [AdapterType; 5] = [Bigquery, Databricks, Postgres, Snowflake, Redshift];
