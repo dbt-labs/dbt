@@ -1,4 +1,9 @@
 import { FC } from 'react';
+import type {
+  FreshnessStatusValue,
+  RunStatus,
+  TestStatusValue,
+} from 'dbt-docs-lib/domain';
 import {
   CircleCheck,
   CircleMinus,
@@ -11,8 +16,6 @@ import {
 
 import { Badge, type BadgeVariant } from '../../components/ui/Badge';
 import { Tooltip } from '../../components/ui/Tooltip';
-import type { RunStatus } from '../typings/domain/executionInfo';
-import type { FreshnessStatusValue, TestStatusValue } from '../typings/domain/status';
 import { toTitleCase } from '../util/string';
 
 type BadgeSpec = {

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Keep semicolons and apostrophes inside DuckDB and Postgres dollar quotes from splitting or merging statements.
+time: 2026-11-05T14:10:02.005566-08:00
+custom:
+    author: colin-k-rogers
+    issue: "17063"
+    project: dbt-core

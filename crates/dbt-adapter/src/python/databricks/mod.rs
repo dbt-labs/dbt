@@ -232,7 +232,6 @@ fn submit_workflow_job(
             job_id, run_id
         ))
         .with_code("OK")
-        .with_rows_affected(0)
         .with_query_id(run_id.to_string()))
 }
 
@@ -333,7 +332,6 @@ fn submit_via_command_api(
                 cluster_id
             ))
             .with_code("OK")
-            .with_rows_affected(0)
             .with_query_id(command_id)),
         (Err(e), _) => Err(e),
         (Ok(_), Err(cleanup_err)) => Err(cleanup_err),
@@ -402,7 +400,6 @@ fn submit_via_notebook(
             submission_type, run_id, notebook_path
         ))
         .with_code("OK")
-        .with_rows_affected(0)
         .with_query_id(run_id))
 }
 
@@ -498,7 +495,11 @@ fn extract_string_list(config: &Value, attr: &str) -> Vec<String> {
 }
 
 fn extract_timeout(config: &Value) -> u64 {
-    let Some(value) = config.get_attr("timeout").ok() else {
+    let Some(value) = config
+        .get_attr("timeout")
+        .ok()
+        .filter(|v| !v.is_undefined() && !v.is_none())
+    else {
         return 0;
     };
 
@@ -790,6 +791,12 @@ fn build_workflow_spec(
 
     let mut tasks = vec![notebook_task];
     tasks.extend(post_hook_tasks);
+    for task in tasks.iter_mut().filter_map(|t| t.as_object_mut()) {
+        // https://github.com/databricks/dbt-databricks/blob/8fb1f22/dbt/adapters/databricks/api_client.py#L819
+        if let Some(cluster_id) = task.remove("cluster_id") {
+            task.insert("existing_cluster_id".to_string(), cluster_id);
+        }
+    }
 
     let mut workflow_spec = serde_json::to_value(python_job_config).unwrap_or_else(|_| json!({}));
 
@@ -852,7 +859,41 @@ fn create_or_update_workflow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minijinja::value::Value as MjValue;
     use serde_json::json;
+
+    #[test]
+    fn build_workflow_spec_renames_task_cluster_id_to_existing_cluster_id() {
+        let config = MjValue::from_serialize(json!({
+            "post_hook_tasks": [{"task_key": "hook", "cluster_id": "c1"}]
+        }));
+        let (spec, _) =
+            build_workflow_spec(&config, "cat", "sch", "id", "/b/m", json!({})).unwrap();
+        let hook = &spec["tasks"][1];
+        assert_eq!(hook["existing_cluster_id"], "c1");
+        assert!(hook.get("cluster_id").is_none());
+    }
+
+    #[test]
+    fn extract_timeout_defaults_to_zero_when_unset() {
+        assert_eq!(extract_timeout(&MjValue::from_serialize(json!({}))), 0);
+        assert_eq!(
+            extract_timeout(&MjValue::from_serialize(json!({ "timeout": null }))),
+            0
+        );
+    }
+
+    #[test]
+    fn extract_timeout_parses_int_and_string() {
+        assert_eq!(
+            extract_timeout(&MjValue::from_serialize(json!({ "timeout": 120 }))),
+            120
+        );
+        assert_eq!(
+            extract_timeout(&MjValue::from_serialize(json!({ "timeout": "45" }))),
+            45
+        );
+    }
 
     fn payload_for(spec: PythonEnvironmentSpec) -> serde_json::Value {
         let task = build_notebook_task(

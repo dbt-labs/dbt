@@ -8,7 +8,10 @@ use std::rc::Rc;
 #[derive(Debug, Clone)]
 pub struct ConstraintMap {
     pub types: LinkedHashMap<String, DataType>,
-    pub integers: LinkedHashMap<String, u32>,
+    /// Integer variables are signed because function arguments can capture a
+    /// signed SQL literal (for example a scale of `-1`).  Individual Arrow
+    /// type constructors still validate their own unsigned bounds.
+    pub integers: LinkedHashMap<String, i64>,
 }
 
 impl Default for ConstraintMap {
@@ -63,11 +66,6 @@ pub fn populate_constraint_map(
                 }
             }
             (_, Value::Int(value)) => {
-                let value: u32 = value.try_into().map_err(|_err| {
-                    format!(
-                        "Processing of [{key}] => [{expression}] produced result out of range: {value:?}"
-                    )
-                })?;
                 bindings.insert(key, value);
             }
             (key, value) => {
@@ -177,6 +175,23 @@ mod tests {
         expected_integers.insert("b".to_string(), 27);
         expected_integers.insert("a".to_string(), 17);
         assert_eq!(result.integers, expected_integers);
+        Ok(())
+    }
+
+    #[test]
+    fn test_populate_constraint_map_preserves_signed_values() -> InternalResult<()> {
+        let mut bound_values = ConstraintMap::new();
+        bound_values.integers.insert("scale".to_string(), -38);
+
+        let mut constraints = LinkedHashMap::new();
+        constraints.insert("rs".to_string(), "if(scale < 0, 0, scale)".to_string());
+        constraints.insert("rp".to_string(), "min(38, max(19, 6 - scale))".to_string());
+
+        let result = populate_constraint_map(Rc::new(bound_values), &constraints)?.unwrap();
+
+        assert_eq!(result.integers.get("scale"), Some(&-38));
+        assert_eq!(result.integers.get("rs"), Some(&0));
+        assert_eq!(result.integers.get("rp"), Some(&38));
         Ok(())
     }
 }

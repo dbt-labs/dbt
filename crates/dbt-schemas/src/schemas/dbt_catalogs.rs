@@ -26,6 +26,7 @@ const ALL_PLATFORMS: &[&str] = &[
     "bigquery",
     "duckdb",
     "lakecompute",
+    "spark",
 ];
 
 const TARGET_FILE_SIZES: &[&str] = &["AUTO", "16MB", "32MB", "64MB", "128MB"];
@@ -110,6 +111,7 @@ struct FieldSpec {
     name: &'static str,
     kind: FieldKind,
     required: bool,
+    json_schema_required_unless: Option<&'static str>,
     non_empty: bool,
     forbidden: bool,
     doc: &'static str,
@@ -121,6 +123,7 @@ impl FieldSpec {
             name,
             kind,
             required: false,
+            json_schema_required_unless: None,
             non_empty: false,
             forbidden: false,
             doc: "",
@@ -143,6 +146,10 @@ impl FieldSpec {
     }
     const fn required(mut self) -> Self {
         self.required = true;
+        self
+    }
+    const fn json_schema_required_unless(mut self, sibling: &'static str) -> Self {
+        self.json_schema_required_unless = Some(sibling);
         self
     }
     const fn non_empty(mut self) -> Self {
@@ -197,6 +204,9 @@ const LINKED_SNOWFLAKE_FIELDS: &[FieldSpec] = &[
         .doc("Days beyond the retention period to extend data availability. Range 0–90."),
     FieldSpec::enumerated("target_file_size", TARGET_FILE_SIZES),
     FieldSpec::u32_plain("iceberg_version").doc("Iceberg spec version, e.g. 3 for Iceberg V3."),
+    FieldSpec::string("base_location_root")
+        .non_empty()
+        .doc("Storage path prefix for Iceberg tables in the linked database. Must be an absolute path (e.g. s3://bucket/prefix) when the linked catalog integration vends credentials."),
 ];
 
 // Direct AWS creds for the lake compute backend, which signs Glue's
@@ -288,12 +298,18 @@ const UNITY_LAKE_COMPUTE_FIELDS: &[FieldSpec] = &[
 const HIVE_METASTORE_DATABRICKS_FIELDS: &[FieldSpec] =
     &[FieldSpec::enumerated("file_format", HIVE_METASTORE_FILE_FORMATS).required()];
 
+const SPARK_ICEBERG_FIELDS: &[FieldSpec] = &[FieldSpec::string("catalog_database")
+    .non_empty()
+    .doc("Preconfigured Spark catalog name. Defaults to the logical catalog name.")];
+
 const BIGLAKE_BIGQUERY_FIELDS: &[FieldSpec] = &[
     FieldSpec::string("external_volume")
-        .required()
+        .json_schema_required_unless("lakehouse_catalog")
         .non_empty()
-        .doc("Cloud Storage bucket path (gs://<bucket_name>)."),
-    FieldSpec::enumerated("file_format", BIGLAKE_FILE_FORMATS).required(),
+        .doc("Cloud Storage bucket path (gs://<bucket_name>). Required unless lakehouse_catalog is set."),
+    FieldSpec::enumerated("file_format", BIGLAKE_FILE_FORMATS)
+        .json_schema_required_unless("lakehouse_catalog")
+        .doc("Data file format written to the external volume. Required unless lakehouse_catalog is set."),
     FieldSpec::string("catalog_database")
         .non_empty()
         .doc("GCP project where models using this catalog should land. When set, takes precedence over model database config and target.database."),
@@ -368,23 +384,25 @@ const CATALOG_SCHEMAS: &[CatalogTypeSchema] = &[
     CatalogTypeSchema {
         catalog_type: CatalogType::Glue,
         table_format: "iceberg",
-        description: "AWS Glue catalog. Supports snowflake and/or duckdb connection blocks.",
+        description: "AWS Glue catalog. Supports snowflake, duckdb, lakecompute, and/or spark connection blocks.",
         presence: ConfigPresence::AtLeastOne,
         platforms: &[
             PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
             PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
             PlatformBlock::new("lakecompute", GLUE_LAKE_COMPUTE_FIELDS),
+            PlatformBlock::new("spark", SPARK_ICEBERG_FIELDS),
         ],
     },
     CatalogTypeSchema {
         catalog_type: CatalogType::IcebergRest,
         table_format: "iceberg",
-        description: "Iceberg REST catalog. Supports snowflake and/or duckdb connection blocks.",
+        description: "Iceberg REST catalog. Supports snowflake, duckdb, lakecompute, and/or spark connection blocks.",
         presence: ConfigPresence::AtLeastOne,
         platforms: &[
             PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
             PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
             PlatformBlock::new("lakecompute", DUCKDB_ICEBERG_FIELDS),
+            PlatformBlock::new("spark", SPARK_ICEBERG_FIELDS),
         ],
     },
     CatalogTypeSchema {
@@ -753,6 +771,7 @@ pub enum CatalogType {
     SnowflakeNative,
     BigqueryNative,
     DuckdbNative,
+    SparkNative,
 }
 
 impl CatalogType {
@@ -797,6 +816,7 @@ impl CatalogType {
             Self::SnowflakeNative => "INFO_SCHEMA",
             Self::BigqueryNative => "INFO_SCHEMA",
             Self::DuckdbNative => "duckdb",
+            Self::SparkNative => "spark",
         }
     }
 
@@ -825,7 +845,8 @@ impl CatalogType {
             Self::DuckLake
             | Self::LocalFilesystem
             | Self::BiglakeMetastore
-            | Self::HiveMetastore => false,
+            | Self::HiveMetastore
+            | Self::SparkNative => false,
             // Native platform storage is not readable by an external engine at all --
             // this is the warehouse-native case the check exists to catch.
             Self::SnowflakeNative | Self::BigqueryNative | Self::DuckdbNative => false,
@@ -853,7 +874,8 @@ impl CatalogType {
             | Self::SnowflakeBuiltIn
             | Self::SnowflakeNative
             | Self::BigqueryNative
-            | Self::DuckdbNative => false,
+            | Self::DuckdbNative
+            | Self::SparkNative => false,
         }
     }
 
@@ -871,6 +893,7 @@ impl CatalogType {
             "local_filesystem" => Self::LocalFilesystem,
             "BUILT_IN" => Self::SnowflakeBuiltIn,
             "duckdb" => Self::DuckdbNative,
+            "spark" => Self::SparkNative,
             "INFO_SCHEMA" => match adapter_type {
                 dbt_adapter_core::AdapterType::Bigquery => Self::BigqueryNative,
                 dbt_adapter_core::AdapterType::Snowflake => Self::SnowflakeNative,
@@ -973,7 +996,8 @@ pub trait PhysicalFormatResolver {
                 | CatalogType::SnowflakeBuiltIn
                 | CatalogType::SnowflakeNative
                 | CatalogType::BigqueryNative
-                | CatalogType::DuckdbNative => PhysicalTableFormat::Default,
+                | CatalogType::DuckdbNative
+                | CatalogType::SparkNative => PhysicalTableFormat::Default,
                 CatalogType::DuckLake => PhysicalTableFormat::DuckLake,
             },
             TableFormat::Iceberg => match self.catalog_type() {
@@ -987,7 +1011,8 @@ pub trait PhysicalFormatResolver {
                 | CatalogType::SnowflakeBuiltIn
                 | CatalogType::SnowflakeNative
                 | CatalogType::BigqueryNative
-                | CatalogType::DuckdbNative => PhysicalTableFormat::Iceberg,
+                | CatalogType::DuckdbNative
+                | CatalogType::SparkNative => PhysicalTableFormat::Iceberg,
                 CatalogType::DuckLake => PhysicalTableFormat::DuckLake,
             },
         }
@@ -1100,6 +1125,33 @@ impl<'a> CatalogSpecView<'a> {
         self.config
             .get(yml::Value::from(platform))
             .and_then(|v| v.as_mapping())
+    }
+
+    /// Whether the `lakecompute` adapter can read tables in this catalog: its
+    /// type is one lakecompute reads, configured for a platform it reads through.
+    pub fn lake_compute_can_read(&self) -> bool {
+        if !self.catalog_type.lake_compute_can_read() {
+            return false;
+        }
+        match self.catalog_type {
+            CatalogType::Glue => {
+                self.config_block("lakecompute").is_some()
+                    || self.config_block("snowflake").is_some()
+            }
+            CatalogType::Unity => self.config_block("lakecompute").is_some(),
+            CatalogType::Horizon | CatalogType::IcebergRest | CatalogType::SnowflakeBuiltIn => {
+                self.config_block("snowflake").is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// Returns true for a BigLake metastore catalog with BigQuery config and no Lakehouse Runtime Catalog.
+    pub fn is_bigquery_managed_iceberg(&self) -> bool {
+        self.catalog_type == CatalogType::BiglakeMetastore
+            && self.config_block("bigquery").is_some_and(|block| {
+                get_str(block, "lakehouse_catalog").is_ok_and(|name| name.is_none())
+            })
     }
 
     // ===== Post-hoc semantic validators =====
@@ -1285,16 +1337,39 @@ impl<'a> CatalogSpecView<'a> {
     }
 
     fn validate_biglake_semantics(&self, bigquery: &yml::Mapping) -> FsResult<()> {
-        let external_volume = get_str(bigquery, "external_volume")?
-            .expect("structural validation ensures external_volume is present");
-        if !external_volume.starts_with("gs://") {
+        let is_lrc = get_str(bigquery, "lakehouse_catalog")?.is_some();
+
+        match get_str(bigquery, "external_volume")? {
+            Some(external_volume) => {
+                if !external_volume.starts_with("gs://") {
+                    return err!(
+                        code => ErrorCode::InvalidConfig,
+                        hacky_yml_loc => field_span(bigquery, "external_volume").cloned(),
+                        "Catalog '{}' biglake_metastore/bigquery 'external_volume' must be a GCS path starting with gs://",
+                        self.name
+                    );
+                }
+            }
+            None if is_lrc => {}
+            None => {
+                return err!(
+                    code => ErrorCode::InvalidConfig,
+                    hacky_yml_loc => field_span(bigquery, "external_volume").cloned(),
+                    "Catalog '{}' biglake_metastore/bigquery requires 'external_volume'",
+                    self.name
+                );
+            }
+        }
+
+        if get_str(bigquery, "file_format")?.is_none() && !is_lrc {
             return err!(
                 code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => field_span(bigquery, "external_volume").cloned(),
-                "Catalog '{}' biglake_metastore/bigquery 'external_volume' must be a GCS path starting with gs://",
+                hacky_yml_loc => field_span(bigquery, "file_format").cloned(),
+                "Catalog '{}' biglake_metastore/bigquery requires 'file_format'",
                 self.name
             );
         }
+
         Ok(())
     }
 }
@@ -1501,7 +1576,8 @@ impl CatalogRegistry {
             CatalogType::SnowflakeBuiltIn
             | CatalogType::SnowflakeNative
             | CatalogType::BigqueryNative
-            | CatalogType::DuckdbNative => {
+            | CatalogType::DuckdbNative
+            | CatalogType::SparkNative => {
                 unreachable!(
                     "catalogs.yml has no support for an explicit catalog type of {}",
                     catalog.catalog_type.as_str()
@@ -1588,6 +1664,7 @@ impl CatalogRegistry {
     fn fields_schema(fields: &[FieldSpec]) -> serde_json::Value {
         let mut props = serde_json::Map::new();
         let mut required = Vec::new();
+        let mut conditional: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
         for f in fields.iter().filter(|f| !f.forbidden) {
             let mut schema = match f.kind {
                 FieldKind::Str => serde_json::json!({ "type": "string" }),
@@ -1612,6 +1689,11 @@ impl CatalogRegistry {
             props.insert(f.name.to_string(), schema);
             if f.required {
                 required.push(f.name);
+            } else if let Some(sibling) = f.json_schema_required_unless {
+                match conditional.iter_mut().find(|(s, _)| *s == sibling) {
+                    Some((_, names)) => names.push(f.name),
+                    None => conditional.push((sibling, vec![f.name])),
+                }
             }
         }
         let mut obj = serde_json::json!({
@@ -1621,6 +1703,17 @@ impl CatalogRegistry {
         });
         if !required.is_empty() {
             obj["required"] = serde_json::json!(required);
+        }
+        if !conditional.is_empty() {
+            obj["allOf"] = serde_json::json!(
+                conditional
+                    .into_iter()
+                    .map(|(sibling, names)| serde_json::json!({
+                        "if": { "not": { "required": [sibling] } },
+                        "then": { "required": names },
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
         obj
     }
@@ -2078,6 +2171,31 @@ catalogs:
     }
 
     #[test]
+    fn biglake_managed_iceberg_requires_bigquery_block() {
+        for (config, expected) in [
+            ("duckdb:\n        endpoint: http://localhost:8181", false),
+            (
+                "bigquery:\n        external_volume: gs://bucket\n        file_format: parquet",
+                true,
+            ),
+            ("bigquery:\n        lakehouse_catalog: sales_catalog", false),
+            ("bigquery:\n        lakehouse_catalog: 1", false),
+        ] {
+            let yaml = format!(
+                "catalogs:\n  - name: cat1\n    type: biglake_metastore\n    table_format: iceberg\n    config:\n      {config}\n"
+            );
+            let value: yml::Value = yml::from_str(&yaml).unwrap();
+            let view =
+                DbtCatalogsView::from_mapping(value.as_mapping().unwrap(), value.span()).unwrap();
+            assert_eq!(
+                view.catalogs[0].is_bigquery_managed_iceberg(),
+                expected,
+                "{config}"
+            );
+        }
+    }
+
+    #[test]
     fn biglake_accepts_lakehouse_catalog() {
         let yaml = r#"
 catalogs:
@@ -2125,6 +2243,60 @@ catalogs:
 "#;
         let res = parse_and_validate(yaml);
         assert!(res.is_err(), "expected error but got Ok");
+    }
+
+    // dbt-labs/fs: docs/build/iceberg/adapters/bigquery-iceberg-support.md's own LRC
+    // example omits external_volume/file_format entirely ("An LRC catalog doesn't
+    // need external_volume or file_format"). Confirm that config actually validates.
+    #[test]
+    fn biglake_lrc_without_external_volume_or_file_format_validates() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        lakehouse_catalog: "sales_catalog"
+"#;
+        parse_and_validate(yaml)
+            .expect("bigquery LRC catalog without external_volume/file_format should validate");
+    }
+
+    #[test]
+    fn biglake_without_lakehouse_catalog_still_requires_external_volume() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        file_format: parquet
+"#;
+        let error = parse_and_validate(yaml).unwrap_err();
+        assert!(
+            error.to_string().contains("requires 'external_volume'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn biglake_without_lakehouse_catalog_still_requires_file_format() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: "gs://bucket"
+"#;
+        let error = parse_and_validate(yaml).unwrap_err();
+        assert!(
+            error.to_string().contains("requires 'file_format'"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -3420,6 +3592,31 @@ catalogs:
     }
 
     #[test]
+    fn biglake_json_schema_requires_volume_and_format_only_without_lrc() {
+        let schema = catalogs_json_schema();
+        let bigquery = schema["properties"]["catalogs"]["items"]["oneOf"]
+            .as_array()
+            .expect("oneOf array")
+            .iter()
+            .find(|branch| branch["properties"]["type"]["const"] == "biglake_metastore")
+            .expect("biglake_metastore catalog schema branch")["properties"]["config"]["properties"]
+            ["bigquery"]
+            .clone();
+
+        assert!(
+            bigquery["required"].is_null(),
+            "external_volume/file_format must not be unconditionally required: {bigquery}"
+        );
+        assert_eq!(
+            bigquery["allOf"],
+            serde_json::json!([{
+                "if": { "not": { "required": ["lakehouse_catalog"] } },
+                "then": { "required": ["external_volume", "file_format"] },
+            }])
+        );
+    }
+
+    #[test]
     fn owner_and_meta_appear_in_json_schema() {
         let schema = catalogs_json_schema();
         let branches = schema["properties"]["catalogs"]["items"]["oneOf"]
@@ -3560,5 +3757,54 @@ catalogs:
             msg.contains("Key 'meta' must be a mapping"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn spark_glue_catalog_is_valid() {
+        parse_and_validate(
+            r#"
+catalogs:
+  - name: glue_prod
+    type: glue
+    table_format: iceberg
+    config:
+      spark:
+        catalog_database: prod_glue
+"#,
+        )
+        .expect("Spark Glue catalog should validate");
+    }
+
+    #[test]
+    fn spark_iceberg_rest_catalog_is_valid() {
+        parse_and_validate(
+            r#"
+catalogs:
+  - name: polaris
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      spark: {}
+"#,
+        )
+        .expect("Spark Iceberg REST catalog should validate");
+    }
+
+    #[test]
+    fn spark_iceberg_catalog_rejects_inline_connection_fields() {
+        let result = parse_and_validate(
+            r#"
+catalogs:
+  - name: polaris
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      spark:
+        endpoint: https://example.com/api/catalog
+"#,
+        );
+        let message = format!("{result:?}");
+        assert!(result.is_err());
+        assert!(message.contains("Unknown key 'endpoint'"));
     }
 }

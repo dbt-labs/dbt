@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::{DateTime, Utc};
 use dbt_adapter::response::AdapterResponse;
 use dbt_common::stats::Stat;
-use dbt_schemas::schemas::{ContextRunResult, TimingInfo};
+use dbt_schemas::schemas::{ContextRunResult, Nodes, TimingInfo};
 use dbt_schemas::stats::Stats;
 
 type YmlValue = dbt_yaml::Value;
@@ -37,6 +37,7 @@ fn adapter_response_map(
 pub fn generate_run_results(
     stat: &Stat,
     stats: &Stats,
+    nodes: &Nodes,
     adapter_responses: &HashMap<String, AdapterResponse>,
 ) -> ContextRunResult {
     let status = stat.result_status_string();
@@ -58,19 +59,17 @@ pub fn generate_run_results(
         },
     ];
 
-    let nodes = stats
-        .nodes
-        .as_ref()
-        .expect("stats should have nodes for results generation");
     let node_arc = nodes.get_node_owned(&stat.unique_id);
 
-    // Determine failures for tests
-    let failures =
-        if stat.unique_id.starts_with("test.") || stat.unique_id.starts_with("unit_test.") {
-            stat.num_rows.map(|n| n as i64)
-        } else {
-            None
-        };
+    // Determine failures for tests, and for any other node reporting an assertion
+    let failures = if stat.assertion
+        || stat.unique_id.starts_with("test.")
+        || stat.unique_id.starts_with("unit_test.")
+    {
+        stat.num_rows.map(|n| n as i64)
+    } else {
+        None
+    };
 
     // Get static_analysis_off_reason from the node if available
     let static_analysis_off_reason = node_arc

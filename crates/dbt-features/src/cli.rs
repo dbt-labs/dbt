@@ -22,6 +22,7 @@ use dbt_common::cancellation::{CancellationToken, CancellationTokenSource};
 use dbt_common::fail_fast::FailFast;
 use dbt_common::io_args::{EvalArgs, FsCommand, IoArgs, Phases, SystemArgs};
 use dbt_common::pretty_string::CYAN;
+use dbt_common::telemetry_command::TelemetryCommand;
 use dbt_common::tracing::dbt_emit::{
     emit_error_log_from_fs_error, emit_error_log_message, emit_warn_log_message,
 };
@@ -33,7 +34,6 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schema_store::{CanonicalFqn, DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::{Nodes, StateArtifacts};
 use dbt_schemas::state::{DbtState, ResolverState};
-use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::{PreTaskRunData, RunTaskResults};
 
 use crate::feature_stack::FeatureStack;
@@ -168,6 +168,13 @@ impl AbstractExtensionCommand for OSSExtensionCommand {
         match self {
             OSSExtensionCommand::System(_) => "system",
             OSSExtensionCommand::Lint(_) => "lint",
+        }
+    }
+
+    fn telemetry_command(&self) -> TelemetryCommand {
+        match self {
+            Self::System(args) => TelemetryCommand::from_args(self.name(), args),
+            Self::Lint(args) => TelemetryCommand::from_args(self.name(), args),
         }
     }
 
@@ -373,7 +380,6 @@ pub trait CliExtensionHooks: Send + Sync {
         arg: &EvalArgs,
         resolved_state: &ResolverState,
         jinja_env: &Arc<JinjaEnv>,
-        task_runner_ctx: Option<&TaskRunnerCtx>,
         schema_store: &Arc<dyn SchemaStoreTrait>,
         data_store: &Arc<dyn DataStoreTrait>,
         map_compiled_sql: &HashMap<&str, Option<&str>>,
@@ -579,7 +585,6 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
         _arg: &EvalArgs,
         _resolved_state: &ResolverState,
         _jinja_env: &Arc<JinjaEnv>,
-        _task_runner_ctx: Option<&TaskRunnerCtx>,
         _schema_store: &Arc<dyn SchemaStoreTrait>,
         _data_store: &Arc<dyn DataStoreTrait>,
         _map_compiled_sql: &HashMap<&str, Option<&str>>,

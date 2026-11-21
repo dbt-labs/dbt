@@ -1,0 +1,18 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+ Rendering models/a.sql
+column: text_col
+string
+column: integer_col
+int64
+column: decimal_col
+int64
+column: bool_col
+bool
+column: datetime_col
+datetime
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 1 model | 1 seed
+Summary: 2 total | 2 success

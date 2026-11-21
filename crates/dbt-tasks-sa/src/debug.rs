@@ -8,7 +8,7 @@ use dbt_agate::MappedSequence;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::{EvalArgs, LocalExecutionBackendKind, ReplayMode};
 use dbt_common::tracing::dbt_emit::emit_info_progress_message;
-use dbt_common::{ErrorCode, FsResult, fs_err};
+use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_compilation::core::DbtLoadedProject;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::ResolvedQuoting;
@@ -133,7 +133,10 @@ pub async fn debug(
     emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, &profile_display));
 
     // dbt version
-    let dbt_version_display = format!("dbt version: {}", env!("CARGO_PKG_VERSION"));
+    let dbt_version_display = format!(
+        "dbt version: {}",
+        option_env!("DBT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+    );
     emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, &dbt_version_display));
 
     // platform info
@@ -438,7 +441,16 @@ async fn debug_adapter_connection(
         let connection_test_started = Instant::now();
         base_adapter
             .execute_without_state(Some(&ctx), sql, false, None)
-            .map_err(|e| fs_err!(ErrorCode::AuthenticationFailed, "dbt was unable to connect to the database configured for the `{}` adapter.\nThe following error was returned:\n\n{}\n\nCheck your database credentials and try again. For more information, visit:\nhttps://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles", adapter_type, e))?;
+            .map_err(|e| {
+                // A Bridge error isn't about the warehouse credentials, so it
+                // keeps its own code and leaves out the credentials hint.
+                if e.is_bridge() {
+                    let message = format!("dbt was unable to connect to the database configured for the `{adapter_type}` adapter through Bridge.\nThe following error was returned:\n\n{e}");
+                    let code = Box::<FsError>::from(e).code;
+                    return fs_err!(code, "{message}");
+                }
+                fs_err!(ErrorCode::AuthenticationFailed, "dbt was unable to connect to the database configured for the `{}` adapter.\nThe following error was returned:\n\n{}\n\nCheck your database credentials and try again. For more information, visit:\nhttps://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles", adapter_type, e)
+            })?;
         let connection_test_elapsed = connection_test_started.elapsed();
 
         // Check for allow_id_token parameter when using Snowflake with externalbrowser
@@ -546,7 +558,7 @@ fn debug_lake_compute(
                 ACTION_DEBUGGING,
                 &format!(
                     "{}{}",
-                    format_catalog_attach_outcome(&outcome),
+                    format_catalog_attach_outcome(&outcome, &native_db_config),
                     duration_suffix(attach_started.elapsed())
                 ),
             ));
@@ -558,17 +570,15 @@ fn debug_lake_compute(
         }
     }
 
-    // 2. MDLS write + read-back, in an already-authorized namespace (the lake compute
-    // target's configured database/schema). Namespace-level DDL is
-    // deliberately avoided: creating a new namespace is denied for the
-    // Polaris principal used here and (confirmed empirically) can hang
-    // rather than fail fast, so this only exercises table create/drop
-    // within a namespace that must already exist.
+    // 2. MDLS write + read-back, in the lake compute target's configured
+    // database/schema. The probe sends a `create schema` prelude whenever it
+    // carries a bundle, the same way a model write does, so a fresh project is
+    // not a special case; without a bundle nothing creates the namespace.
     //
     // Behind a checker for one reason: the probe has to ride the same catalog
     // bundle a real model write sends, or it tests strictly less than a write
-    // does and can pass while every write fails. Building one needs the
-    // Snowflake credential mint, which this crate cannot reach.
+    // does and can pass while every write fails. Building that bundle needs the
+    // native credential, which this crate cannot reach.
     match &mdls_checker {
         None => {
             emit_info_progress_message(create_progress_msg(
@@ -593,24 +603,35 @@ fn debug_lake_compute(
         }
     }
 
-    // 3. Snowflake propagation: runs whenever a checker is registered. It
-    // does not require a catalog-linked database declared in
-    // `catalogs.yml` -- the checker builds its own throwaway catalog bundle
-    // for the probe write.
+    // 3. Propagation, on whichever platform the profile targets: runs whenever a
+    // checker is registered. It does not require a catalog-linked database
+    // declared in `catalogs.yml` -- the checker builds its own throwaway
+    // catalog bundle for the probe write.
+    //
+    // The label names the platform the probe becomes visible in: a BigQuery
+    // target publishes to BigQuery, a Snowflake target propagates into
+    // Snowflake. The checker branches on the same config.
+    let (propagation_label, propagation_preamble) = match &native_db_config {
+        DbConfig::Bigquery(_) => (
+            "BigQuery publication test",
+            "BigQuery publication test (this writes a probe table, publishes it to BigQuery and \
+             reads it back through BigQuery; this can take a while)...",
+        ),
+        _ => (
+            "Snowflake propagation test",
+            "Snowflake propagation test (this mints a short-lived credential and waits for dbt \
+             Compute to confirm the write is visible in Snowflake; can take up to a minute)...",
+        ),
+    };
     match &propagation_checker {
         None => {
             emit_info_progress_message(create_progress_msg(
                 ACTION_SKIPPED,
-                "Snowflake propagation test (unavailable in this build)",
+                &format!("{propagation_label} (unavailable in this build)"),
             ));
         }
         Some(checker) => {
-            emit_info_progress_message(create_progress_msg(
-                ACTION_DEBUGGING,
-                "Snowflake propagation test (this mints a short-lived credential and waits \
-                 for dbt Compute to confirm the write is visible in Snowflake; can take up \
-                 to a minute)...",
-            ));
+            emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, propagation_preamble));
             let propagation_started = Instant::now();
             let outcome = checker.check_lake_compute_propagation(
                 &native_db_config,
@@ -626,7 +647,7 @@ fn debug_lake_compute(
                 ACTION_DEBUGGING,
                 &format!(
                     "{}{}",
-                    format_propagation_outcome(&outcome),
+                    format_propagation_outcome(&outcome, propagation_label),
                     duration_suffix(propagation_elapsed)
                 ),
             ));
@@ -666,9 +687,9 @@ fn resolve_probe_namespace<'a>(
 /// one per statement, as before, so the output reads as it always has. A
 /// failed write or read-back never reaches here; it comes back as an error.
 fn format_mdls_outcome(outcome: &LakeComputeMdlsOutcome) -> Vec<String> {
-    // Worth calling out: with no Snowflake credential the probe cannot send a
-    // `relation`, so the analyzer has to resolve the write target on its own
-    // and this tests less than a real model write does.
+    // Worth calling out: a bundle-less probe cannot send a `relation`, so the
+    // analyzer resolves the write target on its own and the check tests less
+    // than a real model write does.
     let bundle_note = if outcome.sent_propagation_bundle {
         ""
     } else {
@@ -690,10 +711,24 @@ fn format_mdls_outcome(outcome: &LakeComputeMdlsOutcome) -> Vec<String> {
 /// Renders an [`LakeComputeCatalogAttachOutcome`] as the `dbt debug` progress line.
 /// A failed attach never reaches here -- it comes back as an error, since a
 /// catalog that cannot be attached is a setup problem the user must fix.
-fn format_catalog_attach_outcome(outcome: &LakeComputeCatalogAttachOutcome) -> String {
+fn format_catalog_attach_outcome(
+    outcome: &LakeComputeCatalogAttachOutcome,
+    native_db_config: &DbConfig,
+) -> String {
     match outcome {
-        LakeComputeCatalogAttachOutcome::NothingToCheck { .. } => {
-            "catalog attach test: skipped (no declared catalogs to check)".to_string()
+        LakeComputeCatalogAttachOutcome::NothingToCheck {
+            unprobed_catalogs,
+            ..
+        } => {
+            if unprobed_catalogs.is_empty() {
+                "catalog attach test: skipped (no declared catalogs to check)".to_string()
+            } else {
+                format!(
+                    "catalog attach test: not probed ({}); this check sends no settings for a \
+                     biglake_metastore catalog, so there is nothing to attach",
+                    unprobed_catalogs.join(", ")
+                )
+            }
         }
         LakeComputeCatalogAttachOutcome::MintedOnly {
             freshly_minted: true,
@@ -705,14 +740,22 @@ fn format_catalog_attach_outcome(outcome: &LakeComputeCatalogAttachOutcome) -> S
         } => "PAT mint test: skipped (reused a still-live cached PAT; no declared catalogs to attach)"
             .to_string(),
         LakeComputeCatalogAttachOutcome::Attached { catalogs, .. } => {
-            format!("catalog attach test: OK ({})", catalogs.join(", "))
+            let usability_note = if matches!(native_db_config, DbConfig::Bigquery(_)) {
+                " (not usable by nodes that target BigQuery)"
+            } else {
+                ""
+            };
+            format!(
+                "catalog attach test: OK ({}){usability_note}",
+                catalogs.join(", ")
+            )
         }
     }
 }
 
 fn pat_hygiene_of(outcome: &LakeComputeCatalogAttachOutcome) -> Option<&PatHygieneReport> {
     match outcome {
-        LakeComputeCatalogAttachOutcome::NothingToCheck { pat_hygiene }
+        LakeComputeCatalogAttachOutcome::NothingToCheck { pat_hygiene, .. }
         | LakeComputeCatalogAttachOutcome::MintedOnly { pat_hygiene, .. }
         | LakeComputeCatalogAttachOutcome::Attached { pat_hygiene, .. } => pat_hygiene.as_ref(),
     }
@@ -768,9 +811,9 @@ fn format_ttl_secs(remaining_secs: i64) -> String {
 /// Renders an [`LakeComputePropagationOutcome`] as the `dbt debug` progress line.
 /// `NotYetVisible` is reported informationally, not as a failure, since
 /// catalog-integration propagation is inherently asynchronous.
-fn format_propagation_outcome(outcome: &LakeComputePropagationOutcome) -> String {
+fn format_propagation_outcome(outcome: &LakeComputePropagationOutcome, label: &str) -> String {
     match outcome {
-        LakeComputePropagationOutcome::Verified => "Snowflake propagation test: OK".to_string(),
+        LakeComputePropagationOutcome::Verified => format!("{label}: OK"),
         LakeComputePropagationOutcome::NotYetVisible {
             waited_secs,
             configured_refresh_secs,
@@ -781,7 +824,7 @@ fn format_propagation_outcome(outcome: &LakeComputePropagationOutcome) -> String
                 })
                 .unwrap_or_default();
             format!(
-                "Snowflake propagation test: not yet visible after {waited_secs}s.{refresh_note} this may just need more time, not necessarily a failure."
+                "{label}: not yet visible after {waited_secs}s.{refresh_note} this may just need more time, not necessarily a failure."
             )
         }
     }
@@ -798,6 +841,7 @@ async fn dependency_installed(dependency: &str) -> FsResult<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::schemas::profiles::{BigqueryDbConfig, SnowflakeDbConfig};
 
     #[dbt_runtime::test]
     async fn test_dependency_not_installed() {
@@ -904,29 +948,75 @@ mod tests {
 
     #[test]
     fn format_catalog_attach_outcome_lists_checked_catalogs() {
-        let msg = format_catalog_attach_outcome(&LakeComputeCatalogAttachOutcome::Attached {
-            catalogs: vec!["mdls_horizon".to_string(), "native_db".to_string()],
-            pat_hygiene: None,
-        });
+        let msg = format_catalog_attach_outcome(
+            &LakeComputeCatalogAttachOutcome::Attached {
+                catalogs: vec!["mdls_horizon".to_string(), "native_db".to_string()],
+                pat_hygiene: None,
+            },
+            &DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default()),
+        );
         assert_eq!(msg, "catalog attach test: OK (mdls_horizon, native_db)");
     }
 
     #[test]
+    fn format_catalog_attach_outcome_flags_bigquery_catalogs_as_unusable() {
+        let native_db_config = DbConfig::Bigquery(Box::new(
+            serde_json::from_str::<BigqueryDbConfig>("{}").expect("bigquery config"),
+        ));
+        let msg = format_catalog_attach_outcome(
+            &LakeComputeCatalogAttachOutcome::Attached {
+                catalogs: vec!["glue_catalog".to_string(), "unity_catalog".to_string()],
+                pat_hygiene: None,
+            },
+            &native_db_config,
+        );
+        assert_eq!(
+            msg,
+            "catalog attach test: OK (glue_catalog, unity_catalog) (not usable by nodes that target BigQuery)"
+        );
+    }
+
+    #[test]
     fn format_catalog_attach_outcome_nothing_to_check() {
-        let msg = format_catalog_attach_outcome(&LakeComputeCatalogAttachOutcome::NothingToCheck {
-            pat_hygiene: None,
-        });
+        let msg = format_catalog_attach_outcome(
+            &LakeComputeCatalogAttachOutcome::NothingToCheck {
+                pat_hygiene: None,
+                unprobed_catalogs: Vec::new(),
+            },
+            &DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default()),
+        );
         assert!(msg.contains("no declared catalogs to check"));
+    }
+
+    /// A declared BigLake catalog is not "nothing declared": the line names it,
+    /// says it was not probed, and gives the reason.
+    #[test]
+    fn format_catalog_attach_outcome_names_unprobed_catalogs_and_why() {
+        let msg = format_catalog_attach_outcome(
+            &LakeComputeCatalogAttachOutcome::NothingToCheck {
+                pat_hygiene: None,
+                unprobed_catalogs: vec!["bigquery_iceberg".to_string()],
+            },
+            &DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default()),
+        );
+        assert_eq!(
+            msg,
+            "catalog attach test: not probed (bigquery_iceberg); this check sends no settings for a \
+             biglake_metastore catalog, so there is nothing to attach"
+        );
     }
 
     /// A project with no declared catalogs still reports the mint, since that
     /// is the part its first write depends on.
     #[test]
     fn format_catalog_attach_outcome_minted_only_reports_a_fresh_mint_as_ok() {
-        let msg = format_catalog_attach_outcome(&LakeComputeCatalogAttachOutcome::MintedOnly {
-            pat_hygiene: None,
-            freshly_minted: true,
-        });
+        let msg = format_catalog_attach_outcome(
+            &LakeComputeCatalogAttachOutcome::MintedOnly {
+                pat_hygiene: None,
+                freshly_minted: true,
+            },
+            &DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default()),
+        );
         assert_eq!(msg, "PAT mint test: OK (no declared catalogs to attach)");
     }
 
@@ -934,10 +1024,13 @@ mod tests {
     /// having verified it.
     #[test]
     fn format_catalog_attach_outcome_minted_only_does_not_claim_ok_on_a_cache_hit() {
-        let msg = format_catalog_attach_outcome(&LakeComputeCatalogAttachOutcome::MintedOnly {
-            pat_hygiene: None,
-            freshly_minted: false,
-        });
+        let msg = format_catalog_attach_outcome(
+            &LakeComputeCatalogAttachOutcome::MintedOnly {
+                pat_hygiene: None,
+                freshly_minted: false,
+            },
+            &DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default()),
+        );
         assert!(msg.starts_with("PAT mint test: skipped"));
         assert!(msg.contains("cached PAT"));
     }
@@ -1016,19 +1109,24 @@ mod tests {
     }
 
     #[test]
-    fn format_propagation_outcome_verified() {
-        assert_eq!(
-            format_propagation_outcome(&LakeComputePropagationOutcome::Verified),
-            "Snowflake propagation test: OK"
-        );
+    fn format_propagation_outcome_verified_names_the_platform_it_was_given() {
+        for label in ["Snowflake propagation test", "BigQuery publication test"] {
+            assert_eq!(
+                format_propagation_outcome(&LakeComputePropagationOutcome::Verified, label),
+                format!("{label}: OK")
+            );
+        }
     }
 
     #[test]
     fn format_propagation_outcome_not_yet_visible_with_refresh_interval() {
-        let msg = format_propagation_outcome(&LakeComputePropagationOutcome::NotYetVisible {
-            waited_secs: 90,
-            configured_refresh_secs: Some(3600),
-        });
+        let msg = format_propagation_outcome(
+            &LakeComputePropagationOutcome::NotYetVisible {
+                waited_secs: 90,
+                configured_refresh_secs: Some(3600),
+            },
+            "Snowflake propagation test",
+        );
         assert!(msg.contains("not yet visible after 90s"));
         assert!(msg.contains("refresh interval is configured at 3600s"));
         assert!(msg.contains("not necessarily a failure"));
@@ -1036,10 +1134,13 @@ mod tests {
 
     #[test]
     fn format_propagation_outcome_not_yet_visible_without_refresh_interval() {
-        let msg = format_propagation_outcome(&LakeComputePropagationOutcome::NotYetVisible {
-            waited_secs: 90,
-            configured_refresh_secs: None,
-        });
+        let msg = format_propagation_outcome(
+            &LakeComputePropagationOutcome::NotYetVisible {
+                waited_secs: 90,
+                configured_refresh_secs: None,
+            },
+            "Snowflake propagation test",
+        );
         assert!(msg.contains("not yet visible after 90s"));
         assert!(!msg.contains("refresh interval"));
     }

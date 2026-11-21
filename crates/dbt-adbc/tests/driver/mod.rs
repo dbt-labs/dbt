@@ -122,8 +122,7 @@ mod tests {
             }
             Backend::DuckDB | Backend::DuckDBExtended => {
                 let mut builder = database::Builder::new(backend);
-                let database_path = ":memory:".to_string();
-                builder.with_named_option("path", database_path)?;
+                builder.with_named_option("path", ":memory:")?;
                 Ok(builder)
             }
             Backend::LakeCompute => {
@@ -165,6 +164,10 @@ mod tests {
                     .with_username(username)
                     .with_password(password);
                 Ok(builder)
+            }
+            Backend::Trino => unimplemented!("trino backend database builder in tests"),
+            Backend::MotherDuck => {
+                unimplemented!("MotherDuck backend database builder in tests")
             }
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;

@@ -132,6 +132,8 @@ pub struct DbtPythonVisitor<'a, T: ResolvableConfig<T>> {
     /// The target's adapter type, used to canonicalize adapter config-key aliases in
     /// `dbt.config(...)` calls. [dbt-core's `credentials.translate_aliases`]
     adapter_type: AdapterType,
+    /// Leave typed-hook aliases (`catalog`) to the resolver: only with per-adapter trees.
+    defer_typed_aliases: bool,
 }
 
 impl<'a, T: ResolvableConfig<T>> DbtPythonVisitor<'a, T> {
@@ -143,6 +145,7 @@ impl<'a, T: ResolvableConfig<T>> DbtPythonVisitor<'a, T> {
         error_path: Option<PathBuf>,
         source: &str,
         adapter_type: AdapterType,
+        defer_typed_aliases: bool,
     ) -> Self {
         let line_starts = compute_line_starts(source);
         Self {
@@ -153,6 +156,7 @@ impl<'a, T: ResolvableConfig<T>> DbtPythonVisitor<'a, T> {
             error_path,
             line_starts,
             adapter_type,
+            defer_typed_aliases,
         }
     }
 
@@ -346,7 +350,8 @@ impl<'a, T: ResolvableConfig<T>> DbtPythonVisitor<'a, T> {
         // Jinja/SQL inline-config path (`ParseConfig::apply_config`,
         // dbt-jinja-utils's resolve_model_context.rs) -- so an alias with no dedicated typed
         // field (e.g. postgres/redshift `dbname` -> `database`) resolves instead of raising an
-        // unrecognized-key error.
+        // unrecognized-key error. With per-adapter trees `catalog` is left to the resolver's typed
+        // hook; raw-only aliases use the default's table, as Python is analyzed before properties.
         let raw_config: std::collections::BTreeMap<String, (dbt_yaml::Span, dbt_yaml::Value)> =
             mapping
                 .into_iter()
@@ -355,9 +360,15 @@ impl<'a, T: ResolvableConfig<T>> DbtPythonVisitor<'a, T> {
                     _ => None,
                 })
                 .collect();
-        let canonicalized = match dbt_adapter_core::config_aliases::canonicalize_config_keys(
+        let deferred_keys = if self.defer_typed_aliases {
+            T::typed_alias_keys()
+        } else {
+            &[]
+        };
+        let canonicalized = match dbt_adapter_core::config_aliases::canonicalize_config_keys_except(
             self.adapter_type,
             raw_config,
+            deferred_keys,
         ) {
             Ok(canonicalized) => canonicalized,
             Err(dup) => {
@@ -532,6 +543,7 @@ pub fn analyze_python_file<T: ResolvableConfig<T>>(
     dependency_package_name: Option<&str>,
     error_path: Option<PathBuf>,
     adapter_type: AdapterType,
+    defer_typed_aliases: bool,
 ) -> FsResult<PythonFileInfo<T>> {
     let file_info = PythonFileInfo::new(checksum);
     let mut visitor = DbtPythonVisitor::new(
@@ -541,6 +553,7 @@ pub fn analyze_python_file<T: ResolvableConfig<T>>(
         error_path,
         source,
         adapter_type,
+        defer_typed_aliases,
     );
 
     // Walk the AST
@@ -585,6 +598,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -609,6 +623,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -634,6 +649,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -641,18 +657,15 @@ def model(dbt, session):
         // Only dbt.config.get() calls should be tracked in config_keys_used
         assert!(result.config_keys_used.is_empty());
         assert_eq!(
-            result.config.materialized,
+            result.config_calls[0].materialized,
             Some(dbt_schemas::schemas::common::DbtMaterialization::Table)
         );
     }
 
-    /// fs#13424: Databricks' `catalog` -> `database` alias must canonicalize the same way in a
-    /// Python model's `dbt.config(...)` as it does in the Jinja/SQL inline-config path
-    /// (`test_databricks_catalog_alias_canonicalizes_to_database` and
-    /// `ParseConfig::apply_config`'s own tests) -- landing in `database`, not the separate
-    /// `catalog` field `ModelConfig` also carries.
+    /// With per-adapter trees, a Python model's `catalog` is left for the resolver's typed hook,
+    /// so it is translated with the node's final alias table.
     #[test]
-    fn test_python_model_dbt_config_catalog_alias_resolves_to_database_on_databricks() {
+    fn test_python_model_dbt_config_catalog_left_to_resolver_on_databricks() {
         let source = r#"
 def model(dbt, session):
     dbt.config(catalog='my_catalog')
@@ -668,14 +681,59 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Databricks,
+            true,
         )
         .unwrap();
 
         assert_eq!(
-            result.config.database.clone().into_inner().flatten(),
+            result.config_calls[0].__warehouse_specific_config__.catalog,
             Some("my_catalog".to_string())
         );
-        assert_eq!(result.config.__warehouse_specific_config__.catalog, None);
+        assert_eq!(
+            result.config_calls[0]
+                .database
+                .clone()
+                .into_inner()
+                .flatten(),
+            None
+        );
+    }
+
+    /// Without per-adapter trees each `dbt.config()` call renames its own `catalog` raw.
+    #[test]
+    fn test_python_model_dbt_config_each_call_renames_catalog_on_databricks() {
+        let source = r#"
+def model(dbt, session):
+    dbt.config(database='d')
+    dbt.config(catalog='c')
+    return session.table('data')
+"#;
+        let path = PathBuf::from("test.py");
+        let suite = parse_python(source, &path).unwrap();
+        let result = analyze_python_file::<dbt_schemas::schemas::project::ModelConfig>(
+            &path,
+            source,
+            &suite,
+            DbtChecksum::default(),
+            None,
+            Some(path.clone()),
+            AdapterType::Databricks,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.config_calls[1]
+                .database
+                .clone()
+                .into_inner()
+                .flatten(),
+            Some("c".to_string())
+        );
+        assert_eq!(
+            result.config_calls[1].__warehouse_specific_config__.catalog,
+            None
+        );
     }
 
     /// The same alias is inert on an adapter with no `_ALIASES` map (D1): `catalog` stays its
@@ -697,14 +755,22 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
         assert_eq!(
-            result.config.__warehouse_specific_config__.catalog,
+            result.config_calls[0].__warehouse_specific_config__.catalog,
             Some("my_catalog".to_string())
         );
-        assert_eq!(result.config.database.clone().into_inner().flatten(), None);
+        assert_eq!(
+            result.config_calls[0]
+                .database
+                .clone()
+                .into_inner()
+                .flatten(),
+            None
+        );
     }
 
     /// Two keys in the same `dbt.config(...)` call that canonicalize to the same field is a
@@ -728,6 +794,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Databricks,
+            false,
         )
         .unwrap_err();
 
@@ -753,6 +820,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -778,6 +846,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -802,6 +871,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -834,6 +904,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -867,14 +938,15 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
         // dbt.config() sets config values but doesn't add them to config_keys_used
         assert!(result.config_keys_used.is_empty());
-        assert!(result.config.materialized.is_some());
-        assert!(result.config.tags.is_some());
-        assert!(result.config.meta.is_some());
+        assert!(result.config_calls[0].materialized.is_some());
+        assert!(result.config_calls[0].tags.is_some());
+        assert!(result.config_calls[0].meta.is_some());
     }
 
     #[test]
@@ -895,13 +967,14 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
         // Both config calls should be processed but not added to config_keys_used
         assert!(result.config_keys_used.is_empty());
-        assert!(result.config.materialized.is_some());
-        assert!(result.config.tags.is_some());
+        assert!(result.config_calls[0].materialized.is_some());
+        assert!(result.config_calls[1].tags.is_some());
     }
 
     #[test]
@@ -921,6 +994,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         );
 
         assert!(result.is_err());
@@ -949,6 +1023,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         );
 
         assert!(result.is_err());
@@ -1005,6 +1080,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1039,8 +1115,8 @@ def model(dbt, session):
 
         // dbt.config() sets config values but doesn't add them to config_keys_used
         assert!(result.config_keys_used.is_empty());
-        assert!(result.config.materialized.is_some());
-        assert!(result.config.packages.is_some());
+        assert!(result.config_calls[0].materialized.is_some());
+        assert!(result.config_calls[0].packages.is_some());
     }
 
     /// Test config.get() extracts config keys
@@ -1063,6 +1139,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1092,6 +1169,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1146,6 +1224,7 @@ def model(dbt, fal):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1153,7 +1232,7 @@ def model(dbt, fal):
         assert_eq!(result.config_keys_used.len(), 1);
         assert!(result.config_keys_used.contains(&"my_var".to_string()));
         // dbt.config() sets the value in the config struct
-        assert!(result.config.materialized.is_some());
+        assert!(result.config_calls[0].materialized.is_some());
     }
 
     /// Test that ref() in variable names (not as a call) doesn't get extracted
@@ -1181,6 +1260,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         );
 
         // Should fail because ref() is called with a variable, not a literal
@@ -1212,11 +1292,12 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
         // No explicit materialization set, will use default (table)
-        assert!(result.config.materialized.is_none());
+        assert!(result.config_calls.is_empty());
     }
 
     /// Test custom materialization
@@ -1239,11 +1320,12 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
         assert_eq!(
-            *result.config.materialized.as_ref().unwrap(),
+            *result.config_calls[0].materialized.as_ref().unwrap(),
             dbt_schemas::schemas::common::DbtMaterialization::Incremental
         );
     }
@@ -1277,6 +1359,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1315,13 +1398,14 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
         // dbt.config() sets config values but doesn't add them to config_keys_used
         assert!(result.config_keys_used.is_empty());
         // The packages list should be in the config
-        assert!(result.config.packages.is_some());
+        assert!(result.config_calls[0].packages.is_some());
     }
 
     /// Test two-argument ref (package, model)
@@ -1342,6 +1426,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1369,12 +1454,13 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
         // dbt.config() sets config values but doesn't add them to config_keys_used
         assert!(result.config_keys_used.is_empty());
-        assert!(result.config.tags.is_some());
+        assert!(result.config_calls[0].tags.is_some());
     }
 
     // =========================================================================
@@ -1400,6 +1486,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1427,6 +1514,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1454,6 +1542,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1483,6 +1572,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1510,6 +1600,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1544,6 +1635,7 @@ def model(dbt, _):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1600,6 +1692,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         );
 
         assert!(result.is_err());
@@ -1628,6 +1721,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1655,6 +1749,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         )
         .unwrap();
 
@@ -1683,6 +1778,7 @@ def model(dbt, session):
             None,
             Some(path.clone()),
             AdapterType::Snowflake,
+            false,
         );
 
         assert!(result.is_err());

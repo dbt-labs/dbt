@@ -1,0 +1,90 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+9eea67d2:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`databricks_test_test_array_data`
+model.test_array_data.add_array:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`databricks_test_test_array_data`.`add_array`
+    
+    as (
+    -- add_array.sql
+    SELECT *, ARRAY(1, 2, 3) AS my_array
+    FROM `e2e`.`databricks_test_test_array_data`.`my_model`
+    )
+model.test_array_data.my_model:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_test_test_array_data'
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`databricks_test_test_array_data`.`my_model`
+    
+    as (
+    select 1 as id
+    )
+unit_test.test_array_data.add_array.test_with_unused_array:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace temporary view `test_with_unused_array__dbt_tmp` as
+    select * from (
+    -- add_array.sql
+    SELECT *, ARRAY(1, 2, 3) AS my_array
+    FROM `e2e`.`databricks_test_test_array_data`.`my_model`
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `test_with_unused_array__dbt_tmp` AS JSON
+- sequence: 2
+  type: execute
+  sql: DROP VIEW IF EXISTS `test_with_unused_array__dbt_tmp`
+- sequence: 3
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \te2e_databricks_test_test_array_data_my_model as (SELECT CAST(1 AS bigint) AS id),
+    \te2e_databricks_test_test_array_data_add_array_expect as (SELECT CAST(1 AS bigint) AS id, CAST(NULL AS ARRAY<bigint>) AS my_array),
+    \te2e_databricks_test_test_array_data_add_array_actual as (-- add_array.sql
+    SELECT *, ARRAY(1, 2, 3) AS my_array
+    FROM e2e_databricks_test_test_array_data_my_model
+    )
+    SELECT * FROM (
+    (SELECT id, 'actual' AS actual_or_expected FROM e2e_databricks_test_test_array_data_add_array_actual)
+    UNION ALL
+    (SELECT id, 'expected' AS actual_or_expected FROM e2e_databricks_test_test_array_data_add_array_expect)
+    ) unit_test_diff
+    ORDER BY id
+unit_test.test_array_data.add_array.test_with_unused_array-cde97f34:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`databricks_test_test_array_data`.`my_model` AS JSON

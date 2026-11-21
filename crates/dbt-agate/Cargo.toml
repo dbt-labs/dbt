@@ -38,3 +38,9 @@ siphasher = { workspace = true }
 name = "dbt_agate"
 path = "src/lib.rs"
 doctest = false
+
+[dev-dependencies]
+# Tests in src/table.rs use `minijinja_contrib::testing::jinja_assert`, which is
+# gated behind minijinja-contrib's `testing` feature. Declared here so the feature is
+# only unified into test/bench targets, leaving the production lib build unchanged.
+minijinja-contrib = { workspace = true, features = ["testing"] }

@@ -1,0 +1,4 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: describe table development.adapters_snowflake_column_datatypes.source

@@ -4,8 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use dbt_path::normalize;
 use dbt_schemas::schemas::{packages::LocalPackage, project::DbtProjectNameOnly};
-use normalize_path::NormalizePath;
 
 use dbt_common::{ErrorCode, FsResult, constants::DBT_PROJECT_YML, fs_err, tokiofs};
 
@@ -55,47 +55,6 @@ pub fn make_tempdir(parent: Option<&Path>) -> FsResult<tempfile::TempDir> {
     result.map_err(|e| fs_err!(ErrorCode::IoError, "Failed to create temp dir: {}", e))
 }
 
-/// Move a directory from `src` to `dst`.
-///
-/// Attempts an atomic `rename` first. If that fails due to a cross-device error
-/// (src and dst on different filesystems), falls back to a recursive copy followed
-/// by deletion of the source.
-pub async fn move_dir(src: &Path, dst: &Path) -> FsResult<()> {
-    if tokiofs::rename(src, dst).await.is_ok() {
-        return Ok(());
-    }
-    // rename failed (e.g. cross-device) — fall back to recursive copy + delete
-    copy_dir_recursive(src, dst).await?;
-    tokiofs::remove_dir_all(src).await
-}
-
-async fn copy_dir_recursive(src: &Path, dst: &Path) -> FsResult<()> {
-    tokiofs::create_dir_all(dst).await?;
-    let mut entries = tokiofs::read_dir(src).await?;
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| fs_err!(ErrorCode::IoError, "Failed to read directory entry: {}", e))?
-    {
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        let file_type = entry.file_type().await.map_err(|e| {
-            fs_err!(
-                ErrorCode::IoError,
-                "Failed to get file type for '{}': {}",
-                src_path.display(),
-                e
-            )
-        })?;
-        if file_type.is_dir() {
-            Box::pin(copy_dir_recursive(&src_path, &dst_path)).await?;
-        } else {
-            tokiofs::copy(&src_path, &dst_path).await?;
-        }
-    }
-    Ok(())
-}
-
 pub fn get_local_package_full_path(in_dir: &Path, local_package: &LocalPackage) -> PathBuf {
     if local_package.local.is_absolute() {
         local_package.local.clone()
@@ -129,7 +88,7 @@ pub fn scrub_package_name_secret_env_vars(package_name: &str) -> Option<Cow<'_, 
 /// between "directory missing entirely" and "directory present but missing
 /// `dbt_project.yml`".
 fn missing_dbt_project_error(checkout_path: &Path, dir_exists: bool) -> Box<dbt_common::FsError> {
-    let normalized = checkout_path.normalize();
+    let normalized = normalize(checkout_path);
     if dir_exists {
         fs_err!(
             ErrorCode::IoError,
@@ -247,7 +206,7 @@ mod tests {
         // Build the expected path via `normalize()` so the comparison uses the
         // platform's path separator (`/repo/common` on Unix, `\repo\common` on
         // Windows) rather than hard-coded forward slashes.
-        let expected = checkout_path.normalize().display().to_string();
+        let expected = normalize(checkout_path).display().to_string();
         assert!(
             msg.contains(&expected),
             "expected normalized path in message, got: {msg}"

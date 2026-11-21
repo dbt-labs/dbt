@@ -1,0 +1,7 @@
+kind: Fixes
+body: dbt retry after a parse-time failure no longer retries nodes outside the original --select
+time: 2026-10-15T12:33:25.177909-05:00
+custom:
+    author: HannanNaeem
+    issue: "16723"
+    project: dbt

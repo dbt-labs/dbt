@@ -1,0 +1,6 @@
+# This project contains examples using BigQuery adapter methods that don't require any database connection
+flags:
+  send_anonymous_usage_stats: false
+  use_catalogs_v2: false
+name: test
+profile: fusion_tests

@@ -15,13 +15,11 @@ workspace = true
 [dependencies]
 dbt-adapter-core = { workspace = true }
 dbt-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-schemas = { workspace = true }
 
 dialoguer = { workspace = true }
-
 serde = { workspace = true, features = ["derive"] }
-
-dbt-fusion-workspace-hack = { version = "0.1" }
 
 [lib]
 name = "dbt_profile_schemas"

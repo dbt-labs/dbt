@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: test_model
+    description: "Test model to reproduce Redshift persist_docs bug"
+    columns:
+      - name: id
+        description: "The unique identifier"
+      - name: name
+        description: "The person's name"
+      - name: age
+        description: "The person's age"
+      - name: department
+        description: "The person's department"
+

@@ -303,7 +303,7 @@ impl<'a> PackageListing<'a> {
                     Entry::Vacant(entry) => {
                         entry.insert(UnpinnedPackage::Local(LocalUnpinnedPackage {
                             local: full_path,
-                            name: Some(dbt_project.name),
+                            name: dbt_project.name,
                         }));
                     }
                 }
@@ -507,7 +507,7 @@ impl<'a> PackageListing<'a> {
                 )?;
             }
             UnpinnedPackage::Local(local_package) => {
-                let pinned_package = LocalPinnedPackage::try_from(local_package.clone())?;
+                let pinned_package = LocalPinnedPackage::from(local_package.clone());
                 if let Some(existing_local_unpinned_package) =
                     self.packages.get_mut(&pinned_package.name)
                 {
@@ -537,7 +537,7 @@ impl<'a> PackageListing<'a> {
                         pinned_package.name.to_string(),
                         UnpinnedPackage::Local(LocalUnpinnedPackage {
                             local: pinned_package.local,
-                            name: Some(pinned_package.name.clone()),
+                            name: pinned_package.name.clone(),
                         }),
                     );
                 }

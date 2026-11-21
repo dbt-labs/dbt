@@ -1,0 +1,12 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/b.sql
+`dbt-test-env`.`adapters_bigquery_create_schema`.`a`
+ Rendering models/b.sql
+`dbt-test-env`.`adapters_bigquery_create_schema`.`a`
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

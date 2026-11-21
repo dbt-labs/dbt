@@ -1,0 +1,17 @@
+packages:
+  - dbt-docs-lib
+  - web
+
+# Security floors for transitive dependencies. Remove an entry when its parent
+# requires the patched version on its own.
+overrides:
+  # GHSA-3g3m-2fjr-6pw4. @storybook/react-vite pins this plugin at ^0.7.0, which uses glob ^10.
+  '@joshwooding/vite-plugin-react-docgen-typescript>glob': ^14.0.6
+  # GHSA-g3hv-75wg-m249. Do not override minimatch globally: glob 13 needs the minimatch 10 API.
+  'eslint-plugin-storybook>@typescript-eslint/utils': ^8.73.0
+  # GHSA-rj75-hqrm-r3gf. Stays inside the range that tailwindcss 3 accepts.
+  'postcss-selector-parser@<6.1.5': ^6.1.6
+  # GHSA-68fv-2mgg-jv7q.
+  'source-map-js@<1.2.2': ^1.2.2
+  # GHSA-mrhx-c7xc-m3w5. The copy that eslint-plugin-react-hooks pulls in.
+  'zod@<4.6.6': ^4.6.7

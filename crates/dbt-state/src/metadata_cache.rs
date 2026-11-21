@@ -3,7 +3,8 @@
 //! The cache is keyed by rendered relation name and stores only metadata that is
 //! expensive or redundant to fetch while constructing service payloads. Failed
 //! metadata lookups are deliberately not cached so callers can fail open and
-//! retry later in the same invocation.
+//! retry later in the same invocation. A known answer of "absent" is cached,
+//! e.g. a table schema missing from a fetch's result.
 
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -12,25 +13,31 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use tokio::sync::{Mutex, OwnedMutexGuard};
+
+use crate::column_aware::TableColumns;
 
 #[derive(Debug, Default)]
 pub struct RunCacheMetadataCache {
     ttl: Option<Duration>,
-    relation_exists: DashMap<String, TimedEntry<bool>>,
-    last_modified_epochs: DashMap<String, TimedEntry<Option<i64>>>,
-    lookup_errors: DashMap<String, TimedEntry<String>>,
-    in_flight: DashMap<String, Arc<FlightState>>,
+    relation_exists: SccHashMap<String, TimedEntry<bool>>,
+    last_modified_epochs: SccHashMap<String, TimedEntry<Option<i64>>>,
+    /// Column schemas for column-aware reuse. `None` means the table is known
+    /// to be absent, unreadable, or to have a column type that can't be
+    /// rendered.
+    table_schemas: SccHashMap<String, TimedEntry<Option<TableColumns>>>,
+    lookup_errors: SccHashMap<String, TimedEntry<String>>,
+    in_flight: SccHashMap<String, Arc<FlightState>>,
     /// Per-key version counters, kept separate from `in_flight` so a version
     /// survives the refcounted `FlightState` entry being dropped and recreated
     /// while nobody is in flight for that key. See `bump_version`.
-    versions: DashMap<String, Arc<AtomicU64>>,
+    versions: SccHashMap<String, Arc<AtomicU64>>,
     generation: AtomicU64,
     write_lock: StdMutex<()>,
     /// Coalesces BigQuery freshness lookups by database and schema.
-    schema_fetch_coalescers: DashMap<(String, String), Arc<SchemaFetchCoalescer>>,
+    schema_fetch_coalescers: SccHashMap<(String, String), Arc<SchemaFetchCoalescer>>,
     /// Protects coalescer-map refcounts independently of cache writes.
     coalescer_lock: StdMutex<()>,
 }
@@ -204,6 +211,11 @@ impl RunCacheMetadataCache {
         get_cached(&self.last_modified_epochs, relation, self.ttl)
     }
 
+    /// Outer `None`: not cached. Inner `None`: cached as absent.
+    pub fn table_schema(&self, relation: &str) -> Option<Option<TableColumns>> {
+        get_cached(&self.table_schemas, relation, self.ttl)
+    }
+
     pub fn lookup_error(&self, lookup: &str) -> Option<String> {
         get_cached(&self.lookup_errors, lookup, self.ttl)
     }
@@ -226,10 +238,27 @@ impl RunCacheMetadataCache {
         );
     }
 
+    pub fn insert_table_schema(&self, relation: impl Into<String>, columns: Option<TableColumns>) {
+        self.insert_value(
+            &self.table_schemas,
+            "table_schema",
+            relation.into(),
+            columns,
+        );
+    }
+
+    /// Drops a cached column schema and stops an in-flight fetch of it from
+    /// being cached, leaving the relation's other metadata in place.
+    pub fn remove_table_schema(&self, relation: &str) {
+        let _guard = lock_write(&self.write_lock);
+        self.bump_version(&lookup_error_key("table_schema", relation));
+        self.table_schemas.remove_sync(relation);
+    }
+
     pub fn remove_last_modified_epoch(&self, relation: &str) {
         let _guard = lock_write(&self.write_lock);
         self.bump_version(&lookup_error_key("last_modified_epoch", relation));
-        self.last_modified_epochs.remove(relation);
+        self.last_modified_epochs.remove_sync(relation);
     }
 
     pub fn insert_lookup_error(&self, lookup: impl Into<String>, error: impl Into<String>) {
@@ -237,13 +266,13 @@ impl RunCacheMetadataCache {
         let _guard = lock_write(&self.write_lock);
         self.bump_version(&lookup);
         self.lookup_errors
-            .insert(lookup, TimedEntry::new(error.into()));
+            .upsert_sync(lookup, TimedEntry::new(error.into()));
     }
 
     pub fn remove_lookup_error(&self, lookup: &str) {
         let _guard = lock_write(&self.write_lock);
         self.bump_version(lookup);
-        self.lookup_errors.remove(lookup);
+        self.lookup_errors.remove_sync(lookup);
     }
 
     /// Drop a cached `relation_exists` lookup failure. Callers use this after a
@@ -261,15 +290,14 @@ impl RunCacheMetadataCache {
 
     pub fn invalidate_relation_metadata(&self, relation: &str) {
         let _guard = lock_write(&self.write_lock);
-        for kind in ["relation_exists", "last_modified_epoch"] {
-            self.bump_version(&lookup_error_key(kind, relation));
+        for kind in ["relation_exists", "last_modified_epoch", "table_schema"] {
+            let lookup = lookup_error_key(kind, relation);
+            self.bump_version(&lookup);
+            self.lookup_errors.remove_sync(&lookup);
         }
-        self.relation_exists.remove(relation);
-        self.last_modified_epochs.remove(relation);
-        self.lookup_errors
-            .remove(&lookup_error_key("relation_exists", relation));
-        self.lookup_errors
-            .remove(&lookup_error_key("last_modified_epoch", relation));
+        self.relation_exists.remove_sync(relation);
+        self.last_modified_epochs.remove_sync(relation);
+        self.table_schemas.remove_sync(relation);
     }
 
     pub async fn get_or_try_insert_relation_exists<E, F, Fut>(
@@ -296,6 +324,12 @@ impl RunCacheMetadataCache {
 
     pub fn begin_last_modified_prefetch(&self, relation: &str) -> MetadataPrefetchGuard<'_> {
         MetadataPrefetchGuard::new(self, lookup_error_key("last_modified_epoch", relation))
+    }
+
+    /// Like [`Self::begin_last_modified_prefetch`], for a relation's column
+    /// schema. Commit with [`MetadataPrefetchGuard::insert_table_schema`].
+    pub fn begin_table_schema_prefetch(&self, relation: &str) -> MetadataPrefetchGuard<'_> {
+        MetadataPrefetchGuard::new(self, lookup_error_key("table_schema", relation))
     }
 
     /// Merge relations into the schema batch and wait for its query gate.
@@ -360,7 +394,7 @@ impl RunCacheMetadataCache {
     /// `clear()`; the generation check rejects writes started before a clear.
     fn bump_version(&self, key: &str) {
         self.versions
-            .entry(key.to_string())
+            .entry_sync(key.to_string())
             .or_default()
             .fetch_add(1, Ordering::Relaxed);
     }
@@ -368,8 +402,7 @@ impl RunCacheMetadataCache {
     /// Current version for an arbitrary (already-namespaced) key.
     fn version_for_key(&self, key: &str) -> u64 {
         self.versions
-            .get(key)
-            .map(|version| version.load(Ordering::Relaxed))
+            .read_sync(key, |_, version| version.load(Ordering::Relaxed))
             .unwrap_or(0)
     }
 
@@ -380,7 +413,7 @@ impl RunCacheMetadataCache {
 
     fn insert_value<T>(
         &self,
-        map: &DashMap<String, TimedEntry<T>>,
+        map: &SccHashMap<String, TimedEntry<T>>,
         kind: &str,
         key: String,
         value: T,
@@ -394,16 +427,17 @@ impl RunCacheMetadataCache {
     pub fn clear(&self) {
         let _guard = lock_write(&self.write_lock);
         self.generation.fetch_add(1, Ordering::Relaxed);
-        self.relation_exists.clear();
-        self.last_modified_epochs.clear();
-        self.lookup_errors.clear();
+        self.relation_exists.clear_sync();
+        self.last_modified_epochs.clear_sync();
+        self.table_schemas.clear_sync();
+        self.lookup_errors.clear_sync();
     }
 }
 
 async fn get_or_try_insert<T, E, F, Fut>(
     cache: &RunCacheMetadataCache,
-    map: &DashMap<String, TimedEntry<T>>,
-    errors: &DashMap<String, TimedEntry<String>>,
+    map: &SccHashMap<String, TimedEntry<T>>,
+    errors: &SccHashMap<String, TimedEntry<String>>,
     ttl: Option<Duration>,
     lookup_kind: &str,
     key: &str,
@@ -455,7 +489,7 @@ where
                 value.clone(),
             );
         } else if let Err(error) = &result {
-            errors.insert(flight_guard.key.clone(), TimedEntry::new(error.to_string()));
+            errors.upsert_sync(flight_guard.key.clone(), TimedEntry::new(error.to_string()));
         }
         return result;
     }
@@ -488,11 +522,20 @@ impl<'a> MetadataPrefetchGuard<'a> {
         self.lock_guard = Some(Arc::clone(&self.state.lock).lock_owned().await);
     }
 
-    pub fn insert_last_modified_epoch(&self, relation: impl Into<String>, epoch: Option<i64>) {
+    /// Like [`Self::acquire`], but takes the freshness snapshot once the lock
+    /// is held, for callers that start their fetch only after acquiring. An
+    /// invalidation that lands while this caller waits on another holder then
+    /// doesn't reject a fetch that began after it.
+    pub async fn acquire_for_fetch(&mut self) {
+        self.acquire().await;
         let _write_guard = lock_write(&self.cache.write_lock);
-        if self.cache.generation.load(Ordering::Relaxed) != self.generation
-            || self.cache.version_for_key(&self.key) != self.version
-        {
+        self.generation = self.cache.generation.load(Ordering::Relaxed);
+        self.version = self.cache.version_for_key(&self.key);
+    }
+
+    pub fn insert_last_modified_epoch(&self, relation: impl Into<String>, epoch: Option<i64>) {
+        debug_assert!(self.key.starts_with("last_modified_epoch:"), "{}", self.key);
+        if !self.insert_if_fresh(&self.cache.last_modified_epochs, relation.into(), epoch) {
             // The cache was invalidated while this fetch was in flight; the
             // result is stale and must not be committed. The caller's miss
             // will be retried under the new generation/version.
@@ -501,15 +544,35 @@ impl<'a> MetadataPrefetchGuard<'a> {
                 "dropping stale last-modified epoch write: cache generation/version changed \
                  since prefetch began"
             );
-            return;
         }
-        commit_value(
-            &self.cache.last_modified_epochs,
-            &self.cache.lookup_errors,
-            &self.key,
-            relation.into(),
-            epoch,
-        );
+    }
+
+    /// Caches a column schema unless the relation was invalidated (or the
+    /// cache cleared) since this guard began. Returns whether it was cached.
+    /// Use only on a guard from `begin_table_schema_prefetch`.
+    pub fn insert_table_schema(
+        &self,
+        relation: impl Into<String>,
+        columns: Option<TableColumns>,
+    ) -> bool {
+        debug_assert!(self.key.starts_with("table_schema:"), "{}", self.key);
+        self.insert_if_fresh(&self.cache.table_schemas, relation.into(), columns)
+    }
+
+    fn insert_if_fresh<T>(
+        &self,
+        map: &SccHashMap<String, TimedEntry<T>>,
+        relation: String,
+        value: T,
+    ) -> bool {
+        let _write_guard = lock_write(&self.cache.write_lock);
+        if self.cache.generation.load(Ordering::Relaxed) != self.generation
+            || self.cache.version_for_key(&self.key) != self.version
+        {
+            return false;
+        }
+        commit_value(map, &self.cache.lookup_errors, &self.key, relation, value);
+        true
     }
 }
 
@@ -525,14 +588,14 @@ impl Drop for MetadataPrefetchGuard<'_> {
 }
 
 fn commit_value<T>(
-    map: &DashMap<String, TimedEntry<T>>,
-    errors: &DashMap<String, TimedEntry<String>>,
+    map: &SccHashMap<String, TimedEntry<T>>,
+    errors: &SccHashMap<String, TimedEntry<String>>,
     lookup: &str,
     key: String,
     value: T,
 ) {
-    errors.remove(lookup);
-    map.insert(key, TimedEntry::new(value));
+    errors.remove_sync(lookup);
+    map.upsert_sync(key, TimedEntry::new(value));
 }
 
 fn lock_write(lock: &StdMutex<()>) -> std::sync::MutexGuard<'_, ()> {
@@ -540,47 +603,55 @@ fn lock_write(lock: &StdMutex<()>) -> std::sync::MutexGuard<'_, ()> {
 }
 
 /// Get or create an entry and increment its refcount under `lock`.
-fn acquire_refcounted<K, V>(map: &DashMap<K, Arc<V>>, lock: &StdMutex<()>, key: K) -> Arc<V>
+fn acquire_refcounted<K, V>(map: &SccHashMap<K, Arc<V>>, lock: &StdMutex<()>, key: K) -> Arc<V>
 where
     K: std::hash::Hash + Eq,
     V: Default + RefCounted,
 {
     let _guard = lock_write(lock);
-    let value = map
-        .entry(key)
-        .or_insert_with(|| Arc::new(V::default()))
-        .clone();
+    let value = Arc::clone(
+        map.entry_sync(key)
+            .or_insert_with(|| Arc::new(V::default()))
+            .get(),
+    );
     value.users().fetch_add(1, Ordering::Relaxed);
     value
 }
 
-fn release_refcounted<K, V>(map: &DashMap<K, Arc<V>>, lock: &StdMutex<()>, key: &K, value: &Arc<V>)
-where
+fn release_refcounted<K, V>(
+    map: &SccHashMap<K, Arc<V>>,
+    lock: &StdMutex<()>,
+    key: &K,
+    value: &Arc<V>,
+) where
     K: std::hash::Hash + Eq,
     V: RefCounted,
 {
     let _guard = lock_write(lock);
     if value.users().fetch_sub(1, Ordering::Relaxed) == 1 {
-        map.remove_if(key, |_, current| Arc::ptr_eq(current, value));
+        map.remove_if_sync(key, |current| Arc::ptr_eq(current, value));
     }
 }
 
 fn get_cached<T: Clone>(
-    map: &DashMap<String, TimedEntry<T>>,
+    map: &SccHashMap<String, TimedEntry<T>>,
     key: &str,
     ttl: Option<Duration>,
 ) -> Option<T> {
-    if let Some(value) = map.get(key) {
-        if value.is_expired(ttl) {
-            let fetched_at = value.fetched_at;
-            drop(value);
-            map.remove_if(key, |_, value| value.fetched_at == fetched_at);
-            None
+    // Read under the bucket lock, then remove after it is released.
+    let read = map.read_sync(key, |_, entry| {
+        if entry.is_expired(ttl) {
+            Err(entry.fetched_at)
         } else {
-            Some(value.value.clone())
+            Ok(entry.value.clone())
         }
-    } else {
-        None
+    })?;
+    match read {
+        Ok(value) => Some(value),
+        Err(fetched_at) => {
+            map.remove_if_sync(key, |entry| entry.fetched_at == fetched_at);
+            None
+        }
     }
 }
 
@@ -1098,10 +1169,8 @@ mod tests {
         assert_eq!(
             cache
                 .schema_fetch_coalescers
-                .get(&key)
-                .unwrap()
-                .users
-                .load(Ordering::Relaxed),
+                .read_sync(&key, |_, coalescer| coalescer.users.load(Ordering::Relaxed))
+                .unwrap(),
             1
         );
         drop(pending_lock);
@@ -1118,15 +1187,13 @@ mod tests {
         assert_eq!(
             cache
                 .schema_fetch_coalescers
-                .get(&key)
-                .unwrap()
-                .users
-                .load(Ordering::Relaxed),
+                .read_sync(&key, |_, coalescer| coalescer.users.load(Ordering::Relaxed))
+                .unwrap(),
             1
         );
 
         drop(holder);
-        assert!(!cache.schema_fetch_coalescers.contains_key(&key));
+        assert!(!cache.schema_fetch_coalescers.contains_sync(&key));
     }
 
     #[tokio::test]
@@ -1237,5 +1304,105 @@ mod tests {
 
         assert_eq!(cache.last_modified_epoch(&fresh_name), Some(Some(100)));
         assert_eq!(cache.last_modified_epoch(&stale_name), None);
+    }
+
+    fn schema_columns() -> Option<TableColumns> {
+        Some(Arc::from(vec![crate::proto::query_cache::ColumnInfo {
+            name: "ID".to_string(),
+            r#type: "NUMBER(38,0)".to_string(),
+        }]))
+    }
+
+    #[test]
+    fn table_schema_prefetch_commits_when_fresh() {
+        let cache = RunCacheMetadataCache::new();
+        // An invalidation before the guard begins does not affect it.
+        cache.invalidate_relation_metadata("analytics.orders");
+        let guard = cache.begin_table_schema_prefetch("analytics.orders");
+        assert!(guard.insert_table_schema("analytics.orders", schema_columns()));
+        assert!(matches!(
+            cache.table_schema("analytics.orders"),
+            Some(Some(_))
+        ));
+    }
+
+    #[test]
+    fn table_schema_prefetch_drops_write_after_invalidation() {
+        let cache = RunCacheMetadataCache::new();
+        let guard = cache.begin_table_schema_prefetch("analytics.orders");
+        cache.invalidate_relation_metadata("analytics.orders");
+        assert!(!guard.insert_table_schema("analytics.orders", schema_columns()));
+        assert_eq!(cache.table_schema("analytics.orders"), None);
+    }
+
+    #[test]
+    fn table_schema_prefetch_drops_write_after_clear() {
+        let cache = RunCacheMetadataCache::new();
+        let guard = cache.begin_table_schema_prefetch("analytics.orders");
+        cache.clear();
+        assert!(!guard.insert_table_schema("analytics.orders", None));
+        assert_eq!(cache.table_schema("analytics.orders"), None);
+    }
+
+    #[test]
+    fn invalidate_and_clear_drop_table_schemas() {
+        let cache = RunCacheMetadataCache::new();
+        cache.insert_table_schema("analytics.orders", schema_columns());
+        cache.insert_table_schema("analytics.customers", None);
+        cache.invalidate_relation_metadata("analytics.orders");
+        assert_eq!(cache.table_schema("analytics.orders"), None);
+        assert_eq!(cache.table_schema("analytics.customers"), Some(None));
+        cache.clear();
+        assert_eq!(cache.table_schema("analytics.customers"), None);
+    }
+
+    #[test]
+    fn table_schema_entries_expire_with_ttl() {
+        let cache = RunCacheMetadataCache::with_ttl(Duration::from_millis(1));
+        cache.insert_table_schema("analytics.orders", schema_columns());
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(cache.table_schema("analytics.orders"), None);
+    }
+
+    #[test]
+    fn last_modified_invalidation_leaves_table_schema_in_flight_untouched() {
+        let cache = RunCacheMetadataCache::new();
+        let guard = cache.begin_table_schema_prefetch("analytics.orders");
+        cache.remove_last_modified_epoch("analytics.orders");
+        assert!(guard.insert_table_schema("analytics.orders", schema_columns()));
+    }
+
+    #[test]
+    fn remove_table_schema_keeps_other_metadata() {
+        let cache = RunCacheMetadataCache::new();
+        cache.insert_relation_exists("analytics.orders", true);
+        cache.insert_last_modified_epoch("analytics.orders", Some(7));
+        cache.insert_table_schema("analytics.orders", schema_columns());
+        let guard = cache.begin_table_schema_prefetch("analytics.orders");
+        cache.remove_table_schema("analytics.orders");
+        assert_eq!(cache.table_schema("analytics.orders"), None);
+        assert!(
+            !guard.insert_table_schema("analytics.orders", schema_columns()),
+            "a fetch begun before the removal is not cached"
+        );
+        assert_eq!(cache.relation_exists("analytics.orders"), Some(true));
+        assert_eq!(cache.last_modified_epoch("analytics.orders"), Some(Some(7)));
+    }
+
+    #[tokio::test]
+    async fn acquire_for_fetch_snapshots_after_waiting() {
+        let cache = RunCacheMetadataCache::new();
+        let mut holder = cache.begin_table_schema_prefetch("analytics.orders");
+        holder.acquire_for_fetch().await;
+        let mut waiter = cache.begin_table_schema_prefetch("analytics.orders");
+        // Invalidated while `waiter` waits on `holder`'s lock.
+        cache.invalidate_relation_metadata("analytics.orders");
+        assert!(!holder.insert_table_schema("analytics.orders", schema_columns()));
+        drop(holder);
+        waiter.acquire_for_fetch().await;
+        assert!(
+            waiter.insert_table_schema("analytics.orders", schema_columns()),
+            "the waiter's fetch starts after the invalidation, so it is fresh"
+        );
     }
 }

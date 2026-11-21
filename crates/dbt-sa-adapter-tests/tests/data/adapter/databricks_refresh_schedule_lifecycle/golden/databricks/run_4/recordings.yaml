@@ -1,0 +1,108 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.test.scheduled_mv:
+- sequence: 0
+  type: execute
+  sql: describe extended `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_mv`
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT *
+    FROM `SYSTEM`.`INFORMATION_SCHEMA`.`VIEWS`
+    WHERE TABLE_CATALOG = 'e2e'
+    AND TABLE_SCHEMA = 'adapters_databricks_refresh_schedule_lifecycle'
+    AND TABLE_NAME = 'scheduled_mv'
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_refresh_schedule_lifecycle'
+    AND table_name = 'scheduled_mv'
+- sequence: 3
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_mv`
+- sequence: 4
+  type: execute
+  sql: |-
+    -- Currently only schedule can be altered
+    ALTER MATERIALIZED VIEW `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_mv`
+    ALTER SCHEDULE CRON '0 0 * * * ? *'
+model.test.scheduled_st:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_refresh_schedule_lifecycle'
+- sequence: 1
+  type: execute
+  sql: describe extended `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_st`
+- sequence: 2
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_st`
+- sequence: 3
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_refresh_schedule_lifecycle'
+    AND table_name = 'scheduled_st'
+- sequence: 4
+  type: execute
+  sql: |-
+    CREATE OR REFRESH STREAMING TABLE `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_st`
+    
+    
+    
+    
+    tblproperties ('refresh_test_marker' = 'changed' 
+    )
+    
+    AS select id from STREAM(`e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`refresh_source`)
+- sequence: 5
+  type: execute
+  sql: |-
+    ALTER STREAMING TABLE `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_st`
+    ADD SCHEDULE CRON '0 0 * * * ? *'
+operation.test.test-on-run-end-0:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE EXTENDED `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_mv`
+- sequence: 1
+  type: execute
+  sql: DESCRIBE EXTENDED `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_st`
+- sequence: 2
+  type: execute
+  sql: SHOW TBLPROPERTIES `e2e`.`adapters_databricks_refresh_schedule_lifecycle`.`scheduled_st`

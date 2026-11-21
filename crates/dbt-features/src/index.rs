@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use dbt_adapter::sql_types::TypeOps;
 use dbt_common::io_args::EvalArgs;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{ErrorCode, FsResult};
@@ -14,7 +15,7 @@ use dbt_index_core::column_impact::UnavailableColumnImpact;
 use dbt_index_core::column_lineage::UnavailableColumnLineage;
 use dbt_lineage_core::{CllEdge, PlanGrainInfo};
 use dbt_schema_store::SchemaStoreTrait;
-use dbt_schemas::schemas::manifest::{DbtManifest, DbtNode};
+use dbt_schemas::schemas::manifest::{DbtManifest, DbtNode, ManifestDataTest};
 use dbt_schemas::state::ResolverState;
 use dbt_tasks_core::RunTaskResults;
 
@@ -121,6 +122,24 @@ fn unique_key_to_grain(uk: &Option<dbt_schemas::schemas::common::DbtUniqueKey>) 
     }
 }
 
+/// The node a generic test is on. A source test has no `attached_node`, as in dbt-core, so its
+/// subject is the one source it depends on.
+fn test_subject<'a>(test: &'a ManifestDataTest, manifest: &DbtManifest) -> Option<&'a str> {
+    if let Some(attached) = test.attached_node.as_deref() {
+        return Some(attached);
+    }
+    let mut sources = test
+        .__base_attr__
+        .depends_on
+        .nodes
+        .iter()
+        .filter(|uid| manifest.sources.contains_key(*uid));
+    match (sources.next(), sources.next()) {
+        (Some(only), None) => Some(only.as_str()),
+        _ => None,
+    }
+}
+
 /// Write metadata parquet epoch files from in-memory typed structs.
 ///
 /// Writes only `target/private/metadata/` epoch files — no DuckDB, no `target/private/index/`.
@@ -131,23 +150,58 @@ pub fn write_metadata_parquet(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
+    type_ops: Option<&dyn TypeOps>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
     node_classifiers: &HashMap<String, Vec<String>>,
     column_classifiers: &HashMap<String, HashMap<String, Vec<String>>>,
 ) {
-    write_metadata_parquet_impl(
+    let _ = write_metadata_parquet_with_errors(
         arg,
         manifest,
         resolved_state,
         schema_store,
+        type_ops,
         column_lineage,
         recomputed_column_lineage_targets,
         grain_infos,
         node_classifiers,
         column_classifiers,
     );
+}
+
+/// Like [`write_metadata_parquet`], but returns the non-fatal write errors so a
+/// caller that needs publication status can observe them.
+#[allow(clippy::too_many_arguments)]
+pub fn write_metadata_parquet_with_errors(
+    arg: &EvalArgs,
+    manifest: &DbtManifest,
+    resolved_state: Option<&ResolverState>,
+    schema_store: Option<&dyn SchemaStoreTrait>,
+    type_ops: Option<&dyn TypeOps>,
+    column_lineage: Option<&[CllEdge]>,
+    recomputed_column_lineage_targets: &HashSet<String>,
+    grain_infos: &HashMap<String, PlanGrainInfo>,
+    node_classifiers: &HashMap<String, Vec<String>>,
+    column_classifiers: &HashMap<String, HashMap<String, Vec<String>>>,
+) -> Vec<String> {
+    let errors = write_metadata_parquet_impl(
+        arg,
+        manifest,
+        resolved_state,
+        schema_store,
+        type_ops,
+        column_lineage,
+        recomputed_column_lineage_targets,
+        grain_infos,
+        node_classifiers,
+        column_classifiers,
+    );
+    for error in &errors {
+        emit_warn_log_message(ErrorCode::Generic, error);
+    }
+    errors
 }
 
 /// Merge declared (YAML) classifier labels with propagated labels into a
@@ -187,12 +241,13 @@ fn write_metadata_parquet_impl(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
+    type_ops: Option<&dyn TypeOps>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
     node_classifiers: &HashMap<String, Vec<String>>,
     column_classifiers: &HashMap<String, HashMap<String, Vec<String>>>,
-) {
+) -> Vec<String> {
     use dbt_common::static_analysis::is_strict_static_analysis;
     use dbt_index_core::hash_str;
 
@@ -213,7 +268,7 @@ fn write_metadata_parquet_impl(
         match node {
             DbtNode::Test(t) => {
                 if let Some(tm) = &t.test_metadata {
-                    if let Some(attached) = t.attached_node.as_deref() {
+                    if let Some(attached) = test_subject(t, manifest) {
                         match tm.name.as_str() {
                             "unique_combination_of_columns" => {
                                 if let Some(cols) =
@@ -303,6 +358,7 @@ fn write_metadata_parquet_impl(
                 grain: serde_json::to_string(&grain).unwrap_or_default(),
                 grain_declared: serde_json::to_string(&grain_declared).unwrap_or_default(),
                 grain_tested: serde_json::to_string(&grain_tested_val).unwrap_or_default(),
+                grain_inferred: serde_json::to_string(&grain_inferred).unwrap_or_default(),
                 classifiers: merge_classifiers_json(
                     node_declared_classifiers(node),
                     node_classifiers.get(uid.as_str()),
@@ -328,6 +384,7 @@ fn write_metadata_parquet_impl(
                     grain: "[]".to_string(),
                     grain_declared: "[]".to_string(),
                     grain_tested: "[]".to_string(),
+                    grain_inferred: "[]".to_string(),
                     classifiers: serde_json::to_string(&node_clf)
                         .unwrap_or_else(|_| "[]".to_string()),
                     table_role: None,
@@ -370,7 +427,12 @@ fn write_metadata_parquet_impl(
                                     unique_id: uid.to_string(),
                                     column_name: field.name().clone(),
                                     column_index: idx as i32,
-                                    column_type: Some(field.data_type().to_string()),
+                                    // The adapter's SQL type, not the Arrow type.
+                                    column_type: type_ops
+                                        .and_then(|t| {
+                                            t.get_original_sql_type_from_field(field).ok()
+                                        })
+                                        .map(|t| t.into_owned()),
                                     description: None,
                                     classifiers: merge_classifiers_vec(
                                         declared,
@@ -435,6 +497,54 @@ fn write_metadata_parquet_impl(
         }
     }
 
+    // Functions and sources live in their own manifest maps, so the loop above never sees them.
+    // Functions compile SQL of their own; write it with the strict-analysis rows when there is
+    // any. A source has no SQL and no primary key, so only its tests give it a grain.
+    if arg.write_metadata
+        && (arg.static_analysis.is_some_and(is_strict_static_analysis)
+            || arg.infer_schemas_and_typeless)
+    {
+        for (uid, function) in &manifest.functions {
+            let compiled_code = function.__base_attr__.compiled_code.clone();
+            compiled_node_rows.push(dbt_metadata_parquet::compiled_node::CompiledNodeRow {
+                unique_id: uid.to_string(),
+                compiled_code_hash: compiled_code.as_deref().map(hash_str),
+                compiled_code,
+                compiled_path: function.__base_attr__.compiled_path.clone(),
+                grain: "[]".to_string(),
+                grain_declared: "[]".to_string(),
+                grain_tested: "[]".to_string(),
+                grain_inferred: "[]".to_string(),
+                classifiers: merge_classifiers_json(
+                    &function.__common_attr__.classifiers,
+                    node_classifiers.get(uid.as_str()),
+                ),
+                table_role: None,
+                ingested_at,
+            });
+        }
+        for (uid, source) in &manifest.sources {
+            let tested = grain_tested.get(uid.as_str()).cloned().unwrap_or_default();
+            let tested = serde_json::to_string(&tested).unwrap_or_default();
+            compiled_node_rows.push(dbt_metadata_parquet::compiled_node::CompiledNodeRow {
+                unique_id: uid.to_string(),
+                compiled_code: None,
+                compiled_code_hash: None,
+                compiled_path: None,
+                grain: tested.clone(),
+                grain_declared: "[]".to_string(),
+                grain_tested: tested,
+                grain_inferred: "[]".to_string(),
+                classifiers: merge_classifiers_json(
+                    &source.__common_attr__.classifiers,
+                    node_classifiers.get(uid.as_str()),
+                ),
+                table_role: None,
+                ingested_at,
+            });
+        }
+    }
+
     // sources: compile/columns (parse/columns now written by parse_state::save)
     for (uid, src) in &manifest.sources {
         // compile/columns — src.columns is already merged with schema types by update_manifest
@@ -467,7 +577,33 @@ fn write_metadata_parquet_impl(
     } else {
         Some(recomputed_column_lineage_targets)
     };
-    let compiled_nodes_targets = targets_opt;
+    // Column lineage is recomputed for models, so the recomputed set holds nothing else, yet
+    // functions, hooks, analyses and snapshots compile and carry compiled SQL of their own, and
+    // seeds and sources carry the grain their tests give them. Left out of the set their rows
+    // were never written, so those columns stayed unset whenever the set was not empty. Only
+    // those types are added: tests keep their own rows.
+    let compiled_nodes_scope: Option<HashSet<String>> = targets_opt.map(|targets| {
+        let mut scope = targets.clone();
+        scope.extend(
+            manifest
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    matches!(
+                        node,
+                        DbtNode::Operation(_)
+                            | DbtNode::Analysis(_)
+                            | DbtNode::Snapshot(_)
+                            | DbtNode::Seed(_)
+                    )
+                })
+                .map(|(uid, _)| uid.to_string()),
+        );
+        scope.extend(manifest.functions.keys().map(|uid| uid.to_string()));
+        scope.extend(manifest.sources.keys().map(|uid| uid.to_string()));
+        scope
+    });
+    let compiled_nodes_targets = compiled_nodes_scope.as_ref();
     let compile_columns_targets = targets_opt;
 
     let cll_dir = arg.metadata_dir().join("compile").join("column_lineage");
@@ -540,7 +676,5 @@ fn write_metadata_parquet_impl(
         );
     }
 
-    for e in errors {
-        emit_warn_log_message(ErrorCode::Generic, e);
-    }
+    errors
 }

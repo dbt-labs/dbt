@@ -7,10 +7,8 @@
 //!  - MUST NOT have any external dependencies on third-party crates, as any
 //!    dependencies here would bloat up everything.
 //!
-//! As such, type aliases for the [MaybeStableHasher] variants of `DashMap` and
-//! `scc::HashMap` are in the `dbt-common` crate instead.
-
-pub mod cancel;
+//! As such, type aliases for the [MaybeStableHasher] variants of `scc::HashMap` and
+//! `scc::HashSet` are in the `dbt-common` crate instead.
 
 pub mod hasher;
 
@@ -40,11 +38,6 @@ pub mod hashset {
         HashSet::with_hasher(crate::hasher::MaybeStableHasherBuilder::default())
     }
 }
-
-#[doc(inline)]
-pub use cancel::Cancellable;
-#[doc(inline)]
-pub use cancel::{CancellationToken, CancellationTokenSource, CancelledError};
 
 #[doc(inline)]
 pub use hasher::{MaybeStableHasher, MaybeStableHasherBuilder};

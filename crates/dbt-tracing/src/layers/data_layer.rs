@@ -1003,9 +1003,19 @@ where
             attributes,
         };
 
-        let root_span = parent_span
-            .as_ref()
-            .map(|ps| ps.scope().from_root().next().expect("Root span must exist"));
+        let root_span = parent_span.as_ref().map(|ps| {
+            ps.scope().from_root().next().unwrap_or_else(|| {
+                panic!(
+                    "Root span must exist. Parent span: `{}`. {}",
+                    ps.name(),
+                    describe_event(
+                        metadata,
+                        &self.get_location(metadata, Some(event.into())),
+                        &log_record.body
+                    )
+                )
+            })
+        });
 
         // Unlike spans, where we expect that they are set-up corerctly and rooted under our special root span,
         // there are multiple valid use-cases for events being logged outside of any span context:
@@ -1026,7 +1036,12 @@ where
         debug_assert!(
             root_span.is_some() || cfg!(any(test, feature = "test-utils")),
             "Event logged outside of span context. Expected root span created via `create_root_info_span`
-            or a process span. Are you logging events after tracing has been shutdown?",
+            or a process span. Are you logging events after tracing has been shutdown? {}",
+            describe_event(
+                metadata,
+                &self.get_location(metadata, Some(event.into())),
+                &log_record.body
+            ),
         );
 
         let mut data_provider = match (root_span.as_ref(), parent_span.as_ref()) {
@@ -1091,6 +1106,32 @@ where
             consumer.on_log_record(&modified_record, &mut data_provider);
         }
     }
+}
+
+/// Identifies an event for the panic messages of span-context invariant violations, so the
+/// offending call site and the thread it ran on can be found from the panic alone.
+fn describe_event(
+    metadata: &tracing::Metadata<'_>,
+    location: &RecordCodeLocation,
+    message: &str,
+) -> String {
+    let thread = std::thread::current();
+    format!(
+        "Event: target `{}`, level {}, emitted at {}:{}, metadata at {}:{}, thread `{}` ({:?}), message: {:?}",
+        metadata.target(),
+        metadata.level(),
+        location.file.as_deref().unwrap_or("<unknown>"),
+        location
+            .line
+            .map_or_else(|| "<unknown>".to_string(), |line| line.to_string()),
+        metadata.file().unwrap_or("<unknown>"),
+        metadata
+            .line()
+            .map_or_else(|| "<unknown>".to_string(), |line| line.to_string()),
+        thread.name().unwrap_or("<unnamed>"),
+        thread.id(),
+        message,
+    )
 }
 
 fn lookup_filtered_parent_span_id<S>(index: usize, curr: &SpanRef<'_, S>) -> Option<u64>

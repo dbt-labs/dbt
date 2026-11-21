@@ -1,0 +1,84 @@
+f1df18e8:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_incremental_simple`
+model.hello_world.incremental:
+- sequence: 0
+  type: execute
+  sql: |-
+    create table `dbt-test-env`.`bigquery_incremental_simple`.`incremental`
+    
+    
+    
+    
+    
+    OPTIONS(
+    description="""my table description\
+    with multiple\
+    lines\
+    """
+    )
+    as (
+    
+    
+    
+    WITH source_data AS (SELECT * FROM `dbt-test-env`.`bigquery_incremental_simple`.`model_a` )
+    
+    
+    
+    SELECT id,
+    field1,
+    field2
+    FROM source_data where id <= 1
+    
+    
+    );
+model.hello_world.model_a:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_incremental_simple`.`model_a`
+    
+    
+    
+    
+    
+    OPTIONS(
+    description="""my description\
+    with multiple\
+    lines\
+    """
+    )
+    as (
+    
+    
+    
+    with source_data as (
+    
+    select 1 as id, 'aaa' as field1, 'bbb' as field2, 111 as field3, 'TTT' as field4
+    union all select 2 as id, 'ccc' as field1, 'ddd' as field2, 222 as field3, 'UUU' as field4
+    )
+    
+    select id
+    ,field1
+    ,field2
+    ,field3
+    ,field4
+    
+    from source_data
+    
+    );
+model.hello_world.view_a:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`bigquery_incremental_simple`.`view_a`
+    OPTIONS(
+    description="""my view description\
+    with multiple\
+    lines\
+    """
+    )
+    as 
+    
+    select * from `dbt-test-env`.`bigquery_incremental_simple`.`model_a`;

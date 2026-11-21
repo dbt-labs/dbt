@@ -2,9 +2,11 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::CodeLocationWithFile;
 use dbt_common::io_args::StaticAnalysisKind;
@@ -20,7 +22,7 @@ use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::nodes::{
     CommonAttributes, DbtExposure, DbtExposureAttr, NodeBaseAttributes,
 };
-use dbt_schemas::schemas::project::{ExposureConfig, ResolvedExposureConfig};
+use dbt_schemas::schemas::project::{ExposureConfig, InlineConfigAliasing, ResolvableConfig};
 use dbt_schemas::schemas::properties::ExposureProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
 use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
@@ -28,18 +30,50 @@ use dbt_schemas::state::{DbtPackage, DbtRuntimeConfig};
 use dbt_yaml::Spanned;
 use minijinja::value::Value as MinijinjaValue;
 use regex::Regex;
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
+
+/// How a package's exposures resolve.
+pub(crate) struct Exposures;
+
+#[async_trait]
+impl ResolvableNode for Exposures {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["exposures"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        let (exposures, disabled_exposures) = resolve_exposures(
+            ctx.arg,
+            // A later definition of an exposure replaces an earlier one.
+            &mut ctx.properties.take_last_entries("exposures"),
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.database,
+            ctx.schema,
+            ctx.adapter_type,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+        )
+        .await?;
+        ctx.nodes.exposures.extend(exposures);
+        ctx.disabled_nodes.exposures.extend(disabled_exposures);
+        Ok(())
+    }
+}
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_exposures(
     args: &ResolveArgs,
-    exposure_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    exposure_properties: &mut BTreeMap<String, PropertiesEntry>,
     package: &DbtPackage,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
@@ -141,7 +175,7 @@ pub async fn resolve_exposures(
                     depends_on,
                     env,
                     base_ctx,
-                    &exposure_properties_config,
+                    &ExposureConfig::from(exposure_properties_config.clone()),
                     database,
                     schema,
                     adapter_type,
@@ -243,11 +277,12 @@ pub async fn resolve_exposures(
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
-pub fn resolve_yaml_depends_on(
+pub fn resolve_yaml_depends_on<T: ResolvableConfig<T> + Serialize + 'static>(
     depends_on: &[Spanned<String>],
     env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
-    exposure_config: &ResolvedExposureConfig,
+    // Only seeds the context the calls render in.
+    config: &T,
     database: &str,
     schema: &str,
     adapter_type: AdapterType,
@@ -257,7 +292,6 @@ pub fn resolve_yaml_depends_on(
     relative_path: &str,
     global_static_analysis: Option<StaticAnalysisKind>,
 ) -> FsResult<(Vec<DbtRef>, Vec<DbtSourceWrapper>, Vec<Vec<String>>)> {
-    let exposure_config: ExposureConfig = exposure_config.clone().into();
     let mut dependent_refs = vec![];
     let mut dependent_sources = vec![];
     let mut dependent_metrics = vec![];
@@ -266,16 +300,17 @@ pub fn resolve_yaml_depends_on(
         depends_on.iter().flat_map(split_depends_on_item).collect();
 
     for dependency in &expanded {
-        let sql_resources: Arc<Mutex<Vec<SqlResource<ExposureConfig>>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let sql_resources: Arc<Mutex<Vec<SqlResource<T>>>> = Arc::new(Mutex::new(Vec::new()));
 
         let mut resolve_model_context = base_ctx.clone();
         resolve_model_context.extend(build_resolve_model_context(
-            &exposure_config,
+            config,
             false,
             adapter_type,
             database,
             schema,
+            None,
+            InlineConfigAliasing::fixed(adapter_type),
             &fqn.join("."),
             fqn.clone(),
             package_name,
@@ -329,7 +364,7 @@ pub fn resolve_yaml_depends_on(
             }
             _ => {
                 return err!(
-                    ErrorCode::Unexpected,
+                    ErrorCode::InvalidConfig,
                     "Invalid dependency input: {}",
                     dependency.as_str()
                 );

@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use dbt_runtime::builder::Builder;
 
@@ -113,13 +114,10 @@ impl Gate {
 
 /// Blocks until `predicate` holds, panicking if that takes too long.
 fn wait_for(what: &str, mut predicate: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(5);
     while !predicate() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -199,4 +197,106 @@ fn lowering_the_thread_cap_below_the_running_threads_stops_spawning() {
         futures::executor::block_on(handle).unwrap();
     }
     drop(rt);
+}
+
+/// Counts `on_thread_stop` calls, and whether each ran on a pool worker.
+fn counting_stop_hook(builder: &mut Builder) -> (Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let stops = Arc::new(AtomicUsize::new(0));
+    let stops_on_worker = Arc::new(AtomicUsize::new(0));
+    let (s, w) = (Arc::clone(&stops), Arc::clone(&stops_on_worker));
+    // `stops` goes last so a test that waits on it also sees `stops_on_worker`.
+    builder.on_thread_stop(move || {
+        if dbt_runtime::is_pool_worker() {
+            w.fetch_add(1, Ordering::SeqCst);
+        }
+        s.fetch_add(1, Ordering::SeqCst);
+    });
+    (stops, stops_on_worker)
+}
+
+#[test]
+fn on_thread_stop_runs_when_an_idle_worker_times_out() {
+    let mut builder = Builder::new();
+    builder
+        .max_blocking_threads(1)
+        .keep_alive(Duration::from_millis(20));
+    let (stops, stops_on_worker) = counting_stop_hook(&mut builder);
+    let rt = builder.build();
+
+    futures::executor::block_on(rt.spawn_blocking(|| ())).unwrap();
+
+    wait_for("the idle worker to run on_thread_stop", || {
+        stops.load(Ordering::SeqCst) > 0
+    });
+    assert_eq!(stops_on_worker.load(Ordering::SeqCst), 1);
+
+    assert!(rt.shutdown_timeout(Duration::from_secs(5)));
+    assert_eq!(
+        stops.load(Ordering::SeqCst),
+        1,
+        "the worker had already exited"
+    );
+}
+
+#[test]
+fn shutdown_waits_for_on_thread_stop() {
+    let mut builder = Builder::new();
+    builder
+        .max_blocking_threads(1)
+        .keep_alive(Duration::from_secs(600));
+    let (stops, stops_on_worker) = counting_stop_hook(&mut builder);
+    let rt = builder.build();
+
+    futures::executor::block_on(rt.spawn_blocking(|| ())).unwrap();
+    assert_eq!(stops.load(Ordering::SeqCst), 0);
+
+    assert!(rt.shutdown_timeout(Duration::from_secs(5)));
+    assert_eq!(stops.load(Ordering::SeqCst), 1);
+    assert_eq!(stops_on_worker.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn shutdown_timeout_reports_an_on_thread_stop_still_running() {
+    let gate = Arc::new(Gate::new());
+    let stops = Arc::new(AtomicUsize::new(0));
+    let rt = {
+        let gate = Arc::clone(&gate);
+        let stops = Arc::clone(&stops);
+        Builder::new()
+            .max_blocking_threads(1)
+            .on_thread_stop(move || {
+                gate.wait();
+                stops.fetch_add(1, Ordering::SeqCst);
+            })
+            .build()
+    };
+
+    futures::executor::block_on(rt.spawn_blocking(|| ())).unwrap();
+
+    assert!(!rt.shutdown_timeout(Duration::from_millis(50)));
+    gate.open();
+    wait_for("the detached worker to finish on_thread_stop", || {
+        stops.load(Ordering::SeqCst) == 1
+    });
+}
+
+#[test]
+fn shutdown_timeout_reports_a_task_still_running() {
+    let gate = Arc::new(Gate::new());
+    let rt = Builder::new().max_blocking_threads(1).build();
+
+    let started = Arc::new(AtomicBool::new(false));
+    let task = {
+        let gate = Arc::clone(&gate);
+        let started = Arc::clone(&started);
+        rt.spawn_blocking(move || {
+            started.store(true, Ordering::SeqCst);
+            gate.wait();
+        })
+    };
+    wait_for("the task to start", || started.load(Ordering::SeqCst));
+
+    assert!(!rt.shutdown_timeout(Duration::from_millis(50)));
+    gate.open();
+    futures::executor::block_on(task).unwrap();
 }

@@ -7,6 +7,7 @@ pub mod dbt_metrics;
 pub mod event_classifiers;
 pub mod formatters;
 pub mod fs_error_log;
+pub(crate) mod future_incompatibility_log;
 pub mod invocation;
 pub mod layers;
 pub mod middlewares;

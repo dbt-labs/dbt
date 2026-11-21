@@ -1,31 +1,46 @@
+use std::fmt;
+
 use dbt_telemetry::AssetParsed;
 
 use super::{
-    color::{CYAN, GREEN, maybe_apply_color},
-    duration::format_duration_fixed_width,
-    layout::right_align_static_action,
+    color::{CYAN, GREEN, MaybeColored},
+    duration::FixedWidthDuration,
+    layout::RightAligned,
 };
 
-/// Format an asset parsing start message using legacy style.
+/// Displays an asset parsing start message using legacy style.
 /// TODO: either remove any formatting for parsing start, or unify style
 /// with other debug level spans messages.
-pub fn format_asset_parsed_start(asset: &AssetParsed, colorize: bool) -> String {
-    let action = right_align_static_action("Parsing");
-    let action = maybe_apply_color(&GREEN, &action, colorize);
-    format!("{} {}", action, asset.display_path)
+pub struct AssetParsedStart<'a> {
+    pub asset: &'a AssetParsed,
+    pub colorize: bool,
 }
 
-/// Format an asset parsing end message.
-pub fn format_asset_parsed_end(
-    asset: &AssetParsed,
-    duration: std::time::Duration,
-    colorize: bool,
-) -> String {
-    let duration_formatted = format_duration_fixed_width(duration);
-    let path_formatted = maybe_apply_color(&CYAN, &asset.display_path, colorize);
+impl fmt::Display for AssetParsedStart<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {}",
+            MaybeColored::new(&GREEN, RightAligned("Parsing"), self.colorize),
+            self.asset.display_path
+        )
+    }
+}
 
-    format!(
-        "Finished parsing {} [{}]",
-        path_formatted, duration_formatted
-    )
+/// Displays an asset parsing end message.
+pub struct AssetParsedEnd<'a> {
+    pub asset: &'a AssetParsed,
+    pub duration: std::time::Duration,
+    pub colorize: bool,
+}
+
+impl fmt::Display for AssetParsedEnd<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Finished parsing {} [{}]",
+            MaybeColored::new(&CYAN, &self.asset.display_path, self.colorize),
+            FixedWidthDuration(self.duration)
+        )
+    }
 }

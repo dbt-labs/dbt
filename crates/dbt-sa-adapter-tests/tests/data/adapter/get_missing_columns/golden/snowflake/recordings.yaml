@@ -1,0 +1,19 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: USE DATABASE development
+- sequence: 1
+  type: execute
+  sql: ' CREATE OR REPLACE SCHEMA adapters_snowflake_get_missing_columns'
+- sequence: 2
+  type: execute
+  sql: CREATE OR REPLACE TABLE a (one int, three int)
+- sequence: 3
+  type: execute
+  sql: CREATE OR REPLACE TABLE b (one int, two int)
+- sequence: 4
+  type: execute
+  sql: describe table development.adapters_snowflake_get_missing_columns.a
+- sequence: 5
+  type: execute
+  sql: describe table development.adapters_snowflake_get_missing_columns.b

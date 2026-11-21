@@ -1,0 +1,13 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_check_schema_exists CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_check_schema_exists
+- sequence: 2
+  type: execute
+  sql: select count(*) from pg_namespace where nspname = 'adapters_redshift_check_schema_exists'
+- sequence: 3
+  type: execute
+  sql: select count(*) from pg_namespace where nspname = 'nonexistent_schema'

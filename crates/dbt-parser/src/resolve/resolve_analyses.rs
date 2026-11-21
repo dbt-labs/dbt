@@ -1,7 +1,9 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::resolve::resolve_utils::{err_resource_name_has_spaces, validate_node_adapter};
+use crate::resolve::resolve_utils::{err_resource_name_has_spaces, select_node_adapter};
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
@@ -10,10 +12,12 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::{DbtMaterialization, DbtQuoting, ResolvedQuoting};
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::project::AnalysesConfig;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::{
     schemas::{
@@ -24,19 +28,56 @@ use dbt_schemas::{
     },
     state::{DbtPackage, DbtRuntimeConfig},
 };
-use minijinja::MacroSpans;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::{RenderCtx, RenderCtxInner};
-use crate::utils::{RelationComponents, update_node_relation_components};
+use crate::utils::{
+    RelationComponents, node_starting_database_and_schema, update_node_relation_components,
+};
 use crate::{
     args::ResolveArgs,
     renderer::{SqlFileRenderResult, render_unresolved_sql_files},
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
+
+/// How a package's analyses resolve.
+pub(crate) struct Analyses;
+
+#[async_trait]
+impl ResolvableNode for Analyses {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["analyses"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // TODO: resolve_analyses still creates its own local JinjaTypeCheckingEventListenerFactory
+        // instead of receiving the top-level one — same issue as resolve_snapshots. Out of scope for now.
+        let analyses = resolve_analyses(
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &mut ctx.properties.take_entries("analyses"),
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            ctx.token,
+        )
+        .await?;
+        ctx.nodes.analyses.extend(analyses);
+        Ok(())
+    }
+}
 
 /// Resolve analysis resources for a package into models and rendered SQL, updating refs/sources.
 #[allow(clippy::too_many_arguments)]
@@ -46,23 +87,20 @@ pub async fn resolve_analyses(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    analysis_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    analysis_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
+    parse_adapter_scopes: &Arc<AdapterScopes>,
     // The target's default adapter.
     default_adapter: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
-) -> FsResult<(
-    HashMap<String, Arc<DbtAnalysis>>,
-    HashMap<String, (String, MacroSpans)>,
-)> {
+) -> FsResult<HashMap<String, Arc<DbtAnalysis>>> {
     let mut analyses: HashMap<String, Arc<DbtAnalysis>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let jinja_type_checking_event_listener_factory =
         Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
 
@@ -81,17 +119,22 @@ pub async fn resolve_analyses(
             )
         },
         default_adapter,
-    )?;
+    )?
+    .with_adapter_override(arg.adapter_override);
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
+            adapter_hint: None,
+            adapter_layer: None,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type: default_adapter,
             database: database.to_string(),
@@ -102,7 +145,7 @@ pub async fn resolve_analyses(
                 .as_ref()
                 .unwrap_or(&vec![])
                 .clone(),
-            resource_type: None,
+            resource_type: Some(NodeType::Analysis),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
@@ -135,9 +178,9 @@ pub async fn resolve_analyses(
         asset: dbt_asset,
         sql_file_info,
         config: analysis_config,
+        adapter,
         raw_code,
-        rendered_sql,
-        macro_spans,
+        macro_dependencies,
         properties: maybe_properties,
         status,
         render_error_deferred,
@@ -161,12 +204,13 @@ pub async fn resolve_analyses(
         let unique_id = get_unique_id(analysis_name, package_name, None, "analysis");
         // An analysis is compiled rather than materialized, but it still renders
         // refs and dispatches macros, so which adapter it renders *as* is a real
-        // choice. Resolved the same way every other node type resolves it.
-        validate_node_adapter(analysis_config.adapter, &dbt_asset.path)?;
-        let selected_adapter = arg
-            .adapter_override
-            .or(analysis_config.adapter)
-            .unwrap_or(default_adapter);
+        // choice.
+        let selected_adapter = select_node_adapter(
+            analysis_config.adapter,
+            adapter,
+            default_adapter,
+            &dbt_asset.path,
+        )?;
         // unique_id.push_str(&format!(".{statement_index}"));
 
         let fqn = get_node_fqn(
@@ -201,12 +245,22 @@ pub async fn resolve_analyses(
         )?;
 
         let is_enabled = status != ModelStatus::Disabled;
-        let macro_depends_on = all_depends_on
+        let mut macro_depends_on = all_depends_on
             .get(&format!("{package_name}.{analysis_name}"))
             .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+            .unwrap_or_default();
+        if selected_adapter != default_adapter {
+            macro_depends_on.extend(macro_dependencies);
+        }
+        let macro_depends_on = macro_depends_on.into_iter().collect();
+
+        let (node_database, node_schema) = node_starting_database_and_schema(
+            Some(parse_adapter_scopes),
+            selected_adapter,
+            database,
+            schema,
+            &dbt_asset.path,
+        )?;
 
         let mut dbt_analysis = DbtAnalysis {
             __common_attr__: CommonAttributes {
@@ -237,10 +291,10 @@ pub async fn resolve_analyses(
                 // no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: node_database.to_owned(), // will be updated below
+                schema: node_schema.to_owned(),     // will be updated below
+                alias: "".to_owned(),               // will be updated below
+                relation_name: None,                // will be updated below
                 enabled: is_enabled,
                 extended_model: false,
                 persist_docs: None,
@@ -304,24 +358,18 @@ pub async fn resolve_analyses(
         };
 
         // update model components using the generate_relation_components function
-        update_node_relation_components(
-            &mut dbt_analysis,
+        dbt_analysis = update_node_relation_components(
+            dbt_analysis,
             &env,
             &root_package.dbt_project.name,
             package_name,
             base_ctx,
             &components,
-            default_adapter,
+            Some(parse_adapter_scopes),
         )?;
 
         if status == ModelStatus::Enabled || render_error_deferred {
             analyses.insert(unique_id.to_owned(), Arc::new(dbt_analysis));
-            if status == ModelStatus::Enabled {
-                rendering_results.insert(
-                    unique_id.to_owned(),
-                    (rendered_sql.clone(), macro_spans.clone()),
-                );
-            }
         }
     }
 
@@ -337,5 +385,5 @@ pub async fn resolve_analyses(
         }
     }
 
-    Ok((analyses, rendering_results))
+    Ok(analyses)
 }

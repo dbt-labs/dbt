@@ -1,38 +1,3 @@
-{% macro get_clickhouse_cluster_name() %}
-  {%- if target.cluster is defined and target.cluster is not none and target.cluster|string|length > 0 -%}
-    {{ return("'" ~ target.cluster ~ "'") }}
-  {%- endif -%}
-  {{ return(none) }}
-{% endmacro %}
-
-{% macro get_clickhouse_local_suffix() %}
-  {%- if target.local_suffix is defined and target.local_suffix is not none and target.local_suffix|string|length > 0 -%}
-    {{ return(target.local_suffix) }}
-  {%- endif -%}
-  {{ return('_local') }}
-{% endmacro %}
-
-{% macro get_clickhouse_local_db_prefix() %}
-  {%- if target.local_db_prefix is defined and target.local_db_prefix is not none -%}
-    {{ return(target.local_db_prefix) }}
-  {%- endif -%}
-  {{ return('') }}
-{% endmacro %}
-
-{% macro clickhouse_db_engine_clause() %}
-  {%- if target.database_engine is defined and target.database_engine is not none and target.database_engine|string|length > 0 -%}
-    ENGINE = {{ target.database_engine }}
-  {%- endif -%}
-{% endmacro %}
-
-{% macro clickhouse_can_exchange(schema, relation_type) %}
-  {{ return(false) }}
-{% endmacro %}
-
-{% macro clickhouse_should_on_cluster(materialized, engine) %}
-  {{ return(get_clickhouse_cluster_name() is not none) }}
-{% endmacro %}
-
 {% macro clickhouse__check_schema_exists(information_schema, schema) -%}
   {% set sql %}
     select count(*) from system.databases where name = '{{ schema }}'
@@ -51,7 +16,7 @@
   {%- call statement('create_schema') -%}
     create database if not exists {{ relation.without_identifier().include(database=False) }}
         {{ on_cluster_clause(relation)}}
-        {{ clickhouse_db_engine_clause() }}
+        {{ adapter.clickhouse_db_engine_clause() }}
   {% endcall %}
 {% endmacro %}
 
@@ -71,8 +36,8 @@
         any(as_select) as mv_sql,
         {#- '\x3F' is the ClickHouse string-literal escape for '?' (regex quantifier); some drivers treat a literal '?' in query text as a bind parameter -#}
         any(replaceRegexpOne(create_table_query, '.*TO\\s+`\x3F([^`\\s(]+)`\x3F\\.`\x3F([^`\\s(]+)`\x3F.*', '\\1.\\2')) as target_fqn
-      {% if get_clickhouse_cluster_name() -%}
-      from clusterAllReplicas({{ get_clickhouse_cluster_name() }}, system.tables)
+      {% if adapter.get_clickhouse_cluster_name() -%}
+      from clusterAllReplicas({{ adapter.get_clickhouse_cluster_name() }}, system.tables)
       {% else %}
       from system.tables
       {% endif %}
@@ -98,9 +63,9 @@
       -- e.g. CREATE MATERIALIZED VIEW db.mv REFRESH EVERY 2 MINUTE [APPEND] TO db.target ...
       max(position(substring(t.create_table_query, 1, position(t.create_table_query, ' TO ')), ' REFRESH ')) > 0 as is_refreshable,
       max(position(substring(t.create_table_query, 1, position(t.create_table_query, ' TO ')), ' APPEND')) > 0 as refreshable_append,
-      {%- if get_clickhouse_cluster_name() -%}
+      {%- if adapter.get_clickhouse_cluster_name() -%}
         count(distinct _shard_num) > 1  as  is_on_cluster
-        from clusterAllReplicas({{ get_clickhouse_cluster_name() }}, system.tables) as t
+        from clusterAllReplicas({{ adapter.get_clickhouse_cluster_name() }}, system.tables) as t
       {%- else -%}
         0 as is_on_cluster
         from system.tables as t
@@ -163,15 +128,7 @@
 {%- endmacro %}
 
 {% macro clickhouse__get_columns_in_query(select_sql) %}
-  {% call statement('get_columns_in_query', fetch_result=True, auto_begin=False) -%}
-    select * from (
-        {{ select_sql }}
-    ) as __dbt_sbq
-    limit 0
-  {% endcall %}
-
-  {# DIVERGENCE: Fusion reads the original schema because Agate flattens nested columns. #}
-  {{ return(load_result('get_columns_in_query').table.top_level_column_names) }}
+  {{ return(adapter.get_column_schema_from_query(select_sql) | map(attribute='name') | list) }}
 {% endmacro %}
 
 {% macro clickhouse__alter_column_type(relation, column_name, new_column_type) -%}
@@ -182,7 +139,7 @@
 
 {% macro exchange_tables_atomic(old_relation, target_relation, obj_types='TABLES') %}
 
-  {%- if get_clickhouse_cluster_name() is not none and obj_types == 'TABLES' and 'Replicated' in engine_clause() %}
+  {%- if adapter.get_clickhouse_cluster_name() is not none and obj_types == 'TABLES' and 'Replicated' in engine_clause() %}
     {%- call statement('exchange_table_sync_replica') -%}
       SYSTEM SYNC REPLICA  {{ on_cluster_clause(target_relation) }} {{ target_relation.schema }}.{{ target_relation.identifier }}
     {% endcall %}

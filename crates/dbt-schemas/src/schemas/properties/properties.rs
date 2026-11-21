@@ -27,30 +27,6 @@ use super::SnapshotProperties;
 use super::SourceProperties;
 use super::unit_test_properties::UnitTestProperties;
 
-#[derive(Deserialize, Debug, Clone)]
-pub struct DbtPropertiesFileValues {
-    pub version: Option<FloatOrString>,
-    pub analyses: Option<Vec<dbt_yaml::Value>>,
-    pub checks: Option<Vec<dbt_yaml::Value>>,
-    pub exposures: Option<Vec<dbt_yaml::Value>>,
-    pub groups: Option<Vec<dbt_yaml::Value>>,
-    pub macros: Option<Vec<dbt_yaml::Value>>,
-    pub metrics: Option<Vec<dbt_yaml::Value>>,
-    pub models: Option<Vec<dbt_yaml::Value>>,
-    pub functions: Option<Vec<dbt_yaml::Value>>,
-    pub saved_queries: Option<Vec<dbt_yaml::Value>>,
-    pub seeds: Option<Vec<dbt_yaml::Value>>,
-    // semantic_models cannot be removed for backward compatibility
-    // removal would result in many regression tests failing
-    pub semantic_models: Option<Vec<dbt_yaml::Value>>,
-    pub snapshots: Option<Vec<dbt_yaml::Value>>,
-    pub sources: Option<Vec<dbt_yaml::Value>>,
-    pub unit_tests: Option<Vec<dbt_yaml::Value>>,
-    pub tests: Option<Vec<dbt_yaml::Value>>,
-    pub data_tests: Option<Vec<dbt_yaml::Value>>,
-    pub anchors: Verbatim<Option<dbt_yaml::Value>>,
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct MinimalSchemaValue {
     pub name: String,
@@ -66,16 +42,6 @@ pub struct MinimalSchemaValue {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct MinimalTableValue {
     pub name: Spanned<String>,
-    pub __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct MinimalUnitTestValue {
-    pub name: Spanned<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub versions: Option<dbt_yaml::Value>,
     pub __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
 }
 

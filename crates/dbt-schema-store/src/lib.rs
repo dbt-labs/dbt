@@ -33,7 +33,7 @@ use std::path::PathBuf;
 
 use arrow::array::RecordBatch;
 use arrow_schema::{ArrowError, SchemaRef};
-use dbt_ident::Ident;
+use dbt_sql_base::Ident;
 
 /// A local schema entry containing the fully qualified name, unique ID, and Arrow schema.
 ///
@@ -150,6 +150,15 @@ impl SchemaEntry {
 /// Fallible operation result used throughout the schema store layer.
 pub type SchemaStoreResult<T> = Result<T, ArrowError>;
 
+/// The project node whose cache slot a canonical-FQN registration updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaOwner {
+    /// A selected, local, or frontier node in the current manifest.
+    Current(String),
+    /// A node in the deferred manifest.
+    Deferred(String),
+}
+
 /// Unified abstraction for reading and writing schemas within the store.
 ///
 /// Implementors manage the backing persistence mechanism (filesystem, mocks,
@@ -166,6 +175,13 @@ pub trait SchemaStoreTrait: std::fmt::Debug + Send + Sync {
     /// Asynchronously checks whether the store has an entry for the canonical
     /// FQN.  Use this from async contexts to avoid blocking on locks.
     async fn exists_async(&self, cfqn: &CanonicalFqn) -> bool;
+
+    /// Resolves the owner of the slot used by `register_schema`, even before hydration.
+    ///
+    /// External relations and stores without project-node mappings have no proven owner.
+    fn schema_owner(&self, _cfqn: &CanonicalFqn) -> Option<SchemaOwner> {
+        None
+    }
 
     /// Returns `true` if a schema associated with the dbt `unique_id` exists.
     fn exists_by_unique_id(&self, unique_id: &str) -> bool;
@@ -184,6 +200,11 @@ pub trait SchemaStoreTrait: std::fmt::Debug + Send + Sync {
     /// disk-cache hit from a schema produced during the active invocation.
     fn schema_is_from_prior_invocation(&self, _cfqn: &CanonicalFqn) -> bool {
         false
+    }
+
+    /// Returns a transient lookup error for this relation, if metadata could not be loaded.
+    fn lookup_error(&self, _cfqn: &CanonicalFqn) -> Option<String> {
+        None
     }
 
     /// Retrieves a schema entry by its dbt `unique_id`.

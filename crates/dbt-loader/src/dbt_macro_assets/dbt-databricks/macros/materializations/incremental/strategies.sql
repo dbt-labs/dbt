@@ -181,9 +181,18 @@ replace on ({{ replace_on_expr }})
   
   {#-- Build WHERE clause for DELETE statement --#}
   {%- set delete_conditions = [] -%}
-  {%- for key in unique_keys -%}
+  {%- if unique_keys | length > 1 -%}
+    {#-- a row-valued IN raises DELTA_UNSUPPORTED_MULTI_COL_IN_PREDICATE; correlate on
+         the whole tuple instead so unmatched key combinations are not deleted (issue #1611) --#}
+    {%- set correlation_conditions = [] -%}
+    {%- for key in unique_keys -%}
+      {%- do correlation_conditions.append(target_relation ~ '.' ~ adapter.quote(key) ~ ' <=> ' ~ source_relation ~ '.' ~ adapter.quote(key)) -%}
+    {%- endfor -%}
+    {%- do delete_conditions.append('EXISTS (SELECT 1 FROM ' ~ source_relation ~ ' WHERE ' ~ correlation_conditions | join(' AND ') ~ ')') -%}
+  {%- else -%}
+    {%- set key = unique_keys[0] -%}
     {%- do delete_conditions.append(target_relation ~ '.' ~ adapter.quote(key) ~ ' IN (SELECT ' ~ adapter.quote(key) ~ ' FROM ' ~ source_relation ~ ')') -%}
-  {%- endfor -%}
+  {%- endif -%}
   
   {#-- Add incremental predicates to DELETE if specified --#}
   {%- if incremental_predicates is sequence and incremental_predicates is not string -%}
@@ -296,8 +305,27 @@ where {{ incremental_predicates }}
       or not_matched_by_source_action_trimmed.startswith('update')
     )
   %}
-  
-  
+
+  {#-- An explicit null must fall back to the default clauses, but `None | trim` renders 'None'. --#}
+  {%- set merge_actions_explicit = (config.get('merge_actions_explicit') or '') | trim(' \n\t') -%}
+  {%- set merge_actions_explicit_is_set = merge_actions_explicit | length > 0 -%}
+
+  {%- if merge_actions_explicit_is_set -%}
+    {%- set ignored_configs = [] -%}
+    {%- if skip_matched_step -%}{%- do ignored_configs.append('skip_matched_step') -%}{%- endif -%}
+    {%- if skip_not_matched_step -%}{%- do ignored_configs.append('skip_not_matched_step') -%}{%- endif -%}
+    {%- if matched_condition is not none -%}{%- do ignored_configs.append('matched_condition') -%}{%- endif -%}
+    {%- if not_matched_condition is not none -%}{%- do ignored_configs.append('not_matched_condition') -%}{%- endif -%}
+    {%- if not_matched_by_source_action is not none -%}{%- do ignored_configs.append('not_matched_by_source_action') -%}{%- endif -%}
+    {%- if not_matched_by_source_condition is not none -%}{%- do ignored_configs.append('not_matched_by_source_condition') -%}{%- endif -%}
+    {%- if ignored_configs | length > 0 -%}
+      {%- do exceptions.warn(
+        "merge_actions_explicit is set; ignoring conflicting merge action config(s): "
+        ~ ignored_configs | join(', ')
+      ) -%}
+    {%- endif -%}
+  {%- endif -%}
+
   {% if unique_key %}
       {% if unique_key is sequence and unique_key is not mapping and unique_key is not string %}
           {% for key in unique_key %}
@@ -326,28 +354,32 @@ where {{ incremental_predicates }}
         {{ source }} as {{ source_alias }}
     on
         {{ predicates | join('\n    and ') }}
-    {%- if not skip_matched_step %}
+    {%- if merge_actions_explicit_is_set %}
+    {{ merge_actions_explicit }}
+    {%- else %}
+        {%- if not skip_matched_step %}
     when matched
-        {%- if matched_condition %}
+            {%- if matched_condition %}
         and ({{ matched_condition }})
-        {%- endif %}
+            {%- endif %}
         then update set
             {{ get_merge_update_set(update_columns, on_schema_change, source_columns, source_alias) }}
-    {%- endif %}
-    {%- if not skip_not_matched_step %}
-    when not matched
-        {%- if not_matched_condition %}
-        and ({{ not_matched_condition }})
         {%- endif %}
+        {%- if not skip_not_matched_step %}
+    when not matched
+            {%- if not_matched_condition %}
+        and ({{ not_matched_condition }})
+            {%- endif %}
         then insert
             {{ get_merge_insert(on_schema_change, source_columns, source_alias) }}
-    {%- endif %}
-    {%- if not_matched_by_source_action_is_set %}
-    when not matched by source
-        {%- if not_matched_by_source_condition %}
-        and ({{ not_matched_by_source_condition }})
         {%- endif %}
+        {%- if not_matched_by_source_action_is_set %}
+    when not matched by source
+            {%- if not_matched_by_source_condition %}
+        and ({{ not_matched_by_source_condition }})
+            {%- endif %}
         then {{ not_matched_by_source_action }}
+        {%- endif %}
     {%- endif %}
 {% endmacro %}
 

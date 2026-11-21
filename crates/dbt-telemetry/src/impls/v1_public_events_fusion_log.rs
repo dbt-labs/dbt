@@ -143,6 +143,7 @@ impl ProgressMessage {
             target,
             description: None,
             dbt_core_event_code: None,
+            blocking_run_id: None,
             // Auto-injected fields
             unique_id: None,
             phase: None,
@@ -163,6 +164,36 @@ impl ProgressMessage {
             target,
             description: Some(description),
             dbt_core_event_code: None,
+            blocking_run_id: None,
+            // Auto-injected fields
+            unique_id: None,
+            phase: None,
+            file: None,
+            line: None,
+        }
+    }
+
+    /// Creates a new `ProgressMessage` reporting contention on a resource,
+    /// optionally naming the run blocking it. `blocking_run_id` is the sole
+    /// source of truth for this; the CLI text-line formatter derives its own
+    /// "(blocked by run <id>)" suffix from it directly, so `description` is
+    /// left unset here.
+    ///
+    /// Arguments:
+    /// * `action` - The action being performed (e.g., "Waiting", "Aborted").
+    /// * `target` - The text describing the target of the action (e.g., a node's file path).
+    /// * `blocking_run_id` - The run ID of the worker currently holding the resource, if known.
+    pub fn new_with_blocking_run_id(
+        action: String,
+        target: String,
+        blocking_run_id: Option<String>,
+    ) -> Self {
+        Self {
+            action,
+            target,
+            description: None,
+            dbt_core_event_code: None,
+            blocking_run_id,
             // Auto-injected fields
             unique_id: None,
             phase: None,
@@ -189,6 +220,7 @@ impl ProgressMessage {
             target,
             description: Some(description),
             dbt_core_event_code: None,
+            blocking_run_id: None,
             unique_id: Some(unique_id),
             // Auto-injected fields
             phase: None,
@@ -215,6 +247,7 @@ impl ProgressMessage {
             target,
             description,
             dbt_core_event_code: Some(dbt_core_event_code),
+            blocking_run_id: None,
             // Auto-injected fields
             unique_id: None,
             phase: None,

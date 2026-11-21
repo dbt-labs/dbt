@@ -1,0 +1,22 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/builtin.sql
+   Parsing models/builtin_override_base_location_adapter.sql
+   Parsing models/builtin_override_base_location_both.sql
+   Parsing models/builtin_override_base_location_legacy.sql
+ Rendering models/builtin_override_base_location_legacy.sql
+   Running models/builtin_override_base_location_legacy.sql
+ Succeeded model icebergBuiltinTestSchema.builtin_override_base_location_legacy (table) [1 of 4 in duration]
+ Rendering models/builtin_override_base_location_both.sql
+   Running models/builtin_override_base_location_both.sql
+ Succeeded model icebergBuiltinTestSchema.builtin_override_base_location_both (table) [2 of 4 in duration]
+ Rendering models/builtin_override_base_location_adapter.sql
+   Running models/builtin_override_base_location_adapter.sql
+ Succeeded model icebergBuiltinTestSchema.builtin_override_base_location_adapter (table) [3 of 4 in duration]
+ Rendering models/builtin.sql
+   Running models/builtin.sql
+ Succeeded model icebergBuiltinTestSchema.builtin (table) [4 of 4 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 1 warning for target 'snowflake' [duration]
+Processed: 4 models
+Summary: 4 total | 4 success

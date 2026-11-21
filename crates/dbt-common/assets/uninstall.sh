@@ -29,7 +29,9 @@ help() {
     echo "Usage: uninstall.sh [options]"
     echo ""
     echo "Options:"
-    echo "  --installLocation, -i     Install location of dbt"
+    echo "  --prefix PREFIX           Remove dbt from PREFIX/bin and its drivers from"
+    echo "                            PREFIX/lib/dbt (default: ~/.local)"
+    echo "  --installLocation, -i     Deprecated: the directory holding dbt. Use --prefix"
     echo "  --binaryPath              Exact path to the dbt binary to remove,"
     echo "                            overriding installLocation/dbt for the"
     echo "                            main binary only (e.g. a renamed copy)"
@@ -42,6 +44,10 @@ while test $# -gt 0; do
     --help | -h)
         help
         exit 0
+        ;;
+    --prefix)
+        prefix=$2
+        shift
         ;;
     --installLocation | -i)
         installLocation=$2
@@ -64,15 +70,18 @@ done
 package="${package:-dbt}"
 
 # set install locations
-if [ -z "${installLocation:-}" ]; then
-    dbtInstallLocation="$HOME/.local/bin/dbt"
-    runnerInstallLocation="$HOME/.local/bin/dbt-db-runner"
-    lspInstallLocation="$HOME/.local/bin/dbt-lsp"
-else
-    dbtInstallLocation="$installLocation/dbt"
-    runnerInstallLocation="$installLocation/dbt-db-runner"
-    lspInstallLocation="$installLocation/dbt-lsp"
+if [ -n "${prefix:-}" ] && [ -n "${installLocation:-}" ]; then
+    err_and_exit "--prefix and --installLocation cannot be combined"
 fi
+if [ -n "${installLocation:-}" ]; then
+    log "WARNING: --installLocation is deprecated. Use --prefix PREFIX instead to remove PREFIX/bin/dbt and its drivers in PREFIX/lib/dbt."
+else
+    prefix="${prefix:-$HOME/.local}"
+    installLocation="${prefix%/}/bin"
+fi
+dbtInstallLocation="$installLocation/dbt"
+runnerInstallLocation="$installLocation/dbt-db-runner"
+lspInstallLocation="$installLocation/dbt-lsp"
 
 # --binaryPath overrides the main dbt binary's location only -- it may be
 # named something other than "dbt" (e.g. dbtf, as the VS Code extension
@@ -99,9 +108,18 @@ fi
 
 # uninstall dbt / dbt-lsp
 if [ "$package" = "all" ] || [ "$package" = "dbt" ]; then
+    bin_dir="$(dirname "$dbtInstallLocation")"
     rm -f "$dbtInstallLocation" "$runnerInstallLocation"
     log "Uninstalled dbt from $dbtInstallLocation"
     log "Uninstalled dbt-db-runner from $runnerInstallLocation"
+    # Other packages' libraries and ~/.dbt stay.
+    lib_dir="$(dirname "$bin_dir")/lib/dbt"
+    if [ "$(basename "$bin_dir")" = "bin" ] && [ -d "$lib_dir" ]; then
+        rm -f "$lib_dir"/*adbc_driver_bridge.*
+        rmdir "$lib_dir" 2>/dev/null || true
+        rmdir "$(dirname "$lib_dir")" 2>/dev/null || true
+        log "Removed bundled drivers from $lib_dir"
+    fi
 fi
 
 if [ "$package" = "all" ] || [ "$package" = "dbt-lsp" ]; then

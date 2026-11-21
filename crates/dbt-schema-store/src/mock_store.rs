@@ -1,5 +1,5 @@
 use crate::{
-    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaEntry, SchemaStoreResult,
+    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaEntry, SchemaOwner, SchemaStoreResult,
     SchemaStoreTrait,
 };
 use arrow::array::RecordBatch;
@@ -15,6 +15,7 @@ pub struct MockSchemaStore {
     schemas_by_cfqn: RwLock<HashMap<CanonicalFqn, SchemaEntry>>,
     // Index by unique_id (String)
     schemas_by_unique_id: RwLock<HashMap<String, SchemaEntry>>,
+    schema_owners: RwLock<HashMap<CanonicalFqn, SchemaOwner>>,
 }
 
 impl MockSchemaStore {
@@ -23,7 +24,13 @@ impl MockSchemaStore {
         Self {
             schemas_by_cfqn: RwLock::new(HashMap::new()),
             schemas_by_unique_id: RwLock::new(HashMap::new()),
+            schema_owners: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Associates a cache slot with a project node independently of its schema contents.
+    pub fn set_schema_owner(&self, cfqn: CanonicalFqn, owner: SchemaOwner) {
+        self.schema_owners.write().unwrap().insert(cfqn, owner);
     }
 
     /// Helper to register a schema keyed by dbt `unique_id`.
@@ -46,6 +53,10 @@ impl MockSchemaStore {
 
 #[async_trait::async_trait]
 impl SchemaStoreTrait for MockSchemaStore {
+    fn schema_owner(&self, cfqn: &CanonicalFqn) -> Option<SchemaOwner> {
+        self.schema_owners.read().unwrap().get(cfqn).cloned()
+    }
+
     fn exists(&self, cfqn: &CanonicalFqn) -> bool {
         self.schemas_by_cfqn.read().unwrap().contains_key(cfqn)
     }

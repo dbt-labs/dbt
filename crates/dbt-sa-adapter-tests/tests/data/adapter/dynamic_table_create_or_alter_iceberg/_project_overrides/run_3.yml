@@ -1,0 +1,49 @@
+flags:
+  send_anonymous_usage_stats: false
+  snowflake_dynamic_table_create_or_alter: true
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+vars:
+  evolved: true
+
+models:
+  test:
+    +static_analysis: off
+    +materialized: dynamic_table
+    +snowflake_warehouse: FUSION_ADAPTER_TESTING
+    +refresh_mode: FULL
+    +scheduler: disable
+
+    # Managed Iceberg: the query and target lag evolve in place.
+    ice_evolve:
+      +table_format: iceberg
+      +external_volume: EXVOL
+      +base_location_root: coa_ice
+      +target_lag: 2 hours
+      +scheduler: enable
+    # Managed Iceberg: nothing changes, so the table is left in place.
+    ice_idempotent:
+      +table_format: iceberg
+      +external_volume: EXVOL
+      +base_location_root: coa_ice
+    # refresh_mode is a full-rebuild change for dbt: routed to CREATE OR REPLACE.
+    ice_refresh_mode_replace:
+      +table_format: iceberg
+      +external_volume: EXVOL
+      +base_location_root: coa_ice
+      +refresh_mode: INCREMENTAL
+    # CREATE OR ALTER cannot convert between native and Iceberg: routed to CREATE OR REPLACE.
+    ice_to_native: {}
+    native_to_ice:
+      +table_format: iceberg
+      +external_volume: EXVOL
+      +base_location_root: coa_ice
+    # The Iceberg identity (base location) cannot change in place: Snowflake rejects it and the
+    # documented recovery is --full-refresh.
+    ice_identity_change:
+      +table_format: iceberg
+      +external_volume: EXVOL
+      +base_location_root: coa_ice_v2

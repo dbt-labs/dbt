@@ -19,7 +19,7 @@ use crate::proto::query_cache::{
     ExecutionOutcome, ExecutionRecord, ModelExecutionType, QueryDependency, SessionEndRequest,
     SessionStartRequest, StaleUpstreamPolicy, Struct, SubmitEnrichedSqlRequest,
     SubmitTelemetryBatchRequest, SubmitValuesRequest, TableModifiedInfo, TableProperties,
-    ValuesExecution, client_telemetry_event, execution_record,
+    TableSchema, ValuesExecution, client_telemetry_event, execution_record,
 };
 
 pub const SQL_SEMANTIC_EXTRA_KEYS: &[&str] = &[
@@ -199,7 +199,7 @@ pub fn semantic_extras_from_keys(
     Ok(extras)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SubmitEnrichedSqlRequestInput {
     pub target_table: Option<String>,
     pub dialect: String,
@@ -222,6 +222,12 @@ pub struct SubmitEnrichedSqlRequestInput {
     pub compare_unrendered_code: bool,
     pub table_namespace: Option<String>,
     pub ignore_external_modifications: bool,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
+    pub table_schemas: Vec<TableSchema>,
+    pub compare_selected_columns: bool,
+    pub target_table_missing: bool,
 }
 
 impl SubmitEnrichedSqlRequestInput {
@@ -248,8 +254,31 @@ impl SubmitEnrichedSqlRequestInput {
             compare_unrendered_code: self.compare_unrendered_code,
             table_namespace: self.table_namespace,
             ignore_external_modifications: self.ignore_external_modifications,
+            allow_clones: self.allow_clones,
+            is_defer_to_profile: self.is_defer_to_profile,
+            defer_enabled: self.defer_enabled,
+            table_schemas: self.table_schemas,
+            compare_selected_columns: self.compare_selected_columns,
+            target_table_missing: self.target_table_missing,
         }
     }
+}
+
+/// Whether the target table is known to be missing, for column-aware reuse.
+///
+/// Mirrors the Python client: `Full` is excluded, and microbatch nodes are
+/// excluded via the microbatch window. Speculative requests, and nodes with no target table, pass
+/// `target_exists = None`, which always yields `false`.
+pub fn target_table_missing(
+    compare_selected_columns: bool,
+    execution_type: ModelExecutionType,
+    has_microbatch_window: bool,
+    target_exists: Option<bool>,
+) -> bool {
+    compare_selected_columns
+        && execution_type != ModelExecutionType::Full
+        && !has_microbatch_window
+        && target_exists == Some(false)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -266,6 +295,9 @@ pub struct SubmitValuesRequestInput {
     pub clone_chain_depth_limit: Option<i64>,
     pub dbt_node_state: Option<DbtNodeState>,
     pub table_namespace: Option<String>,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
 }
 
 impl SubmitValuesRequestInput {
@@ -283,6 +315,9 @@ impl SubmitValuesRequestInput {
             clone_chain_depth_limit: self.clone_chain_depth_limit,
             dbt_node_state: self.dbt_node_state,
             table_namespace: self.table_namespace,
+            allow_clones: self.allow_clones,
+            is_defer_to_profile: self.is_defer_to_profile,
+            defer_enabled: self.defer_enabled,
         }
     }
 }
@@ -468,6 +503,7 @@ impl CloneRequestInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::query_cache::table_modified_info::DependencyKind;
     use serde_json::json;
 
     #[test]
@@ -846,6 +882,7 @@ mod tests {
             tables: vec![TableModifiedInfo {
                 name: "raw.orders".to_string(),
                 last_modified_epoch: Some(123),
+                kind: DependencyKind::Unknown as i32,
             }],
             query_dependencies: vec![QueryDependency {
                 name: "raw.order_view".to_string(),
@@ -888,6 +925,12 @@ mod tests {
             compare_unrendered_code: true,
             table_namespace: None,
             ignore_external_modifications: true,
+            allow_clones: Some(true),
+            is_defer_to_profile: true,
+            defer_enabled: true,
+            table_schemas: Vec::new(),
+            compare_selected_columns: false,
+            target_table_missing: false,
         }
         .into_proto();
 
@@ -925,7 +968,10 @@ mod tests {
                 node_contract_hash: Some("node_contract_hash".to_string()),
                 node_database_representation: None
             })
-        )
+        );
+        assert_eq!(request.allow_clones, Some(true));
+        assert!(request.is_defer_to_profile);
+        assert!(request.defer_enabled);
     }
 
     #[test]
@@ -959,6 +1005,9 @@ mod tests {
                 node_database_representation: None,
             }),
             table_namespace: Some("foo".to_string()),
+            allow_clones: Some(true),
+            is_defer_to_profile: true,
+            defer_enabled: true,
         }
         .into_proto();
 
@@ -987,7 +1036,10 @@ mod tests {
                 node_database_representation: None
             })
         );
-        assert_eq!(request.table_namespace(), "foo")
+        assert_eq!(request.table_namespace(), "foo");
+        assert_eq!(request.allow_clones, Some(true));
+        assert!(request.is_defer_to_profile);
+        assert!(request.defer_enabled);
     }
 
     #[test]
@@ -1002,6 +1054,7 @@ mod tests {
             tables: vec![TableModifiedInfo {
                 name: "raw.orders".to_string(),
                 last_modified_epoch: Some(123),
+                kind: DependencyKind::Unknown as i32,
             }],
             query_dependencies: Vec::new(),
             semantic_extras: HashMap::new(),
@@ -1017,6 +1070,12 @@ mod tests {
             compare_unrendered_code: false,
             table_namespace: None,
             ignore_external_modifications: false,
+            allow_clones: Some(true),
+            is_defer_to_profile: false,
+            defer_enabled: true,
+            table_schemas: Vec::new(),
+            compare_selected_columns: false,
+            target_table_missing: false,
         }
         .into_proto();
 
@@ -1057,6 +1116,9 @@ mod tests {
             clone_chain_depth_limit: None,
             dbt_node_state: None,
             table_namespace: None,
+            allow_clones: Some(true),
+            is_defer_to_profile: false,
+            defer_enabled: true,
         }
         .into_proto();
 
@@ -1110,5 +1172,69 @@ mod tests {
         assert_eq!(request.clone_source_table_type.as_deref(), Some("table"));
         assert_eq!(request.table_properties, Some(properties));
         assert_eq!(request.clone_chain_depth_limit, Some(3));
+    }
+
+    #[test]
+    fn into_proto_maps_column_aware_fields() {
+        use crate::proto::query_cache::{ColumnInfo, TableSchema};
+        let schema = TableSchema {
+            name: "db.sch.t".to_string(),
+            columns: vec![ColumnInfo {
+                name: "id".to_string(),
+                r#type: "NUMBER(38,0)".to_string(),
+            }],
+        };
+        let request = SubmitEnrichedSqlRequestInput {
+            target_table: None,
+            dialect: "snowflake".to_string(),
+            default_catalog: "db".to_string(),
+            default_schema: None,
+            execution_type: ModelExecutionType::Merge,
+            sql: "select 1".to_string(),
+            tables: vec![],
+            query_dependencies: vec![],
+            semantic_extras: HashMap::new(),
+            freshness_tolerance_seconds: 0,
+            lenient_dependencies: vec![],
+            tolerate_nondeterminism: false,
+            labels: HashMap::new(),
+            clone_time_travel_limit: None,
+            clone_table_properties: None,
+            stale_upstream_policy: StaleUpstreamPolicy::Any,
+            clone_chain_depth_limit: None,
+            dbt_node_state: None,
+            compare_unrendered_code: false,
+            table_namespace: None,
+            ignore_external_modifications: false,
+            allow_clones: None,
+            is_defer_to_profile: false,
+            defer_enabled: false,
+            table_schemas: vec![schema.clone()],
+            compare_selected_columns: true,
+            target_table_missing: true,
+        }
+        .into_proto();
+        assert_eq!(request.table_schemas, vec![schema]);
+        assert!(request.compare_selected_columns);
+        assert!(request.target_table_missing);
+    }
+
+    #[test]
+    fn target_table_missing_truth_table() {
+        use ModelExecutionType::{Append, Full, Merge};
+        assert!(target_table_missing(true, Merge, false, Some(false)));
+        assert!(target_table_missing(true, Append, false, Some(false)));
+        for t in [
+            ModelExecutionType::DeleteInsert,
+            ModelExecutionType::InsertOverwrite,
+            ModelExecutionType::Snapshot,
+        ] {
+            assert!(target_table_missing(true, t, false, Some(false)));
+        }
+        assert!(!target_table_missing(true, Full, false, Some(false)));
+        assert!(!target_table_missing(true, Merge, true, Some(false)));
+        assert!(!target_table_missing(false, Merge, false, Some(false)));
+        assert!(!target_table_missing(true, Merge, false, None));
+        assert!(!target_table_missing(true, Merge, false, Some(true)));
     }
 }

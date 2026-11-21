@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing functions/double_it.yml
+   Parsing functions/double_it.sql
+ Rendering functions/double_it.sql
+   Running ../scratch/target/run/test/functions/double_it.sql
+function relation type: function
+function grants: {'USAGE': ['PUBLIC']}
+ Succeeded function adapters_snowflake_function_grants.double_it (function) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'snowflake' [duration]
+Processed: 1 function
+Summary: 1 total | 1 success

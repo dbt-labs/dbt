@@ -1,7 +1,6 @@
-use datafusion_common::error::DataFusionError;
-use datafusion_expr::Expr;
-use dbt_base::cancel::CancelledError;
+use dbt_cancel::CancelledError;
 use dbt_frontend_common::error::{FrontendError, FrontendResult, NameCandidate, format_candidates};
+use dbt_proc_macros::DebugNoInline;
 use itertools::Itertools as _;
 use regex::Regex;
 use std::{
@@ -532,6 +531,15 @@ impl FsError {
         self
     }
 
+    /// The DataFusion error this error wraps, if its cause is one; this
+    /// error otherwise.
+    pub fn into_datafusion_cause(self) -> Result<Box<dyn Error + Send + Sync>, Box<Self>> {
+        match self.cause {
+            Some(WrappedError::Datafusion(e)) => Ok(e),
+            _ => Err(Box::new(self)),
+        }
+    }
+
     /// Adds a cause to this error, replacing the existing cause if any
     ///
     /// Note: if you attach a cause to an error, make sure you don't format the
@@ -542,6 +550,18 @@ impl FsError {
             cause: Some(cause.into()),
             ..self
         }
+    }
+
+    /// Appends the future-error notice and tracking link to this warning's message, if its code
+    /// is registered in [`ErrorCode::future_error`]. The notice precedes the location, so the CLI
+    /// (`message`) and the LSP (`pretty`) both show it.
+    pub fn with_future_error_notice(mut self) -> FsError {
+        if let Some(future_error) = self.code.future_error() {
+            // Writing into a `String` cannot fail.
+            let _ =
+                fmt::Write::write_fmt(&mut self.context, format_args!("{}", future_error.notice()));
+        }
+        self
     }
 
     /// Adds a location to this error, replacing an existing location if it's more specific
@@ -822,36 +842,33 @@ pub enum NameError {
     Schema(dbt_frontend_common::error::SchemaError),
     /// Generic error when looking up a name from a set of names
     Generic(GenericNameError),
-    /// Generic schema error originating from Datafusion
-    Datafusion(datafusion_common::SchemaError),
+    /// Generic schema error originating from Datafusion, as displayed
+    Datafusion(String),
 }
 
 impl Display for NameError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let msg = match self {
             NameError::Aliases(e) => format_candidates(
-                e.items()
+                e.aliases()
                     .iter()
-                    .filter_map(|e| match e {
-                        Expr::Alias(alias) => Some(NameCandidate {
-                            name: alias.name.to_owned().into(),
-                            qualifier: None,
-                        }),
-                        _ => None,
+                    .map(|alias| NameCandidate {
+                        name: alias.to_owned().into(),
+                        qualifier: None,
                     })
                     .collect(),
                 e.target(),
                 Some(MAX_DISPLAY_TOKENS),
             ),
             NameError::Schema(e) => format_candidates(
-                e.schemas()
+                e.columns()
                     .iter()
-                    .flat_map(|s| s.iter().map(|f| f.into()))
+                    .map(NameCandidate::from)
                     .collect::<Vec<_>>(),
                 e.target(),
                 Some(MAX_DISPLAY_TOKENS),
             ),
-            NameError::Datafusion(e) => e.to_string(),
+            NameError::Datafusion(e) => e.clone(),
             NameError::Generic(e) => format_candidates(
                 e.available
                     .iter()
@@ -906,13 +923,13 @@ impl NameError {
 /// Note: you don't have to add all third-party library error types here, only
 /// those that may be useful for debugging or error handling. If not, then just
 /// use the [Generic(String)] variant.
-#[derive(Debug)]
+#[derive(DebugNoInline)]
 #[non_exhaustive]
 pub enum WrappedError {
     Antlr(String),
     Arrow(Box<arrow::error::ArrowError>),
     Parquet(Box<parquet::errors::ParquetError>),
-    Datafusion(DataFusionError),
+    Datafusion(Box<dyn Error + Send + Sync>),
     Frontend(FrontendError),
     FrontendInternal(dbt_frontend_common::error::InternalError),
     // ObjectStore(object_store::Error),
@@ -967,7 +984,7 @@ impl Display for WrappedError {
 impl Error for WrappedError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            WrappedError::Datafusion(e) => Some(e),
+            WrappedError::Datafusion(e) => Some(e.as_ref()),
             WrappedError::Arrow(e) => Some(e),
             WrappedError::Reqwest(e) => Some(e),
             _ => None,
@@ -981,7 +998,9 @@ impl From<dbt_frontend_common::error::WrappedError> for WrappedError {
             dbt_frontend_common::error::WrappedError::Frontend(err) => Self::Frontend(err),
             dbt_frontend_common::error::WrappedError::Antlr(err) => Self::Antlr(err.to_string()),
             dbt_frontend_common::error::WrappedError::Arrow(err) => Self::Arrow(err),
-            dbt_frontend_common::error::WrappedError::Datafusion(err) => Self::Datafusion(err),
+            dbt_frontend_common::error::WrappedError::Datafusion(err) => {
+                Self::Datafusion(err.into_error())
+            }
             dbt_frontend_common::error::WrappedError::SerdeJson(err) => Self::SerdeJson(err),
             dbt_frontend_common::error::WrappedError::ParseFloat(_)
             | dbt_frontend_common::error::WrappedError::ParseInt(_)
@@ -1260,86 +1279,11 @@ impl From<super::adapter_errors::AdapterError> for WrappedError {
 //     }
 // }
 
-impl From<DataFusionError> for FsError {
-    fn from(err: DataFusionError) -> Self {
-        match err {
-            // --- !!FIXME!! --- For migration only! This is to allow
-            // "tunneling" FsErrors through DataFusionError. Remove once
-            // we get rid of all DataFusionResult usage.
-            DataFusionError::External(e) if e.is::<FsError>() => {
-                *e.downcast::<FsError>().expect("e.is::<FsError>()")
-            }
-            // --- End of !!FIXME!! ---
-            DataFusionError::Execution(s) => {
-                // TODO https://github.com/sdf-labs/sdf/issues/3515 We cannot use .with_cause, that
-                // would produce a bad message for the user for cases where
-                // DataFusionError::Execution originates from SDF (so-called "legacy errors").
-                FsError::new(ErrorCode::ExecutionError, s)
-            }
-            DataFusionError::ExecutionJoin(_) => {
-                FsError::new(ErrorCode::ExecutionError, "Execution join error")
-                    .with_cause(WrappedError::Datafusion(err))
-            }
-            DataFusionError::ArrowError(ae, _) => {
-                FsError::new(ErrorCode::ArrowError, "Arrow error")
-                    .with_cause(WrappedError::Arrow(ae))
-            }
-            DataFusionError::ParquetError(pe) => {
-                FsError::new(ErrorCode::ParquetError, "Parquet error")
-                    .with_cause(WrappedError::Parquet(pe))
-            }
-            // DataFusionError::ObjectStore(oe) => {
-            //     FsError::new(ErrorCode::ObjectStoreError, "Object store error")
-            //         .with_cause(WrappedError::ObjectStore(oe))
-            // }
-            DataFusionError::IoError(ie) => {
-                FsError::new(ErrorCode::IoError, "IO error").with_cause(WrappedError::Io(ie))
-            }
-            DataFusionError::Plan(s) => FsError::new(ErrorCode::LogicalPlanError, "Semantic error")
-                .with_cause(WrappedError::Generic(s)),
-            DataFusionError::SchemaError(se, _) => {
-                FsError::new(ErrorCode::LogicalPlanError, "Schema error")
-                    .with_cause(WrappedError::NameError(NameError::Datafusion(*se)))
-            }
-            DataFusionError::ResourcesExhausted(s) => {
-                FsError::new(ErrorCode::ResourceError, "Resource error")
-                    .with_cause(WrappedError::Generic(s))
-            }
-            DataFusionError::SQL(_, _)
-            | DataFusionError::NotImplemented(_)
-            | DataFusionError::Internal(_)
-            | DataFusionError::Configuration(_)
-            | DataFusionError::Context(_, _)
-            | DataFusionError::Substrait(_)
-            | DataFusionError::External(_)
-            | DataFusionError::ObjectStore(_)
-            | DataFusionError::Diagnostic(_, _)
-            | DataFusionError::Collection(_)
-            | DataFusionError::Shared(_) => {
-                FsError::new(ErrorCode::GenericDatafusionError, "Datafusion error")
-                    .with_cause(WrappedError::Datafusion(err))
-            }
-        }
-    }
-}
-
-impl From<DataFusionError> for Box<FsError> {
-    fn from(e: DataFusionError) -> Self {
-        Box::new(e.into())
-    }
-}
-
 // impl From<reqwest::Error> for Box<FsError> {
 //     fn from(e: reqwest::Error) -> Self {
 //         Box::new(e.into())
 //     }
 // }
-
-impl From<DataFusionError> for WrappedError {
-    fn from(e: DataFusionError) -> Self {
-        WrappedError::Datafusion(e)
-    }
-}
 
 impl From<GenericNameError> for WrappedError {
     fn from(e: GenericNameError) -> Self {
@@ -1591,21 +1535,6 @@ impl<T> ContextableResult<T> for FsResult<T> {
 // This part allows "tunneling" InternalErrors through DataFusionError, thus
 // allowing DataFusionResult to be used interchangeably with InternalResult
 
-impl From<FsError> for DataFusionError {
-    fn from(e: FsError) -> Self {
-        match e.cause {
-            Some(WrappedError::Datafusion(e)) => e,
-            _ => DataFusionError::External(Box::new(e)),
-        }
-    }
-}
-
-impl From<Box<FsError>> for DataFusionError {
-    fn from(e: Box<FsError>) -> Self {
-        (*e).into()
-    }
-}
-
 // impl From<sdf_auth::validate_credentials::CredentialError> for Box<FsError> {
 //     fn from(e: sdf_auth::validate_credentials::CredentialError) -> Self {
 //         Box::new(FsError::new(ErrorCode::RemoteError, e.to_string()))
@@ -1624,6 +1553,40 @@ mod tests {
     use crate::{CodeLocationWithFile, ErrorCode};
 
     use super::*;
+
+    /// The CLI shows `message`; the LSP shows `pretty`. Both carry the notice before the location.
+    #[test]
+    fn future_error_notice_precedes_the_location() {
+        let err = FsError::new_no_backtrace(ErrorCode::MalformedBlockName, "Malformed.")
+            .with_location(CodeLocationWithFile::new(17, 9, 0, "models/docs.md"))
+            .with_future_error_notice();
+        let notice = "Malformed. This will become an error in a future release. \
+                      See https://github.com/dbt-labs/dbt/issues/16956";
+
+        assert_eq!(
+            err.message(),
+            format!("{notice}\n  --> models/docs.md:17:9")
+        );
+        assert_eq!(
+            err.pretty(),
+            format!("[MalformedBlockName (dbt1509)]: {notice}\n  --> models/docs.md:17:9")
+        );
+    }
+
+    #[test]
+    fn stable_code_has_no_future_error_notice() {
+        let err = FsError::new_no_backtrace(ErrorCode::NoNodesSelected, "Nothing to do.")
+            .with_future_error_notice();
+        assert_eq!(err.to_string(), "Nothing to do.");
+    }
+
+    /// A future-error code can also be returned as a real error (e.g. `DepsDuplicatePackage` in
+    /// `dbt-dist`). Only warnings emitted as future changes carry the notice.
+    #[test]
+    fn future_error_code_has_no_notice_unless_added() {
+        let err = FsError::new_no_backtrace(ErrorCode::DepsDuplicatePackage, "Duplicate.");
+        assert_eq!(err.to_string(), "Duplicate.");
+    }
 
     #[test]
     fn with_file_location_discards_existing_position() {

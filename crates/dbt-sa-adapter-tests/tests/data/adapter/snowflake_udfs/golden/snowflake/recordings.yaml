@@ -1,0 +1,111 @@
+b47e1281:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_udfs
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.hello_world.base:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_udfs.base
+    
+    
+    
+    
+    as (
+    
+    
+    SELECT 1 AS ID
+    UNION ALL
+    SELECT 2 AS ID
+    UNION ALL
+    SELECT 3 AS ID
+    )
+model.hello_world.scaler_udf:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace   view development.adapters_snowflake_udfs.scaler_udf
+    
+    
+    
+    
+    as (
+    SELECT IS_EVEN(ID) AS IS_EVEN FROM development.adapters_snowflake_udfs.base
+    UNION ALL
+    SELECT adapters_snowflake_udfs.IS_EVEN(ID) AS IS_EVEN FROM development.adapters_snowflake_udfs.base
+    UNION ALL
+    SELECT development.adapters_snowflake_udfs.IS_EVEN(ID) AS IS_EVEN FROM development.adapters_snowflake_udfs.base
+    )
+model.hello_world.table_udf:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace   view development.adapters_snowflake_udfs.table_udf
+    
+    
+    
+    
+    as (
+    SELECT * FROM TABLE(split_string('foo, bar, baz'))
+    UNION ALL
+    SELECT * FROM TABLE(adapters_snowflake_udfs.split_string('foo, bar, baz'))
+    UNION ALL
+    SELECT * FROM TABLE(development.adapters_snowflake_udfs.split_string('foo, bar, baz'))
+    )
+model.hello_world.table_udf_complex:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_UDFS" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace   view development.adapters_snowflake_udfs.table_udf_complex
+    
+    
+    
+    
+    as (
+    SELECT * FROM TABLE(development.adapters_snowflake_udfs.sample_table_function())
+    )
+model.hello_world.table_udf_complex_derived:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace   view development.adapters_snowflake_udfs.table_udf_complex_derived
+    
+    
+    
+    
+    as (
+    SELECT COL1 AS ID, COL2 AS TS FROM development.adapters_snowflake_udfs.table_udf_complex
+    )
+model.hello_world.table_udf_derived:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace   view development.adapters_snowflake_udfs.table_udf_derived
+    
+    
+    
+    
+    as (
+    SELECT PART AS ID FROM development.adapters_snowflake_udfs.table_udf
+    )
+operation.hello_world.hello_world-on-run-start-0:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE FUNCTION development.adapters_snowflake_udfs.split_string(input STRING) RETURNS TABLE (part STRING) LANGUAGE SQL AS $$ SELECT TRIM(value) AS part FROM TABLE(SPLIT_TO_TABLE(input, ',')) $$
+operation.hello_world.hello_world-on-run-start-1:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE FUNCTION development.adapters_snowflake_udfs.is_even(n INT) RETURNS BOOLEAN AS $$ MOD(n, 2) = 0 $$
+operation.hello_world.hello_world-on-run-start-2:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE FUNCTION development.adapters_snowflake_udfs.sample_table_function() RETURNS TABLE ( COL1 DECIMAL(10,2), COL2 TIMESTAMP_TZ ) AS 'SELECT 1234.56::DECIMAL(10,2) AS COL1, CURRENT_TIMESTAMP()::TIMESTAMP_TZ AS COL2'

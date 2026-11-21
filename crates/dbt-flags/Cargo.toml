@@ -1,0 +1,23 @@
+[package]
+name = "dbt-flags"
+description = "Feature flag registry and resolver for dbt Fusion"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "dbt_flags"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+# Note: keep this crate a leaf. Callers adapt their own config formats (YAML
+# project flags, clap args) into the plain lookups this crate takes.

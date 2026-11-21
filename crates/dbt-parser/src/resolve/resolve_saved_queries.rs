@@ -2,11 +2,13 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{
     extract_resource_config_from_raw_project, get_node_fqn, get_original_file_path, get_unique_id,
 };
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
@@ -28,7 +30,7 @@ use regex::Regex;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 
 fn extract_raw_export_configs(
     exports: &dbt_yaml::Value,
@@ -45,6 +47,43 @@ fn extract_raw_export_configs(
     export_configs
 }
 
+/// How a package's saved queries resolve.
+pub(crate) struct SavedQueries;
+
+#[async_trait]
+impl ResolvableNode for SavedQueries {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["saved_queries"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // A package on the legacy semantic layer YAML resolves none.
+        if ctx.semantic_layer_spec_is_legacy {
+            return Ok(());
+        }
+        let (saved_queries, disabled_saved_queries) = resolve_saved_queries(
+            ctx.adapter_type,
+            ctx.arg,
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.root_package_name,
+            ctx.root_project_configs,
+            &mut ctx.properties.take_entries("saved_queries"),
+            ctx.database,
+            ctx.schema,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+        )
+        .await?;
+        ctx.nodes.saved_queries.extend(saved_queries);
+        ctx.disabled_nodes
+            .saved_queries
+            .extend(disabled_saved_queries);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_saved_queries(
     adapter_type: AdapterType,
@@ -53,7 +92,7 @@ pub async fn resolve_saved_queries(
     root_package: &DbtPackage,
     _root_package_name: &str,
     root_project_configs: &RootProjectConfigs,
-    saved_query_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    saved_query_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     package_name: &str,
@@ -183,12 +222,18 @@ pub async fn resolve_saved_queries(
                 nodes_with_ref_location: vec![],
             };
 
-            // schema can be overriden from either Export config or Saved Query config
-            // TODO: we should also allow overriding the database in the same manner
+            // Both schema and database can be overridden from either the Export
+            // config or the Saved Query config, with the environment default as
+            // the fallback. Per-export wins over per-saved-query, which wins
+            // over the environment.
             let saved_query_schema = saved_query_config
                 .schema
                 .clone()
                 .unwrap_or_else(|| schema.to_string());
+            let saved_query_database = saved_query_config
+                .database
+                .clone()
+                .unwrap_or_else(|| database.to_string());
 
             let exports = saved_query_props
                 .exports
@@ -207,7 +252,11 @@ pub async fn resolve_saved_queries(
                                     .unwrap_or_else(|| saved_query_schema.to_string()),
                             ),
                             alias: Some(config.alias.unwrap_or_else(|| export.name.clone())),
-                            database: Some(database.to_string()),
+                            database: Some(
+                                config
+                                    .database
+                                    .unwrap_or_else(|| saved_query_database.to_string()),
+                            ),
                         },
                         unrendered_config: raw_export_configs
                             .get(&export.name)

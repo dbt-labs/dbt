@@ -8,7 +8,10 @@ use std::num::NonZeroUsize;
 use dbt_runtime::builder::Builder;
 use dbt_runtime::handle::{EnterGuard, Handle, TryCurrentError};
 use dbt_runtime::task_hooks::TaskMeta;
-use dbt_runtime::{Id, JoinError, JoinHandle, Runtime, spawn_blocking, spawn_mandatory_blocking};
+use dbt_runtime::{
+    Id, JoinError, JoinHandle, Runtime, spawn_blocking, spawn_blocking_with_wait_guard,
+    spawn_mandatory_blocking,
+};
 
 #[expect(dead_code)]
 fn build() -> Runtime {
@@ -45,12 +48,14 @@ fn use_runtime(rt: Runtime) {
     let guard: EnterGuard<'_> = handle.enter();
     let ambient: JoinHandle<u32> = spawn_blocking(|| 1u32);
     let ambient_mandatory: Option<JoinHandle<u32>> = spawn_mandatory_blocking(|| 1u32);
+    let observed = spawn_blocking_with_wait_guard(std::time::Duration::ZERO, || (), || 1u32);
+    drop(observed);
     drop(guard);
 
     // Dropping a `JoinHandle` detaches; that is the documented behaviour.
     drop((spawned, mandatory, via_handle, ambient, ambient_mandatory));
 
-    rt.shutdown_timeout(std::time::Duration::from_secs(1));
+    let _: bool = rt.shutdown_timeout(std::time::Duration::from_secs(1));
 }
 
 #[expect(dead_code)]
@@ -95,7 +100,7 @@ fn build_and_shut_down_an_idle_runtime() {
     let rt = Builder::new().max_blocking_threads(2).build();
     assert_eq!(rt.handle().num_blocking_threads(), 0);
     assert_eq!(rt.handle().blocking_queue_depth(), 0);
-    rt.shutdown_timeout(std::time::Duration::from_secs(5));
+    assert!(rt.shutdown_timeout(std::time::Duration::from_secs(5)));
 }
 
 #[test]

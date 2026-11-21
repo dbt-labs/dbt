@@ -1,0 +1,18 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/c.sql
+snowflake
+development
+adapters_snowflake_get_relation_with_schema
+None
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/c.sql
+snowflake
+development
+adapters_snowflake_get_relation_with_schema
+development.adapters_snowflake_get_relation_with_schema.a
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

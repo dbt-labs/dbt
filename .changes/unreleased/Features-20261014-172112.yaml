@@ -1,0 +1,7 @@
+kind: Features
+body: '[ClickHouse] Adds support for grants and dbt clone'
+time: 2026-10-14T17:21:12.227565+02:00
+custom:
+    author: koletzilla
+    issue: 14652 14585
+    project: dbt-core

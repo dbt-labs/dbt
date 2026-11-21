@@ -1,0 +1,18 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/c.sql
+{}
+snowflake_default_transient_dynamic_tables.no_warn:
+not expected
+expected
+expected
+ Rendering models/c.sql
+{}
+snowflake_default_transient_dynamic_tables.no_warn:False
+not expected
+expected
+expected
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

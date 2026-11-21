@@ -25,7 +25,7 @@ pub enum LegacyWarnErrorGroupValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FusionWarnErrorGroupValue {
     StaticAnalysis,
-    PackageParsingCompatibilityErrors,
+    PackageParsingCompatibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
@@ -170,7 +170,7 @@ impl WarnErrorOptions {
                 ) => {}
                 WarnErrorOptionValue::FusionGroup(
                     FusionWarnErrorGroupValue::StaticAnalysis
-                    | FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+                    | FusionWarnErrorGroupValue::PackageParsingCompatibility,
                 ) => {}
                 WarnErrorOptionValue::SupportedLegacy(_) => {}
                 WarnErrorOptionValue::NotYetSupportedLegacy(legacy) => {
@@ -198,7 +198,7 @@ impl WarnErrorOptions {
             .into_iter()
             .map(|(name, reason)| {
                 format!(
-                    "warn_error_options value `{name}` will not be supported in Fusion: {reason} Please remove from cli argument or config."
+                    "warn_error_options value `{name}` will not be supported in dbt v2: {reason} Please remove from cli argument or config."
                 )
             })
             .collect::<Vec<_>>();
@@ -208,7 +208,7 @@ impl WarnErrorOptions {
         if let Some(warn_line) = match not_yet_supported.len() {
             0 => None,
             1 => Some(format!(
-                "warn_error_options value `{}` is recognized, but Fusion does not support it yet.",
+                "warn_error_options value `{}` is recognized, but dbt v2 does not support it yet.",
                 not_yet_supported.iter().next().unwrap()
             )),
             len if len <= MAX_CODES_IN_MSG => {
@@ -218,7 +218,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} are recognized, but Fusion does not support them yet."
+                    "warn_error_options values {values} are recognized, but dbt v2 does not support them yet."
                 ))
             }
             // Too many, show at most MAX_CODES_IN_MSG and N others
@@ -230,7 +230,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} and {} others are recognized, but Fusion does not support them yet.",
+                    "warn_error_options values {values} and {} others are recognized, but dbt v2 does not support them yet.",
                     len - MAX_CODES_IN_MSG
                 ))
             }
@@ -240,11 +240,11 @@ impl WarnErrorOptions {
 
         let mut error_lines = Vec::new();
 
-        // Parsed numbers that are not valid Fusion error codes use a dedicated error message
+        // Parsed numbers that are not valid dbt v2 error codes use a dedicated error message
         if let Some(error_line) = match invalid_fusion_codes.len() {
             0 => None,
             1 => Some(format!(
-                "warn_error_options value `{}` is not a known Fusion error code.",
+                "warn_error_options value `{}` is not a known dbt v2 error code.",
                 invalid_fusion_codes.iter().next().unwrap()
             )),
             len if len <= MAX_CODES_IN_MSG => {
@@ -254,7 +254,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} are not known Fusion error codes."
+                    "warn_error_options values {values} are not known dbt v2 error codes."
                 ))
             }
             // Too many, show at most MAX_CODES_IN_MSG and N others
@@ -266,7 +266,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} and {} others are not known Fusion error codes.",
+                    "warn_error_options values {values} and {} others are not known dbt v2 error codes.",
                     len - MAX_CODES_IN_MSG
                 ))
             }
@@ -278,7 +278,7 @@ impl WarnErrorOptions {
         if let Some(error_line) = match invalid_raw_values.len() {
             0 => None,
             1 => Some(format!(
-                "warn_error_options value `{}` is invalid because it is not a known Fusion error name, dbt-core event name, or supported warn-error group.",
+                "warn_error_options value `{}` is invalid because it is not a known dbt v2 error name, dbt-core event name, or supported warn-error group.",
                 invalid_raw_values.iter().next().unwrap()
             )),
             len if len <= MAX_CODES_IN_MSG => {
@@ -288,7 +288,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} are invalid because they are not known Fusion error names, dbt-core event names, or supported warn-error groups."
+                    "warn_error_options values {values} are invalid because they are not known dbt v2 error names, dbt-core event names, or supported warn-error groups."
                 ))
             }
             // Too many, show at most MAX_CODES_IN_MSG and N others
@@ -300,7 +300,7 @@ impl WarnErrorOptions {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Some(format!(
-                    "warn_error_options values {values} and {} others are invalid because they are not known Fusion error names, dbt-core event names, or supported warn-error groups.",
+                    "warn_error_options values {values} and {} others are invalid because they are not known dbt v2 error names, dbt-core event names, or supported warn-error groups.",
                     len - MAX_CODES_IN_MSG
                 ))
             }
@@ -476,7 +476,7 @@ fn parse_warn_error_option_value(value: &Value) -> Option<WarnErrorOptionValue> 
 
     if raw == "PackageParsingCompatibility" {
         return Some(WarnErrorOptionValue::FusionGroup(
-            FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+            FusionWarnErrorGroupValue::PackageParsingCompatibility,
         ));
     }
 
@@ -538,7 +538,7 @@ impl WarnErrorOptions {
                 MatchType::Group
             }
             WarnErrorOptionValue::FusionGroup(
-                FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+                FusionWarnErrorGroupValue::PackageParsingCompatibility,
             ) if Self::matches_package_parsing_compatibility(error_code, error_ctx) => {
                 MatchType::Group
             }
@@ -745,6 +745,21 @@ fn matches_legacy_error_code(legacy: SupportedLegacyWarnError, error_code: Error
 mod tests {
     use super::*;
     use crate::ErrorCode;
+
+    #[test]
+    fn config_spelling_round_trips_through_serde() {
+        let spellings = [
+            "PackageParsingCompatibility",
+            "StaticAnalysis",
+            "Deprecations",
+            "all",
+            "NoNodesForSelectionCriteria",
+        ];
+        let yaml = format!("{{error: [{}]}}", spellings.join(", "));
+        let parsed = WarnErrorOptions::from_yaml_value(&dbt_yaml::from_str(&yaml).unwrap());
+        let json = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(json["error"], serde_json::json!(spellings));
+    }
 
     /// Guards the derivation in [`is_fusion_only_warning`]: every legacy warning
     /// wired to an error code must count as having a dbt-core counterpart.
@@ -1178,7 +1193,7 @@ mod tests {
         assert_eq!(
             parsed.silence,
             vec![WarnErrorOptionValue::FusionGroup(
-                FusionWarnErrorGroupValue::PackageParsingCompatibilityErrors,
+                FusionWarnErrorGroupValue::PackageParsingCompatibility,
             )],
         );
         assert_eq!(

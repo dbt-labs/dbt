@@ -1,0 +1,8 @@
+# Override DuckDB to use a file-based database so that data persists across
+# multiple `fs run` invocations within the same test (needed for incremental).
+fusion_tests:
+  outputs:
+    duckdb:
+      type: duckdb
+      path: "test.duckdb"
+      database: "test"

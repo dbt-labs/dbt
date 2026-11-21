@@ -27,13 +27,8 @@
 ) %}
     -- apply a full refresh immediately if needed
     {% if configuration_changes.requires_full_refresh %}
-        {#- CREATE OR REPLACE cannot change partition_by, so use DROP + CREATE when partition_by changes -#}
-        {% if configuration_changes.changes["partition_by"] %}
-            {{- log('Applying REPLACE to: ' ~ existing_relation) -}}
-            {% do return(drop_and_create(existing_relation, relation, sql)) %}
-        {% else %}
-            {% do return(get_replace_sql(existing_relation, relation, sql)) %}
-        {% endif %}
+        {#- DIVERGENCE: partition changes are decided by databricks__get_mv_replace_strategy in get_replace_sql -#}
+        {% do return(get_replace_sql(existing_relation, relation, sql)) %}
 
     -- otherwise apply individual changes as needed
     {% else %}

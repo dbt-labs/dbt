@@ -1,6 +1,7 @@
 use std::fmt;
 
 use dbt_adapter_core::AdapterType;
+use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use serde::{Deserialize, Serialize};
 
 /// Enum representing different types of relations.
@@ -38,42 +39,43 @@ pub enum RelationType {
 }
 
 impl RelationType {
-    /// Convert a given type string for a given [AdapterType] to a dbt RelationType
-    // TODO: This should return an error instead of panicking.
-    pub fn from_adapter_type(adapter_type: AdapterType, type_string: &str) -> Self {
+    /// Convert a warehouse-reported type string for [AdapterType] to a [RelationType].
+    /// Unknown types return `NotSupported`.
+    pub fn from_adapter_type(adapter_type: AdapterType, type_string: &str) -> FsResult<Self> {
         match adapter_type {
             // https://cloud.google.com/bigquery/docs/information-schema-tables
             // Alternatively, if querying from the Google API:
             // https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/tables
             AdapterType::Bigquery => match type_string.to_uppercase().as_str() {
-                "BASE TABLE" | "CLONE" | "SNAPSHOT" | "TABLE" => RelationType::Table,
-                "VIEW" => RelationType::View,
-                "MATERIALIZED VIEW" | "MATERIALIZED_VIEW" => RelationType::MaterializedView,
-                "EXTERNAL" => RelationType::External,
-                "FUNCTION" | "AGGREGATE FUNCTION" => RelationType::Function,
-                _ => panic!("unknown table type: {type_string}"),
+                "BASE TABLE" | "CLONE" | "SNAPSHOT" | "TABLE" => Ok(RelationType::Table),
+                "VIEW" => Ok(RelationType::View),
+                "MATERIALIZED VIEW" | "MATERIALIZED_VIEW" => Ok(RelationType::MaterializedView),
+                "EXTERNAL" => Ok(RelationType::External),
+                "FUNCTION" | "AGGREGATE FUNCTION" | "TABLE FUNCTION" => Ok(RelationType::Function),
+                _ => err!(ErrorCode::NotSupported, "unknown table type: {type_string}"),
             },
             // https://docs.databricks.com/aws/en/sql/language-manual/information-schema/tables#table-types
             AdapterType::Databricks => match type_string.to_uppercase().as_str() {
-                "TABLE" => RelationType::Table,
-                "VIEW" => RelationType::View,
-                "MATERIALIZED_VIEW" => RelationType::MaterializedView,
-                "EXTERNAL" | "EXTERNAL_SHALLOW_CLONE" | "FOREIGN" => RelationType::External,
-                "STREAMING_TABLE" => RelationType::StreamingTable,
-                "METRIC_VIEW" => RelationType::MetricView,
-                "MANAGED" | "MANAGED_SHALLOW_CLONE" => RelationType::Table,
-                _ => panic!("unknown table type: {type_string}"),
+                "TABLE" => Ok(RelationType::Table),
+                "VIEW" => Ok(RelationType::View),
+                "MATERIALIZED_VIEW" => Ok(RelationType::MaterializedView),
+                "EXTERNAL" | "EXTERNAL_SHALLOW_CLONE" | "FOREIGN" => Ok(RelationType::External),
+                "STREAMING_TABLE" => Ok(RelationType::StreamingTable),
+                "METRIC_VIEW" => Ok(RelationType::MetricView),
+                "MANAGED" | "MANAGED_SHALLOW_CLONE" => Ok(RelationType::Table),
+                _ => err!(ErrorCode::NotSupported, "unknown table type: {type_string}"),
             },
             AdapterType::Spark => match type_string.to_uppercase().as_str() {
                 // These are the only table types Apache Spark's catalog reports
                 // (`CatalogTableType`) via `DESCRIBE TABLE EXTENDED`, identical over
                 // Thrift/Livy/Spark Connect: MANAGED, EXTERNAL, VIEW (released 3.5/4.0)
                 // https://github.com/apache/spark/blob/f0bb2e6a47d0ebda424ffd633fcea8644a597954/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/catalog/interface.scala#L1039
-                "MANAGED" | "EXTERNAL" => RelationType::Table,
-                "VIEW" => RelationType::View,
-                _ => panic!("unknown table type: {type_string}"),
+                "MANAGED" | "EXTERNAL" => Ok(RelationType::Table),
+                "VIEW" => Ok(RelationType::View),
+                _ => err!(ErrorCode::NotSupported, "unknown table type: {type_string}"),
             },
-            _ => RelationType::from(type_string),
+            _ => RelationType::try_from(type_string)
+                .map_err(|_| fs_err!(ErrorCode::NotSupported, "unknown table type: {type_string}")),
         }
     }
 }
@@ -100,23 +102,25 @@ impl fmt::Display for RelationType {
     }
 }
 
-impl From<&str> for RelationType {
-    fn from(s: &str) -> Self {
+impl TryFrom<&str> for RelationType {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
-            "table" => RelationType::Table,
-            "view" => RelationType::View,
-            "cte" => RelationType::CTE,
-            "materialized_view" => RelationType::MaterializedView,
-            "ephemeral" => RelationType::Ephemeral,
-            "external" => RelationType::External,
-            "pointer_table" => RelationType::PointerTable,
-            "dynamic_table" => RelationType::DynamicTable,
-            "streaming_table" => RelationType::StreamingTable,
-            "metric_view" => RelationType::MetricView,
-            "function" => RelationType::Function,
-            "interactive_table" => RelationType::InteractiveTable,
-            "dictionary" => RelationType::Dictionary,
-            _ => panic!("Invalid relation type: {s}"),
+            "table" => Ok(RelationType::Table),
+            "view" => Ok(RelationType::View),
+            "cte" => Ok(RelationType::CTE),
+            "materialized_view" => Ok(RelationType::MaterializedView),
+            "ephemeral" => Ok(RelationType::Ephemeral),
+            "external" => Ok(RelationType::External),
+            "pointer_table" => Ok(RelationType::PointerTable),
+            "dynamic_table" => Ok(RelationType::DynamicTable),
+            "streaming_table" => Ok(RelationType::StreamingTable),
+            "metric_view" => Ok(RelationType::MetricView),
+            "function" => Ok(RelationType::Function),
+            "interactive_table" => Ok(RelationType::InteractiveTable),
+            "dictionary" => Ok(RelationType::Dictionary),
+            _ => Err(format!("Invalid relation type: {s}")),
         }
     }
 }
@@ -128,9 +132,14 @@ mod tests {
 
     #[test]
     fn dictionary_relation_type_round_trips() {
-        let rt = RelationType::from("dictionary");
+        let rt = RelationType::try_from("dictionary").unwrap();
         assert_eq!(rt, RelationType::Dictionary);
         assert_eq!(rt.to_string(), "dictionary");
+    }
+
+    #[test]
+    fn unknown_relation_type_string_errors() {
+        assert!(RelationType::try_from("bogus").is_err());
     }
 
     #[test]
@@ -140,23 +149,24 @@ mod tests {
         // EXTERNAL via TRANSLATED_TO_EXTERNAL); VIEW is a view. All render to valid
         // `drop table` / `drop view` (the bug was EXTERNAL -> `drop external`).
         for t in ["EXTERNAL", "external", "MANAGED"] {
-            let rt = RelationType::from_adapter_type(AdapterType::Spark, t);
+            let rt = RelationType::from_adapter_type(AdapterType::Spark, t).unwrap();
             assert_eq!(rt, RelationType::Table, "Spark {t} should resolve to Table");
             assert_eq!(rt.to_string(), "table");
         }
 
-        let rt = RelationType::from_adapter_type(AdapterType::Spark, "VIEW");
+        let rt = RelationType::from_adapter_type(AdapterType::Spark, "VIEW").unwrap();
         assert_eq!(rt, RelationType::View, "Spark VIEW should resolve to View");
         assert_eq!(rt.to_string(), "view");
     }
 
     #[test]
-    #[should_panic(expected = "unknown table type")]
     fn spark_rejects_non_spark_relation_types() {
         // Databricks/Unity-Catalog-only types (FOREIGN, STREAMING_TABLE,
         // *_SHALLOW_CLONE) cannot come from an Apache Spark catalog, so the Spark
         // arm rejects them rather than silently coercing.
-        RelationType::from_adapter_type(AdapterType::Spark, "FOREIGN");
+        let err = RelationType::from_adapter_type(AdapterType::Spark, "FOREIGN").unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotSupported);
+        assert!(err.to_string().contains("unknown table type"));
     }
 
     #[test]
@@ -164,15 +174,15 @@ mod tests {
         // Databricks behavior is unchanged: EXTERNAL stays External, FOREIGN stays
         // External, MANAGED is a table.
         assert_eq!(
-            RelationType::from_adapter_type(AdapterType::Databricks, "EXTERNAL"),
+            RelationType::from_adapter_type(AdapterType::Databricks, "EXTERNAL").unwrap(),
             RelationType::External
         );
         assert_eq!(
-            RelationType::from_adapter_type(AdapterType::Databricks, "FOREIGN"),
+            RelationType::from_adapter_type(AdapterType::Databricks, "FOREIGN").unwrap(),
             RelationType::External
         );
         assert_eq!(
-            RelationType::from_adapter_type(AdapterType::Databricks, "MANAGED"),
+            RelationType::from_adapter_type(AdapterType::Databricks, "MANAGED").unwrap(),
             RelationType::Table
         );
     }
@@ -187,6 +197,7 @@ mod tests {
             ("VIEW", (RelationType::View, "view")),
             ("EXTERNAL", (RelationType::External, "external")),
             ("FunCTion", (RelationType::Function, "function")),
+            ("TABLE FUNCTION", (RelationType::Function, "function")),
             (
                 "materialized view",
                 (RelationType::MaterializedView, "materialized_view"),
@@ -198,25 +209,22 @@ mod tests {
         ]);
 
         for (key, (rel_type, name)) in map {
-            let rt = RelationType::from_adapter_type(AdapterType::Bigquery, key);
+            let rt = RelationType::from_adapter_type(AdapterType::Bigquery, key).unwrap();
             assert_eq!(rt, rel_type);
             assert_eq!(rt.to_string(), name);
         }
 
         let list = ["PROCEDURE", "foobar"];
         for item in list.iter() {
-            let result = std::panic::catch_unwind(|| {
-                RelationType::from_adapter_type(AdapterType::Bigquery, item)
-            });
-            assert!(result.is_err());
-
-            let panic_payload = result.unwrap_err();
-            assert!(
-                panic_payload
-                    .downcast_ref::<String>()
-                    .unwrap()
-                    .contains("unknown table type")
-            );
+            let err = RelationType::from_adapter_type(AdapterType::Bigquery, item).unwrap_err();
+            assert_eq!(err.code, ErrorCode::NotSupported);
+            assert!(err.to_string().contains("unknown table type"));
         }
+    }
+
+    #[test]
+    fn fallback_adapter_unknown_type_errors_without_panic() {
+        let err = RelationType::from_adapter_type(AdapterType::Postgres, "bogus_type").unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotSupported);
     }
 }

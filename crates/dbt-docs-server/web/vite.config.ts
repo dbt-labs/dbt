@@ -20,6 +20,12 @@ export default defineConfig(({ mode }) => ({
     // generated site, since there is no REST fallback to develop against.
     devSite(),
     react({
+      // dbt-docs-lib arrives built, with its dependencies (Radix, floating-ui, ...)
+      // bundled in and their hooks renamed by the minifier. The compiler cannot tell
+      // those are hooks, so it memoizes some of their calls away and React throws on
+      // the next render. The plugin skips `node_modules/` by default, but the lib is
+      // linked from the workspace and resolves to its real path outside it.
+      exclude: /\/dbt-docs-lib\/dist\//,
       babel: {
         plugins: [['babel-plugin-react-compiler']],
       },
@@ -46,10 +52,10 @@ export default defineConfig(({ mode }) => ({
         manualChunks: {
           react: ['react', 'react-dom', 'react-router-dom'],
           query: ['@tanstack/react-query', '@tanstack/react-table'],
-          // The pure-JS parquet reader and its decompressors. Needed on the
+          // The pure-JS parquet reader and its ZSTD decoder. Needed on the
           // critical path, but separate so a change to app code does not
           // invalidate them.
-          parquet: ['hyparquet', 'hyparquet-compressors'],
+          parquet: ['hyparquet', 'fzstd'],
         },
       },
     },

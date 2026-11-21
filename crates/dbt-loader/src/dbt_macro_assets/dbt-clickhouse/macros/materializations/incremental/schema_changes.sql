@@ -2,8 +2,8 @@
     {{ log('Schema changes detected. Trying to apply the following changes: ' ~ column_changes) }}
     {%- set existing_local = none -%}
     {% if is_distributed %}
-        {%- set local_suffix = get_clickhouse_local_suffix() -%}
-        {%- set local_db_prefix = get_clickhouse_local_db_prefix() -%}
+        {%- set local_suffix = adapter.get_clickhouse_local_suffix() -%}
+        {%- set local_db_prefix = adapter.get_clickhouse_local_db_prefix() -%}
         {%- set existing_local = existing_relation.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema}) if existing_relation is not none else none -%}
     {% endif %}
 

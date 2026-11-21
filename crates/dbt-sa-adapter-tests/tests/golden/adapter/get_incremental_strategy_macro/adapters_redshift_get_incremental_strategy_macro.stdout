@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+default_fn: None
+ Rendering models/a.sql
+default_fn: {'macro_name': 'get_incremental_default_sql', 'package_name': undefined, 'strict': False, 'auto_execute': False}
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'redshift' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

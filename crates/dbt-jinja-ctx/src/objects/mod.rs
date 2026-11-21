@@ -10,7 +10,7 @@
 //! * Parse phase (PR 5): `ParseExecute`, `MacroLookupContext`,
 //!   `DbtNamespace` (dispatch-side).
 //! * Compile phase: `DummyConfig`.
-//! * Run phase: `HookConfig`, `LazyModelWrapper`.
+//! * Run phase: `HookConfig`.
 //!
 //! Pending later PRs:
 //! * `ParseMetricReference`, `ParseConfigValue` — bundle with `ParseConfig`
@@ -24,7 +24,7 @@
 //! * `RefFunction`, `SourceFunction`, `FunctionFunction`,
 //!   `MicrobatchRefContext`, `LazyFlatGraph` — need
 //!   `NodeResolverHandle` / `RuntimeConfigHandle` / `FlatGraphSource`.
-//! * `CompileConfig`, `RunConfig` — depend on `dbt_common::DashMap` /
+//! * `CompileConfig`, `RunConfig` — depend on `dbt_common::collections::SccHashMap` /
 //!   `dbt_schemas::project::ConfigKeys`.
 //! * `WriteConfig` — uses `dbt_common::path::get_target_write_path`.
 
@@ -36,4 +36,4 @@ pub mod run;
 pub use compile::DummyConfig;
 pub use lookup::{DbtNamespace, MacroLookupContext};
 pub use parse::ParseExecute;
-pub use run::{HookConfig, LazyModelWrapper};
+pub use run::HookConfig;

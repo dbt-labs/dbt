@@ -1,0 +1,12 @@
+8d3b040a:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_table_replaces_view`
+model.bigquery_table_replaces_view.m:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`bigquery_table_replaces_view`.`m`
+    OPTIONS()
+    as 
+    select 1 as id;

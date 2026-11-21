@@ -22,20 +22,22 @@ use dbt_schemas::schemas::{
     DbtModel, DbtSeed, DbtSnapshot, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
     macros::DbtMacro,
 };
+use dbt_schemas::state::DbtRuntimeConfig;
 use dbt_state::hash::node_state_hashes;
 use dbt_state::materialization;
 use dbt_state::proto::query_cache::{
     DbtNodeState, QueryDependency, StaleUpstreamPolicy, SubmitEnrichedSqlRequest,
-    SubmitValuesRequest, TableModifiedInfo, TableProperties,
+    SubmitValuesRequest, TableModifiedInfo, TableProperties, TableSchema,
 };
 use dbt_state::request_builder::{
     ExecutionTypeInput, NodeIdentity, RequestBuildError, SemanticExtraConfig, SemanticExtras,
     SubmitEnrichedSqlRequestInput, SubmitValuesRequestInput, execution_type_from_input,
-    seed_semantic_extras, sql_semantic_extras,
+    seed_semantic_extras, sql_semantic_extras, target_table_missing,
 };
 use dbt_telemetry::NodeType;
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::context::TaskRunnerCtx;
 
@@ -61,6 +63,9 @@ pub struct DbtProjectInfo {
     pub project_id: Option<String>, // dbt cloud project id; only present if dbt cloud is in use
     pub project_root: DbtPath,
     pub table_namespace: Option<String>,
+    /// Source of the `var()` values folded into the configs hash for nodes that compare
+    /// unrendered code.
+    pub runtime_config: Arc<DbtRuntimeConfig>,
 }
 
 impl From<&TaskRunnerCtx> for DbtProjectInfo {
@@ -82,6 +87,7 @@ impl From<&TaskRunnerCtx> for DbtProjectInfo {
             project_id,
             project_root,
             table_namespace: profile.default_db_config().get_adapter_unique_id(),
+            runtime_config: value.inner.runtime_config.clone(),
         }
     }
 }
@@ -109,6 +115,9 @@ pub struct SqlRunCacheRequestContext {
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
     pub default_schema: String,
     /// How the service should aggregate per-dependency freshness checks for
     /// this request. Derived from the model's
@@ -118,6 +127,16 @@ pub struct SqlRunCacheRequestContext {
     /// run. Folded into the model-level cache key so an unchanged window no-ops
     /// and a different window executes. `None` for non-microbatch nodes.
     pub microbatch_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    /// Resolved `compare_selected_columns` (column-aware reuse). Always false
+    /// for views.
+    pub compare_selected_columns: bool,
+    /// Schemas of the edge tables the SQL reads. Empty unless
+    /// `compare_selected_columns` is set on a non-speculative submit that asks
+    /// for decisions.
+    pub table_schemas: Vec<TableSchema>,
+    /// Whether the target relation exists. `None` when unknown, and for
+    /// speculative requests and nodes without a target table.
+    pub target_exists: Option<bool>,
     pub dbt_project_info: DbtProjectInfo,
 }
 
@@ -133,6 +152,10 @@ pub struct SeedRunCacheRequestContext {
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
+    pub compare_unrendered_code: bool,
     pub dbt_project_info: DbtProjectInfo,
 }
 
@@ -166,8 +189,13 @@ pub fn build_model_sql_request<'a>(
         );
     }
 
-    let node_state = build_node_state(model, &context.dbt_project_info, macro_resolver)
-        .map_err(request_build_error)?;
+    let node_state = build_node_state(
+        model,
+        &context.dbt_project_info,
+        context.compare_unrendered_code,
+        macro_resolver,
+    )
+    .map_err(request_build_error)?;
     semantic_extras.extend(node_state_semantic_extras(&node_state));
 
     Ok(
@@ -179,6 +207,7 @@ pub fn build_model_sql_request<'a>(
 fn build_node_state<'a, 'b>(
     node: &'a dyn InternalDbtNodeAttributes,
     project_info: &'b DbtProjectInfo,
+    include_runtime_vars: bool,
     macro_resolver: impl Fn(&str) -> Option<&'a DbtMacro>,
 ) -> Result<DbtNodeState, RequestBuildError> {
     // this is to match what Python submits
@@ -193,7 +222,12 @@ fn build_node_state<'a, 'b>(
         _ => "unspecified",
     };
 
-    let hashes = node_state_hashes(node, &project_info.project_root, macro_resolver)?;
+    let hashes = node_state_hashes(
+        node,
+        &project_info.project_root,
+        macro_resolver,
+        include_runtime_vars.then(|| project_info.runtime_config.as_ref()),
+    )?;
 
     let node_state = DbtNodeState {
         node_unique_id: node.common().unique_id.clone(),
@@ -271,8 +305,13 @@ pub fn build_snapshot_sql_request<'a>(
     )
     .map_err(request_build_error)?;
 
-    let node_state = build_node_state(snapshot, &context.dbt_project_info, macro_resolver)
-        .map_err(request_build_error)?;
+    let node_state = build_node_state(
+        snapshot,
+        &context.dbt_project_info,
+        context.compare_unrendered_code,
+        macro_resolver,
+    )
+    .map_err(request_build_error)?;
     semantic_extras.extend(node_state_semantic_extras(&node_state));
 
     Ok(build_sql_request_input(
@@ -299,8 +338,13 @@ pub fn build_test_sql_request<'a>(
     )
     .map_err(request_build_error)?;
 
-    let node_state = build_node_state(test, &context.dbt_project_info, macro_resolver)
-        .map_err(request_build_error)?;
+    let node_state = build_node_state(
+        test,
+        &context.dbt_project_info,
+        context.compare_unrendered_code,
+        macro_resolver,
+    )
+    .map_err(request_build_error)?;
     semantic_extras.extend(node_state_semantic_extras(&node_state));
 
     // Mirrors dbt-core's `_build_submit_enriched_sql_request` (run_cache.py
@@ -326,15 +370,20 @@ pub fn build_seed_values_request<'a>(
         seed_semantic_extras(&seed_semantic_extra_config(seed).map_err(request_build_error)?)
             .map_err(request_build_error)?;
 
-    let node_state = build_node_state(seed, &context.dbt_project_info, macro_resolver)
-        .map_err(request_build_error)?;
+    let node_state = build_node_state(
+        seed,
+        &context.dbt_project_info,
+        context.compare_unrendered_code,
+        macro_resolver,
+    )
+    .map_err(request_build_error)?;
     semantic_extras.extend(node_state_semantic_extras(&node_state));
     let values_hash = node_state.node_hash.clone();
 
     Ok(SubmitValuesRequestInput {
         target_table: target_table_for_node(context.adapter_type, seed)?,
         dialect: context.dialect,
-        default_catalog: seed.database(),
+        default_catalog: seed.database().to_string(),
         values_hash,
         semantic_extras,
         last_modified_epoch: context.last_modified_epoch,
@@ -344,6 +393,9 @@ pub fn build_seed_values_request<'a>(
         clone_chain_depth_limit: context.clone_chain_depth_limit,
         dbt_node_state: Some(node_state),
         table_namespace: context.dbt_project_info.table_namespace,
+        allow_clones: context.allow_clones,
+        is_defer_to_profile: context.is_defer_to_profile,
+        defer_enabled: context.defer_enabled,
     }
     .into_proto())
 }
@@ -533,7 +585,7 @@ fn build_sql_request_input(
     Ok(SubmitEnrichedSqlRequestInput {
         target_table: Some(target_table_for_node(context.adapter_type, node)?),
         dialect: context.dialect,
-        default_catalog: node.database(),
+        default_catalog: node.database().to_string(),
         default_schema: Some(context.default_schema),
         execution_type,
         sql: context.sql,
@@ -552,6 +604,17 @@ fn build_sql_request_input(
         compare_unrendered_code: context.compare_unrendered_code,
         table_namespace: context.dbt_project_info.table_namespace,
         ignore_external_modifications: context.ignore_external_modifications,
+        allow_clones: context.allow_clones,
+        is_defer_to_profile: context.is_defer_to_profile,
+        defer_enabled: context.defer_enabled,
+        target_table_missing: target_table_missing(
+            context.compare_selected_columns,
+            execution_type,
+            context.microbatch_window.is_some(),
+            context.target_exists,
+        ),
+        table_schemas: context.table_schemas,
+        compare_selected_columns: context.compare_selected_columns,
     })
 }
 
@@ -860,7 +923,8 @@ mod tests {
         CommonAttributes, DbtModelAttr, DbtSeedAttr, DbtSnapshotAttr, DbtTestAttr,
         IntrospectionKind, NodeBaseAttributes,
     };
-    use dbt_state::proto::query_cache::ModelExecutionType;
+    use dbt_state::proto::query_cache::table_modified_info::DependencyKind;
+    use dbt_state::proto::query_cache::{ColumnInfo, ModelExecutionType, TableSchema};
     use dbt_state::request_builder::execution_type_from_input;
     use dbt_yaml::Spanned;
     use indexmap::IndexMap;
@@ -896,6 +960,7 @@ mod tests {
             project_id: None,
             project_root: "dummy-project-root".into(),
             table_namespace: Some("adapter-unique-id".to_owned()),
+            runtime_config: Arc::new(DbtRuntimeConfig::default()),
         }
     }
 
@@ -1019,6 +1084,7 @@ mod tests {
             tables: vec![TableModifiedInfo {
                 name: "raw.orders".to_string(),
                 last_modified_epoch: Some(123),
+                kind: DependencyKind::Unknown as i32,
             }],
             query_dependencies: vec![],
             freshness_tolerance_seconds: 2700,
@@ -1033,7 +1099,13 @@ mod tests {
             default_schema: "marts".to_string(),
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             microbatch_window: None,
+            compare_selected_columns: false,
+            table_schemas: Vec::new(),
+            target_exists: None,
             dbt_project_info: make_project_info(),
+            allow_clones: Some(true),
+            is_defer_to_profile: false,
+            defer_enabled: false,
         }
     }
 
@@ -1078,6 +1150,50 @@ mod tests {
             "[\"status\",\"updated_at\"]"
         );
         assert_eq!(request.semantic_extras.get("unique_key").unwrap(), "\"id\"");
+    }
+
+    #[test]
+    fn model_request_sets_target_table_missing_for_incremental_first_run() {
+        let schemas = vec![TableSchema {
+            name: "raw.orders".to_string(),
+            columns: vec![ColumnInfo {
+                name: "ID".to_string(),
+                r#type: "NUMBER(38,0)".to_string(),
+            }],
+        }];
+        let first_run_context = || {
+            let mut context = sql_context(false);
+            context.compare_selected_columns = true;
+            context.table_schemas = schemas.clone();
+            context.target_exists = Some(false);
+            context
+        };
+
+        let incremental = make_model(DbtMaterialization::Incremental);
+        let request = build_model_sql_request(
+            &incremental,
+            first_run_context(),
+            &test_materialization_resolver(),
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(request.execution_type, ModelExecutionType::Merge as i32);
+        assert!(request.target_table_missing);
+        assert!(request.compare_selected_columns);
+        assert_eq!(request.table_schemas, schemas);
+
+        let table = make_model(DbtMaterialization::Table);
+        let request = build_model_sql_request(
+            &table,
+            first_run_context(),
+            &test_materialization_resolver(),
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(request.execution_type, ModelExecutionType::Full as i32);
+        assert!(!request.target_table_missing);
+        assert!(request.compare_selected_columns);
+        assert_eq!(request.table_schemas, schemas);
     }
 
     #[test]
@@ -1454,7 +1570,7 @@ mod tests {
         let mut test = make_test();
         test.__base_attr__.schema = "ANALYTICS".to_string();
         let mut context = sql_context(false);
-        context.default_schema = test.schema();
+        context.default_schema = test.schema().to_string();
 
         let request = build_test_sql_request(&test, context, |_| None).unwrap();
 
@@ -1492,6 +1608,10 @@ mod tests {
                 clone_table_properties: None,
                 clone_chain_depth_limit: Some(1),
                 dbt_project_info: project_info,
+                allow_clones: Some(true),
+                is_defer_to_profile: false,
+                defer_enabled: true,
+                compare_unrendered_code: false,
             },
             |_| None,
         )
@@ -1505,7 +1625,7 @@ mod tests {
                 .exists()
         );
 
-        let node_state_hashes = node_state_hashes(&seed, &project_root, |_| None).unwrap();
+        let node_state_hashes = node_state_hashes(&seed, &project_root, |_| None, None).unwrap();
 
         assert_eq!(request.target_table, r#""analytics"."marts"."cities""#);
         assert_eq!(request.default_catalog, "analytics");
@@ -1556,6 +1676,10 @@ mod tests {
                     clone_table_properties: None,
                     clone_chain_depth_limit: None,
                     dbt_project_info: project_info,
+                    allow_clones: Some(true),
+                    is_defer_to_profile: false,
+                    defer_enabled: true,
+                    compare_unrendered_code: false,
                 },
                 |_| None,
             )

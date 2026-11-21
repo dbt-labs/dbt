@@ -1,16 +1,13 @@
 use dbt_adapter::Adapter;
 use dbt_adapter::relation::render_effective_relation;
-use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsError, fs_err};
 use dbt_common::{FsResult, constants::DBT_CTE_PREFIX, error::MacroSpan, stdfs};
 use dbt_frontend_common::{error::CodeLocation, span::Span};
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::project::ResolvableConfig;
 use dbt_schemas::schemas::telemetry::NodeType;
-use dbt_schemas::schemas::{
-    CommonAttributes, DbtModel, DbtSeed, DbtSnapshot, DbtTest, DbtUnitTest, InternalDbtNode,
-};
-use dbt_yaml::{Spanned, Value as YmlValue};
+use dbt_schemas::schemas::{CommonAttributes, InternalDbtNode};
+use dbt_yaml::Spanned;
 use minijinja::arg_utils::ArgParser;
 use minijinja::constants::{ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME, TARGET_UNIQUE_ID, THREAD_ID};
 use minijinja::{
@@ -19,7 +16,7 @@ use minijinja::{
     value::{Rest, Value as MinijinjaValue, ValueKind},
 };
 use regex::Regex;
-use serde::Deserialize;
+use serde::Serialize;
 use sqlparser::dialect::GenericDialect;
 use sqlparser::keywords::Keyword;
 use sqlparser::tokenizer::{Location, Token, Tokenizer};
@@ -41,7 +38,12 @@ use crate::{jinja_environment::JinjaEnv, phases::parse::sql_resource::SqlResourc
 pub use dbt_jinja_vars::{DBT_INTERNAL_ENV_VAR_PREFIX, SECRET_ENV_VAR_PREFIX};
 
 /// The version of dbt used in this crate
-pub const DBT_VERSION: &str = "2.0.0"; // easter egg jokes for now
+///
+/// See: fs/sa/crates/dbt-main/src/dbt_lib.rs:660
+pub const DBT_VERSION: &str = match option_env!("DBT_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// A lazy initialized mutex-protected hash map for storing environment variables
 pub static ENV_VARS: LazyLock<Mutex<HashMap<String, String>>> =
@@ -240,11 +242,16 @@ pub fn inject_and_persist_ephemeral_models(
     let ctes = all_ctes.join(", ");
     if let Some((sql, insertion)) = inject_ctes_into_existing_with(&final_sql, &ctes) {
         final_sql = sql;
+        let inserted = inserted_ctes_spans(macro_spans, insertion);
         shift_macro_spans_after_insertion(macro_spans, insertion);
+        let index = macro_spans
+            .items
+            .partition_point(|(_, expanded)| expanded.start_offset < insertion.offset);
+        macro_spans.items.insert(index, inserted);
     } else {
         // Preserve the wrapper fallback for statements without a leading WITH clause.
         final_sql = format!(
-            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n)"
+            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n) as {model_name}"
         );
         let added_lines = ctes.lines().count() + 2;
         let added_offset = ctes.len() + 23;
@@ -341,6 +348,45 @@ fn byte_offset_at_location(sql: &str, target: Location) -> Option<usize> {
     (line == target.line && col == target.column).then_some(sql.len())
 }
 
+/// The span pair for CTEs spliced in at `insertion`, computed before the
+/// spans are shifted. The CTEs have no source text, so they map to an empty
+/// span at the source position of the insertion point. Without it, compiled
+/// offsets between the insertion and the next span map to the source as if
+/// nothing had been inserted, landing past their real position.
+fn inserted_ctes_spans(
+    macro_spans: &MacroSpans,
+    insertion: Insertion,
+) -> (minijinja::machinery::Span, minijinja::machinery::Span) {
+    let source = dbt_common::CodeLocationWithFile::new(
+        insertion.line,
+        insertion.col,
+        insertion.offset,
+        PathBuf::new(),
+    )
+    .get_source_location(&macro_spans_to_macro_span_vec(macro_spans));
+    let source = minijinja::machinery::Span {
+        start_line: source.line,
+        start_col: source.col,
+        start_offset: source.index,
+        end_line: source.line,
+        end_col: source.col,
+        end_offset: source.index,
+    };
+    let expanded = minijinja::machinery::Span {
+        start_line: insertion.line,
+        start_col: insertion.col,
+        start_offset: insertion.offset,
+        end_line: insertion.line + insertion.added_lines,
+        end_col: if insertion.added_lines == 0 {
+            insertion.col + insertion.added_cols
+        } else {
+            insertion.trailing_cols
+        },
+        end_offset: insertion.offset + insertion.added_bytes,
+    };
+    (source, expanded)
+}
+
 fn shift_macro_spans_after_insertion(macro_spans: &mut MacroSpans, insertion: Insertion) {
     for (_, expanded) in &mut macro_spans.items {
         if expanded.end_offset <= insertion.offset {
@@ -422,7 +468,7 @@ fn extract_local_ephemeral_cte_names(sql: &str) -> HashSet<&str> {
 pub fn render_sql(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listener_factory: &dyn RenderingEventListenerFactory,
     filename: &Path,
 ) -> FsResult<String> {
@@ -456,7 +502,7 @@ pub fn render_sql(
 pub fn render_sql_with_listeners(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listeners: &[Rc<dyn RenderingEventListener>],
     tokenizer_listeners: &[Rc<dyn minijinja::listener::TokenizerEventListener>],
     filename: &Path,
@@ -648,63 +694,77 @@ pub fn find_macro_template(
 }
 
 /// Generate a component name using the specified macro
-pub fn generate_component_name(
+///
+/// Takes the node by value and returns it with the name, so the macro can read
+/// it without the node being copied.
+pub fn generate_component_name<T: InternalDbtNode + Clone>(
     env: &JinjaEnv,
     component: &str,
     root_project_name: &str,
     current_project_name: &str,
     base_ctx: &BTreeMap<String, Value>,
     custom_name: Option<String>,
-    node: Option<&dyn InternalDbtNode>,
+    node: T,
+) -> FsResult<(String, T)> {
+    // The macro only reads the node, but Jinja objects must be 'static, so the
+    // context can't borrow it. We lend the owned node through an `Arc` instead
+    // and take it back once the call is done.
+    let node = Arc::new(node);
+    let mut context = dbt_schemas::jinja_node::LazyNodeContext::from_node(
+        node.clone(),
+        dbt_schemas::schemas::serialization_utils::SerializationMode::KeepNone,
+    );
+    let prefix = match node.resource_type() {
+        NodeType::Model => "models",
+        NodeType::Snapshot => "snapshots",
+        NodeType::Seed => "seeds",
+        NodeType::Analysis => "analyses",
+        _ => "",
+    };
+    if !prefix.is_empty() {
+        context.transform("path", move |value| {
+            if let Some(path) = value.as_str() {
+                let stripped = Path::new(path)
+                    .strip_prefix(prefix)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| path.to_string());
+                dbt_yaml::Value::string(stripped)
+            } else {
+                value
+            }
+        });
+    }
+    let result = generate_component_name_value(
+        env,
+        component,
+        root_project_name,
+        current_project_name,
+        base_ctx,
+        custom_name,
+        Value::from_object(context),
+    );
+    let node = Arc::unwrap_or_clone(node);
+    result.map(|name| (name, node))
+}
+
+/// Invokes a naming macro with an existing Jinja node value.
+#[allow(clippy::too_many_arguments)]
+pub fn generate_component_name_value(
+    env: &JinjaEnv,
+    component: &str,
+    root_project_name: &str,
+    current_project_name: &str,
+    base_ctx: &BTreeMap<String, Value>,
+    custom_name: Option<String>,
+    node: Value,
 ) -> FsResult<String> {
     let macro_name = format!("generate_{component}_name");
-    // find the macro template - this is now cached for performance
     let template_name =
         find_macro_template(env, &macro_name, root_project_name, current_project_name)?;
-
-    // Create a state object for rendering
     let template = env.get_template(&template_name)?;
-
-    // Create a new state
-    let new_state = template.eval_to_state(base_ctx, &[])?;
-
-    // Build the args
-    let mut args = custom_name
-        .map(|name| vec![Value::from(name)])
-        .unwrap_or_else(|| vec![Value::from(())]); // If no custom name, pass in none so the macro reads from the target context
-    if let Some(node) = node {
-        let mut serialized = node.serialize_keep_none();
-        // Strip resource-type prefix from path so node.path inside macros like
-        // generate_schema_name matches dbt-core convention ("staging/model.sql"
-        // not "models/staging/model.sql"). build_flat_graph does the same for
-        // graph.nodes.
-        let prefix = match node.resource_type() {
-            NodeType::Model => "models",
-            NodeType::Snapshot => "snapshots",
-            NodeType::Seed => "seeds",
-            NodeType::Analysis => "analyses",
-            _ => "",
-        };
-        if !prefix.is_empty() {
-            if let YmlValue::Mapping(ref mut map, _) = serialized {
-                let path_key = YmlValue::string("path".to_string());
-                if let Some(path_value) = map.get(&path_key) {
-                    if let Some(path_str) = path_value.as_str() {
-                        let stripped = Path::new(path_str)
-                            .strip_prefix(prefix)
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_else(|_| path_str.to_string());
-                        map.insert(path_key, YmlValue::string(stripped));
-                    }
-                }
-            }
-        }
-        args.push(Value::from_serialize(serialized));
-    }
-
-    // Call the macro
-    let result = new_state
-        .call_macro_raw(macro_name.as_str(), &args, &[])
+    let state = template.eval_to_state(base_ctx, &[])?;
+    state
+        .call_macro_raw(&macro_name, &[Value::from(custom_name), node], &[])
         .map(|v| match v.kind() {
             ValueKind::None => "".to_string(),
             _ => v.to_string().trim().to_string(),
@@ -714,9 +774,7 @@ pub fn generate_component_name(
                 err,
                 format!("Failed to run macro {macro_name} for component {component}"),
             ))
-        })?;
-    // Return the result
-    Ok(result)
+        })
 }
 
 /// Clear template cache (primarily for testing purposes)
@@ -734,8 +792,8 @@ pub fn generate_relation_name(
     identifier: &str,
     quote_config: ResolvedQuoting,
 ) -> FsResult<String> {
-    generate_relation_name_with_target(
-        parse_adapter,
+    render_effective_relation(
+        parse_adapter.adapter_type(),
         database,
         schema,
         identifier,
@@ -744,71 +802,13 @@ pub fn generate_relation_name(
     )
 }
 
-/// Generate a relation name using a node's resolved destination.
-pub fn generate_relation_name_with_target(
-    parse_adapter: Arc<Adapter>,
-    database: &str,
-    schema: &str,
-    identifier: &str,
-    quote_config: ResolvedQuoting,
-    target: Option<AdapterType>,
-) -> FsResult<String> {
-    render_effective_relation(
-        parse_adapter.adapter_type(),
-        database,
-        schema,
-        identifier,
-        quote_config,
-        target,
-    )
-}
-
 type NodeId = String;
 /// Returns the metadata of the current model from the given Jinja execution state
 pub fn node_metadata_from_state(state: &State) -> Option<(NodeId, PathBuf)> {
-    match state.lookup("model", &[]) {
-        Some(node) => {
-            if let Ok(model) = DbtModel::deserialize(&node) {
-                Some((
-                    model.__common_attr__.unique_id,
-                    model.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(test) = DbtTest::deserialize(&node) {
-                Some((
-                    test.__common_attr__.unique_id,
-                    test.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(snapshot) = DbtSnapshot::deserialize(&node) {
-                Some((
-                    snapshot.__common_attr__.unique_id,
-                    snapshot.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(seed) = DbtSeed::deserialize(&node) {
-                Some((
-                    seed.__common_attr__.unique_id,
-                    seed.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else if let Ok(unit_test) = DbtUnitTest::deserialize(&node) {
-                Some((
-                    unit_test.__common_attr__.unique_id,
-                    unit_test.__common_attr__.original_file_path.to_path_buf(),
-                ))
-            } else {
-                // Fallback: direct attribute extraction for Object types
-                // (e.g. LazyModelWrapper) where full deserialization fails
-                let unique_id = node
-                    .get_attr("unique_id")
-                    .ok()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()));
-                let file_path = node
-                    .get_attr("original_file_path")
-                    .ok()
-                    .and_then(|v| v.as_str().map(PathBuf::from));
-                unique_id.zip(file_path)
-            }
-        }
-        None => None,
-    }
+    let node = state.lookup("model", &[])?;
+    let unique_id = node.get_attr("unique_id").ok()?.as_str()?.to_owned();
+    let file_path = PathBuf::from(node.get_attr("original_file_path").ok()?.as_str()?);
+    Some((unique_id, file_path))
 }
 
 /// Render a reference or source string and return the corresponding SqlResource
@@ -870,22 +870,24 @@ pub fn dependency_package_name_from_ctx<'a>(
 
 /// Add common context vars for tasks
 pub fn add_task_context(
-    base_context: &mut BTreeMap<String, Value>,
+    base_context: &mut impl Extend<(String, Value)>,
     common: &CommonAttributes,
     thread_id: &i32,
 ) {
-    base_context.insert(
-        TARGET_PACKAGE_NAME.to_string(),
-        MinijinjaValue::from(common.package_name.clone()),
-    );
-    base_context.insert(
-        TARGET_UNIQUE_ID.to_string(),
-        MinijinjaValue::from(common.unique_id.clone()),
-    );
-    base_context.insert(
-        THREAD_ID.to_string(),
-        MinijinjaValue::from(format!("Thread-{}", thread_id)),
-    );
+    base_context.extend([
+        (
+            TARGET_PACKAGE_NAME.to_string(),
+            MinijinjaValue::from(common.package_name.clone()),
+        ),
+        (
+            TARGET_UNIQUE_ID.to_string(),
+            MinijinjaValue::from(common.unique_id.clone()),
+        ),
+        (
+            THREAD_ID.to_string(),
+            MinijinjaValue::from(format!("Thread-{}", thread_id)),
+        ),
+    ]);
 }
 
 #[cfg(test)]
@@ -896,10 +898,13 @@ mod tests {
         Environment, MacroSpans, context, listener::RenderingEventListener, machinery::Span,
     };
 
+    use dbt_common::error::CodeLocationWithFile;
+
     use crate::listener::DefaultRenderingEventListener;
 
     use super::{
-        find_macro_template, inject_ctes_into_existing_with, raw_source_spans_to_macro_span_vec,
+        find_macro_template, inject_and_persist_ephemeral_models, inject_ctes_into_existing_with,
+        macro_spans_to_macro_span_vec, raw_source_spans_to_macro_span_vec,
         shift_macro_spans_after_insertion,
     };
     use crate::jinja_environment::JinjaEnv;
@@ -1048,6 +1053,78 @@ mod tests {
         assert_eq!(
             macro_spans.items[3].1.start_offset,
             after.start_offset + insertion.added_bytes
+        );
+    }
+
+    #[test]
+    fn spliced_ephemeral_ctes_map_to_the_source_insertion_point() {
+        let source =
+            "WITH parent AS (\n    SELECT * FROM {{ ref('eph') }}\n)\nSELECT * FROM parent";
+        let rendered = source.replace("{{ ref('eph') }}", "__dbt__cte__eph");
+        let ref_start = source.find("{{").unwrap() as u32;
+        let ref_end = (source.find("}}").unwrap() + 2) as u32;
+        let cte_start = rendered.find("__dbt__cte__eph").unwrap() as u32;
+        let mut macro_spans = MacroSpans {
+            items: vec![(
+                Span {
+                    start_line: 2,
+                    start_col: ref_start - 16,
+                    start_offset: ref_start,
+                    end_line: 2,
+                    end_col: ref_end - 16,
+                    end_offset: ref_end,
+                },
+                Span {
+                    start_line: 2,
+                    start_col: cte_start - 16,
+                    start_offset: cte_start,
+                    end_line: 2,
+                    end_col: cte_start - 16 + "__dbt__cte__eph".len() as u32,
+                    end_offset: cte_start + "__dbt__cte__eph".len() as u32,
+                },
+            )],
+            ..Default::default()
+        };
+        let ephemeral_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ephemeral_dir.path().join("eph.sql"),
+            "__dbt__cte__eph as (\nselect 1 as id\n)",
+        )
+        .unwrap();
+
+        let compiled = inject_and_persist_ephemeral_models(
+            rendered,
+            &mut macro_spans,
+            "child",
+            false,
+            ephemeral_dir.path(),
+        )
+        .unwrap();
+        let spans = macro_spans_to_macro_span_vec(&macro_spans);
+        let source_location = |compiled_offset: usize| {
+            let prefix = &compiled[..compiled_offset];
+            let line = prefix.matches('\n').count() as u32 + 1;
+            let col = prefix.rsplit('\n').next().unwrap().chars().count() as u32 + 1;
+            let location = CodeLocationWithFile::new(line, col, compiled_offset as u32, "")
+                .get_source_location(&spans);
+            (location.line, location.col, location.index)
+        };
+
+        // The spliced CTE maps to the insertion point after `WITH`.
+        assert_eq!(
+            source_location(compiled.find("__dbt__cte__eph as").unwrap()),
+            (1, 5, 4)
+        );
+        // Text after the splice keeps its source position, before and after the ref.
+        let parent = source.find("parent AS").unwrap();
+        assert_eq!(
+            source_location(compiled.find("parent AS").unwrap()),
+            (1, 6, parent as u32)
+        );
+        let last_line = source.rfind("SELECT").unwrap();
+        assert_eq!(
+            source_location(compiled.rfind("SELECT").unwrap()),
+            (4, 1, last_line as u32)
         );
     }
 

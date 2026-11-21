@@ -58,6 +58,15 @@ pub const FUNCTION_LANGUAGE_SQL: &str = "sql";
 pub const FUNCTION_LANGUAGE_PYTHON: &str = "python";
 pub const FUNCTION_LANGUAGE_JAVASCRIPT: &str = "javascript";
 
+/// Whether an argument's `data_type` is the templated `ANY TYPE`, which takes
+/// its type from each call.
+pub fn is_any_type(data_type: &str) -> bool {
+    data_type
+        .split_whitespace()
+        .map(str::to_ascii_lowercase)
+        .eq(["any", "type"])
+}
+
 fn default_language() -> Option<String> {
     Some(FUNCTION_LANGUAGE_SQL.to_string())
 }

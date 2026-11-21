@@ -3,7 +3,6 @@ use crate::semver::{Version, VersionSpecifier, versions_compatible};
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_schemas::schemas::packages::DbtPackageEntry;
 use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
-use reqwest_middleware::ClientWithMiddleware;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -11,7 +10,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
-use crate::network_client::retrying_http_client;
+use crate::network_client::LazyHttpClient;
 
 pub const DBT_HUB_URL: &str = "https://hub.getdbt.com";
 pub const DBT_CORE_FIXED_VERSION: &str = "1.8.7";
@@ -132,7 +131,7 @@ pub struct HubPackageJson {
 }
 
 struct HubClientInner {
-    client: ClientWithMiddleware,
+    client: LazyHttpClient,
     base_url: String,
     index: OnceCell<HashSet<String>>,
     cache: scc::HashMap<String, HubPackageJson>,
@@ -148,11 +147,7 @@ pub struct HubClient {
 }
 
 impl HubClient {
-    pub fn new(base_url: &str) -> Self {
-        Self::with_client(base_url, retrying_http_client())
-    }
-
-    pub fn with_client(base_url: &str, client: ClientWithMiddleware) -> Self {
+    pub fn with_client(base_url: &str, client: LazyHttpClient) -> Self {
         Self {
             inner: Arc::new(HubClientInner {
                 client,
@@ -170,12 +165,19 @@ impl HubClient {
             .index
             .get_or_try_init(|| async {
                 let url = format!("{}/api/v1/index.json", self.inner.base_url);
-                let res = self.inner.client.get(&url).send().await.map_err(|e| {
-                    fs_err!(
-                        ErrorCode::RuntimeError,
-                        "Failed to get index from {url}: {e:#}"
-                    )
-                })?;
+                let res = self
+                    .inner
+                    .client
+                    .get(&url)
+                    .await
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        fs_err!(
+                            ErrorCode::RuntimeError,
+                            "Failed to get index from {url}: {e:#}"
+                        )
+                    })?;
                 if res.status().is_success() {
                     let index: Vec<String> = res.json().await.map_err(|e| {
                         fs_err!(
@@ -202,12 +204,19 @@ impl HubClient {
             return Ok(entry.get().clone());
         }
         let url = format!("{}/api/v1/{}.json", self.inner.base_url, package);
-        let res = self.inner.client.get(&url).send().await.map_err(|e| {
-            fs_err!(
-                ErrorCode::RuntimeError,
-                "Failed to get package from {url}: {e:#}"
-            )
-        })?;
+        let res = self
+            .inner
+            .client
+            .get(&url)
+            .await
+            .send()
+            .await
+            .map_err(|e| {
+                fs_err!(
+                    ErrorCode::RuntimeError,
+                    "Failed to get package from {url}: {e:#}"
+                )
+            })?;
         if res.status().is_success() {
             let hub_package: HubPackageJson = res.json().await.map_err(|e| {
                 fs_err!(

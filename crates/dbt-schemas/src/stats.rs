@@ -1,17 +1,16 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::schemas::BatchResults;
-use crate::schemas::Nodes;
 use dbt_common::stats::Stat;
 use humantime::format_duration;
 
 #[derive(Debug, Clone, Default)]
 pub struct Stats {
     pub stats: Vec<Stat>,
-    pub nodes: Option<Nodes>,
     pub batch_results: HashMap<String, BatchResults>,
-    pub compiled_code: HashMap<String, String>,
+    pub compiled_code: HashMap<String, Arc<str>>,
 }
 
 impl fmt::Display for Stats {

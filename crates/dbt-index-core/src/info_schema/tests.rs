@@ -150,6 +150,93 @@ fn source_columns_live_only_on_sources() {
     }
 }
 
+/// Columns that apply only to models, `materialized` among them, are on no other
+/// node table. `ai_context` is on no table: nothing fills it.
+#[test]
+fn model_only_columns_live_only_on_models() {
+    const MODEL_ONLY: &[&str] = &[
+        "materialized",
+        "incremental_strategy",
+        "on_schema_change",
+        "contract_enforced",
+        "version",
+        "latest_version",
+        "deprecation_date",
+        "constraints",
+        "primary_key",
+        "time_spine",
+        "classifiers",
+    ];
+    for table in INFO_SCHEMA {
+        let node_table = matches!(table.src, Src::Table("nodes"));
+        for col in table.cols {
+            assert_ne!(col.out, "ai_context", "{}", table.qualified_name());
+            assert!(
+                !node_table || table.name == "models" || !MODEL_ONLY.contains(&col.out),
+                "{} must not carry the model-only column {}",
+                table.qualified_name(),
+                col.out
+            );
+        }
+    }
+}
+
+/// Every node table that is a table in the warehouse has a grain.
+#[test]
+fn grains_live_on_relation_tables() {
+    const GRAINS: &[&str] = &["grain", "grain_declared", "grain_tested", "grain_inferred"];
+    const WITH_GRAIN: &[&str] = &["models", "seeds", "snapshots", "sources"];
+    for table in INFO_SCHEMA {
+        if !matches!(table.src, Src::Table("nodes")) {
+            continue;
+        }
+        for grain in GRAINS {
+            let has = table.cols.iter().any(|col| col.out == *grain);
+            assert_eq!(
+                has,
+                WITH_GRAIN.contains(&table.name),
+                "{} {grain}",
+                table.qualified_name()
+            );
+        }
+    }
+}
+
+/// A hook is SQL and its phase. Its only tag is its phase, so `phase`, the
+/// first tag as text, takes the place of `tags`.
+#[test]
+fn hooks_carry_their_sql_and_phase() {
+    let hooks = INFO_SCHEMA
+        .iter()
+        .find(|t| t.name == "hooks")
+        .expect("hooks");
+    let cols: Vec<&str> = hooks.cols.iter().map(|c| c.out).collect();
+    assert_eq!(
+        cols,
+        [
+            "unique_id",
+            "name",
+            "resource_type",
+            "package_name",
+            "original_file_path",
+            "fqn",
+            "node_language",
+            "raw_code",
+            "phase",
+            "compiled_code",
+            "compiled_path",
+            "ingested_at",
+        ]
+    );
+    let phase = hooks.cols.iter().find(|c| c.out == "phase").unwrap();
+    assert!(phase.first && phase.src == "tags");
+    let out = out_schema(hooks).unwrap();
+    assert_eq!(
+        out.field_with_name("phase").unwrap().data_type(),
+        &arrow_schema::DataType::Utf8
+    );
+}
+
 /// Columns the schema retires must not survive anywhere under their old name.
 #[test]
 fn retired_columns_are_gone() {
@@ -183,6 +270,9 @@ fn retired_columns_are_gone() {
         "depends_on_macros",
         "supported_languages",
         "project_id",
+        // Never written: no producer exists.
+        "layer_inferred",
+        "search_text",
     ];
     for table in INFO_SCHEMA {
         for col in table.cols {
@@ -203,8 +293,7 @@ fn retired_columns_are_gone() {
     }
 }
 
-/// `from_*`/`to_*` are retired on lineage but are the *new* names on semantic
-/// relationships, so this pair has to be checked per table rather than globally.
+/// `from_*`/`to_*` are retired on lineage.
 #[test]
 fn lineage_uses_parent_child_naming() {
     let lineage = INFO_SCHEMA
@@ -233,23 +322,6 @@ fn lineage_uses_parent_child_naming() {
         assert!(
             names.contains(&expected),
             "column_lineage missing {expected}"
-        );
-    }
-
-    let rel = INFO_SCHEMA
-        .iter()
-        .find(|t| t.name == "semantic_relationships")
-        .expect("semantic_relationships");
-    let names: Vec<&str> = rel.cols.iter().map(|c| c.out).collect();
-    for expected in [
-        "from_node_unique_id",
-        "to_node_unique_id",
-        "from_column_names",
-        "to_column_names",
-    ] {
-        assert!(
-            names.contains(&expected),
-            "semantic_relationships missing {expected}"
         );
     }
 }
@@ -406,6 +478,10 @@ fn removed_tables_are_absent() {
         "test_metadata",
         "docs",
         "graph_nodes",
+        // Always empty: nothing writes them.
+        "semantic_relationships",
+        "classifiers",
+        "diagnostics",
     ];
     for table in INFO_SCHEMA {
         assert!(
@@ -536,17 +612,11 @@ fn node_columns_are_renamed_and_carry_their_data() {
     row["access_level"] = json!("public");
     row["group_name"] = json!("finance");
     row["patch_path"] = json!("models/schema.yml");
-    row["table_role"] = json!("dimension");
     write_source(staging.path(), "nodes", &[row]);
     super::project_all(staging.path(), out.path()).unwrap();
 
     let cols = out_columns(out.path(), "dbt.models.parquet");
-    for new in [
-        "access",
-        "group",
-        "properties_yml_file_path",
-        "layer_inferred",
-    ] {
+    for new in ["access", "group", "properties_yml_file_path"] {
         assert!(cols.contains(&new.to_string()), "missing {new}");
     }
     for old in [
@@ -554,6 +624,8 @@ fn node_columns_are_renamed_and_carry_their_data() {
         "group_name",
         "patch_path",
         "table_role",
+        "layer_inferred",
+        "search_text",
         "checksum",
     ] {
         assert!(!cols.contains(&old.to_string()), "still has {old}");
@@ -567,7 +639,6 @@ fn node_columns_are_renamed_and_carry_their_data() {
         rows[0]["properties_yml_file_path"],
         json!("models/schema.yml")
     );
-    assert_eq!(rows[0]["layer_inferred"], json!("dimension"));
 }
 
 /// A test with no generic-test detail must survive the join. An inner join
@@ -581,27 +652,37 @@ fn data_tests_keeps_tests_without_detail() {
         "nodes",
         &[
             node_row("test.pkg.generic", "generic", "test"),
+            node_row("test.pkg.source_generic", "source_generic", "test"),
             node_row("test.pkg.singular", "singular", "test"),
         ],
     );
     write_source(
         staging.path(),
         "test_metadata",
-        &[json!({
-            "unique_id": "test.pkg.generic",
-            "test_name": "not_null",
-            "test_namespace": "dbt_utils",
-            "attached_node": "model.pkg.a",
-            "test_where": "id > 0",
-            "test_limit": 10,
-            "kwargs": "{\"column_name\":\"id\"}",
-            "ingested_at": "2026-08-21T00:00:00Z",
-        })],
+        &[
+            json!({
+                "unique_id": "test.pkg.generic",
+                "test_name": "not_null",
+                "test_namespace": "dbt_utils",
+                "attached_node": "model.pkg.a",
+                "test_where": "id > 0",
+                "test_limit": 10,
+                "kwargs": "{\"column_name\":\"id\"}",
+                "ingested_at": "2026-08-21T00:00:00Z",
+            }),
+            json!({
+                "unique_id": "test.pkg.source_generic",
+                "test_name": "relationships",
+                "attached_node": "source.pkg.raw.orders",
+                "kwargs": "{\"field\":\"id\"}",
+                "ingested_at": "2026-08-21T00:00:00Z",
+            }),
+        ],
     );
     super::project_all(staging.path(), out.path()).unwrap();
 
     let rows = out_rows(out.path(), "dbt.data_tests.parquet");
-    assert_eq!(rows.len(), 2, "the singular test must not be dropped");
+    assert_eq!(rows.len(), 3, "the singular test must not be dropped");
 
     let generic = rows.iter().find(|r| r["name"] == json!("generic")).unwrap();
     // Node-level and detail columns on the same row, under their new names.
@@ -612,6 +693,12 @@ fn data_tests_keeps_tests_without_detail() {
     assert_eq!(generic["where"], json!("id > 0"));
     assert_eq!(generic["limit"], json!(10));
     assert_eq!(generic["arguments"], json!("{\"column_name\":\"id\"}"));
+
+    let source = rows
+        .iter()
+        .find(|r| r["name"] == json!("source_generic"))
+        .unwrap();
+    assert_eq!(source["node_unique_id"], json!("source.pkg.raw.orders"));
 
     let singular = rows
         .iter()
@@ -766,17 +853,16 @@ fn relations_pivots_the_catalog_stats() {
 fn operations_land_in_hooks() {
     let staging = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
+    let mut hook = node_row(
+        "operation.pkg.pkg-on-run-start-0",
+        "pkg-on-run-start-0",
+        "operation",
+    );
+    hook["tags"] = json!(["on-run-start"]);
     write_source(
         staging.path(),
         "nodes",
-        &[
-            node_row(
-                "operation.pkg.pkg-on-run-start-0",
-                "pkg-on-run-start-0",
-                "operation",
-            ),
-            node_row("model.pkg.a", "a", "model"),
-        ],
+        &[hook, node_row("model.pkg.a", "a", "model")],
     );
     super::project_all(staging.path(), out.path()).unwrap();
 
@@ -786,10 +872,12 @@ fn operations_land_in_hooks() {
         hooks[0]["unique_id"],
         json!("operation.pkg.pkg-on-run-start-0")
     );
+    assert_eq!(hooks[0]["phase"], json!("on-run-start"));
+    assert!(hooks[0].get("tags").is_none());
     assert_eq!(out_rows(out.path(), "dbt.models.parquet").len(), 1);
 }
 
-/// `dbt.packages` is one row per installed package name.
+/// `dbt.packages` is one row per installed package, with its lock details.
 #[test]
 fn packages_is_one_row_per_installed_package() {
     let staging = tempfile::tempdir().unwrap();
@@ -804,6 +892,8 @@ fn packages_is_one_row_per_installed_package() {
             }),
             json!({
                 "package_name": "dbt_utils",
+                "package_source": "hub",
+                "version": "1.3.0",
                 "ingested_at": "2026-08-21T00:00:00Z",
             }),
         ],
@@ -817,7 +907,12 @@ fn packages_is_one_row_per_installed_package() {
         .map(|r| r["package_name"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"pkg"));
-    assert!(names.contains(&"dbt_utils"));
+    let utils = rows
+        .iter()
+        .find(|r| r["package_name"] == "dbt_utils")
+        .unwrap();
+    assert_eq!(utils["package_source"], "hub");
+    assert_eq!(utils["version"], "1.3.0");
 }
 
 /// `project_vars` is projected, not assembled: the ingest already writes one row

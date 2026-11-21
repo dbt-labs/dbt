@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import {
   Background,
+  DAG_NODE_TYPE,
+  DAG_NODE_TYPES,
+  type DagNodeData,
   type Edge,
   type Node as ReactFlowNode,
   ReactFlow,
-} from '@xyflow/react';
+} from 'dbt-docs-lib';
 
 import { useTheme } from '../hooks/useTheme';
 import { applyDagreLayout } from '../lib/dagreLayout';
@@ -18,7 +21,6 @@ import {
   useColumnLineage as useSharedColumnLineage,
   type UserState,
 } from '../shared';
-import { DAG_NODE_TYPE, DAG_NODE_TYPES, type DagNodeData } from './LineageV2/DagNode';
 
 /** Local stand-in for dbt-dag's `DbtDagNode` -- same fields this file actually
  *  used (`dbtCloudProject`/`projectId` were dbt-dag-cloud-account plumbing

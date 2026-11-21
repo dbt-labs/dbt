@@ -1,4 +1,4 @@
-import type { FreshnessStatusValue } from '../domain/status';
+import type { FreshnessStatusValue } from 'dbt-docs-lib/domain';
 
 /**
  * GraphQL freshness status enum (capitalized values). Accepts the

@@ -183,6 +183,14 @@ fn is_json_zero_value(v: &serde_json::Value) -> bool {
     }
 }
 
+/// Whether a recorded `__type__` is a node dictionary. Older recordings name the run-phase
+/// `LazyModelWrapper`; newer ones name `LazyNodeContext`.
+///
+/// TODO: Drop `LazyModelWrapper` once recordings that use it are re-recorded.
+pub(crate) fn is_node_context_type(type_name: &str) -> bool {
+    type_name.ends_with("LazyNodeContext") || type_name.ends_with("LazyModelWrapper")
+}
+
 /// Check if two JSON values match semantically, ignoring `__type__` fields.
 ///
 /// For objects, keys present in one side but missing in the other are tolerated
@@ -214,14 +222,14 @@ fn values_match_inner(
                     .all(|(x, y)| values_match_inner(x, y, false))
         }
         (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
-            // LazyModelWrapper and graph node maps carry the resolved adapter for internal
+            // Node dictionaries and graph node maps carry the resolved adapter for internal
             // consumers. It is not stable public model data, so tolerate its presence or absence
             // during replay. Graph nodes are plain serialized maps and have no __type__ marker.
             let is_lazy_model = [a, b].iter().any(|value| {
                 value
                     .get("__type__")
                     .and_then(serde_json::Value::as_str)
-                    .is_some_and(|type_name| type_name.ends_with("LazyModelWrapper"))
+                    .is_some_and(is_node_context_type)
             });
             let is_graph_node = [a, b].iter().any(|value| {
                 value.get("resource_type").is_some() && value.get("unique_id").is_some()
@@ -339,7 +347,7 @@ mod tests {
             "name": "model"
         });
         let actual = serde_json::json!({
-            "__type__": "LazyModelWrapper",
+            "__type__": "dbt_schemas::jinja_node::LazyNodeContext",
             "adapter": "bigquery",
             "__base_attr__": {"adapter": "bigquery"},
             "config": {"adapter": "snowflake"},

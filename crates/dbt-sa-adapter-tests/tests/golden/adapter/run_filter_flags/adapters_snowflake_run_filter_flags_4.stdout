@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/data.sql
+   Parsing models/empty_ignored_model.sql
+   Parsing models/empty_model.sql
+   Parsing models/sample_ignored_model.sql
+   Parsing models/sample_model.sql
+ Rendering models/sample_ignored_model.sql
+   Running models/sample_ignored_model.sql
+ Succeeded model adapters_snowflake_run_filter_flags.sample_ignored_model (view) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

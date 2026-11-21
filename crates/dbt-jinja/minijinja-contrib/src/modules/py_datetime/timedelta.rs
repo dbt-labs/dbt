@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::{
     date::PyDate,
-    datetime::{DateTimeState, PyDateTime},
+    datetime::{add_preserving_offset, DateTimeState, PyDateTime},
     time::PyTime,
 };
 
@@ -160,12 +160,13 @@ impl PyTimeDelta {
             match &dt.state {
                 // If dt is naive, produce a naive result
                 DateTimeState::Naive(ndt) => {
-                    let new_naive = *ndt + self.duration;
+                    let new_naive = ndt.checked_add_signed(self.duration).ok_or_else(|| {
+                        Error::new(ErrorKind::InvalidOperation, "datetime value out of range")
+                    })?;
                     return Ok(Value::from_object(PyDateTime::new_naive(new_naive)));
                 }
-                // If dt is aware, produce an aware result with the same Tz
                 DateTimeState::Aware(adt) => {
-                    let new_aware = *adt + self.duration; // chrono::DateTime<Tz> + chrono::Duration
+                    let new_aware = add_preserving_offset(adt, self.duration)?;
                     return Ok(Value::from_object(PyDateTime::new_aware(
                         new_aware,
                         dt.tzinfo.clone(),
@@ -173,7 +174,9 @@ impl PyTimeDelta {
                 }
                 // If dt has a fixed offset, preserve it
                 DateTimeState::FixedOffset(fdt) => {
-                    let new_fixed = *fdt + self.duration;
+                    let new_fixed = fdt.checked_add_signed(self.duration).ok_or_else(|| {
+                        Error::new(ErrorKind::InvalidOperation, "datetime value out of range")
+                    })?;
                     return Ok(Value::from_object(PyDateTime {
                         state: DateTimeState::FixedOffset(new_fixed),
                         tzinfo: dt.tzinfo.clone(),

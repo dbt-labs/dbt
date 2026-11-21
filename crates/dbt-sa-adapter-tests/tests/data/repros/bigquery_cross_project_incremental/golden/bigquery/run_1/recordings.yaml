@@ -1,0 +1,54 @@
+1835fda4:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_cross_project_incremental_preserves_existing_rows`
+ffc471a5:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    table_type
+    FROM 
+    `dbt-test-env`.`bigquery_cross_project_incremental_preserves_existing_rows`.INFORMATION_SCHEMA.TABLES
+model.bigquery_cross_project_incremental.incremental_model:
+- sequence: 0
+  type: execute
+  sql: |-
+    -- back compat for old kwarg name
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    merge into `dbt-test-env`.`bigquery_cross_project_incremental_preserves_existing_rows`.`incremental_model` as DBT_INTERNAL_DEST
+    using (
+    
+    
+    select 2 as id
+    
+    ) as DBT_INTERNAL_SOURCE
+    on ((DBT_INTERNAL_SOURCE.id = DBT_INTERNAL_DEST.id))
+    
+    
+    when matched then update set
+    `id` = DBT_INTERNAL_SOURCE.`id`
+    
+    
+    when not matched then insert
+    (`id`)
+    values
+    (`id`)
+model.bigquery_cross_project_incremental.incremental_model.get_table_schema.aaec22ef:
+- sequence: 0
+  type: get_table_schema
+  table_name: aaec22ef

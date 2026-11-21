@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: "{{ t_schema_name() }}_sources"
+    schema: "{{ target.schema }}"
+    config:
+      freshness:
+        warn_after:
+          count: 0
+          period: day
+    tables:
+      - name: source
+        columns:
+          - name: id
+          - name: name

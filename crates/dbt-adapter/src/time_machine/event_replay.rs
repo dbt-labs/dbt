@@ -12,6 +12,8 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use dbt_adapter_engine::cow::uppercase;
+use dbt_adapter_sql::tokenizer::{Token, Tokenizer};
 use flate2::read::GzDecoder;
 use parking_lot::RwLock;
 use regex::Regex;
@@ -26,7 +28,11 @@ use super::semantic::SemanticCategory;
 use super::serde::values_match;
 use super::validation::{SqlSanitizer, TmpSuffixSanitizer, UuidSanitizer};
 use crate::AdapterType;
-use crate::sql::diff::{canonicalize_python_model_pair, compare_sql};
+use crate::sql::complex_types::canonicalize_complex_types_for;
+use crate::sql::diff::{
+    canonicalize_ephemeral_wrapper_alias, canonicalize_python_model_pair, compare_sql,
+    has_elementary_tmp_suffix,
+};
 
 /// Marker for temp-relation identifiers, which carry a non-deterministic suffix.
 static TMP_MARKER_RE: LazyLock<Regex> =
@@ -48,22 +54,102 @@ fn is_sql_method(method: &str) -> bool {
     method == "execute" || method == "run_query"
 }
 
+/// Return true when a CTE's main statement is a SELECT with no data-modifying CTE.
+fn is_read_only_cte_sql(sql: &str) -> bool {
+    let mut tokenizer = Tokenizer::new_skipping_comments(sql);
+    let Some(Token::Word(first)) = tokenizer.next() else {
+        return false;
+    };
+    if !first.eq_ignore_ascii_case("WITH") {
+        return false;
+    }
+    let mut token = tokenizer.next();
+    if matches!(&token, Some(Token::Word(word)) if word.eq_ignore_ascii_case("RECURSIVE")) {
+        token = tokenizer.next();
+    }
+    loop {
+        // Each CTE is `name [(column, ...)] AS (body)`.
+        if !matches!(token, Some(Token::Word(_))) {
+            return false;
+        }
+        token = tokenizer.next();
+        if matches!(token, Some(Token::LParen)) {
+            loop {
+                match tokenizer.next() {
+                    Some(Token::RParen) => break,
+                    Some(Token::Word(_) | Token::Comma) => {}
+                    _ => return false,
+                }
+            }
+            token = tokenizer.next();
+        }
+        if !matches!(&token, Some(Token::Word(word)) if word.eq_ignore_ascii_case("AS"))
+            || !matches!(tokenizer.next(), Some(Token::LParen))
+        {
+            return false;
+        }
+        token = tokenizer.next();
+        // A body that starts with a nested WITH can end in DML (Postgres), so
+        // it stays a write too.
+        if matches!(&token, Some(Token::Word(word)) if ["INSERT", "UPDATE", "DELETE", "MERGE", "WITH"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword)))
+        {
+            return false;
+        }
+
+        // The first body token is already read. Count it too, for example the
+        // `(` in `as ((select 1) union all (select 2))`.
+        let mut depth = 1usize;
+        loop {
+            let Some(current) = token else {
+                return false;
+            };
+            token = tokenizer.next();
+            match current {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        match token {
+            Some(Token::Comma) => token = tokenizer.next(),
+            Some(Token::Word(word)) => return word.eq_ignore_ascii_case("SELECT"),
+            _ => return false,
+        }
+    }
+}
+
 /// Returns true if the SQL string is read-only and cannot mutate DB state.
 ///
 /// These are calls that use execute/run_query but are semantically reads —
 /// for example compile-time probe queries from dbt macros like dbt_utils.date_spine
 /// (`SELECT datediff(...)`) or Snowflake parameter reads (`SHOW PARAMETERS ...`).
+/// A WITH query is read-only only when its main statement and every CTE body are read-only.
+/// SQL that starts with a comment is not read-only.
 ///
 /// Public so the Mantle replay engine (`sdf-adapter`) classifies read-only statements
 /// identically; both engines must agree on what counts as an ordering barrier.
 pub fn is_read_only_sql(sql: &str) -> bool {
-    // Only check the first 8 chars to keep this O(1).
+    // Only check the first 8 chars to keep this O(1) for non-CTE SQL.
     let prefix: String = sql
         .trim()
         .chars()
         .take(8)
         .map(|c| c.to_ascii_uppercase())
         .collect();
+    if prefix.starts_with("WITH") {
+        // The tokenizer does not know backslash escapes, dollar-quoted strings,
+        // `//` comments or triple-quoted strings, so a `)` or keyword inside one
+        // can change the result. Keep such SQL a write.
+        return !["\\", "$", "//", "'''", "\"\"\""]
+            .iter()
+            .any(|syntax| sql.contains(syntax))
+            && is_read_only_cte_sql(sql);
+    }
     prefix.starts_with("SELECT")
         || prefix.starts_with("SHOW")
         || prefix.starts_with("EXPLAIN")
@@ -92,13 +178,13 @@ pub(crate) fn is_read_only_execute_call(method: &str, args: &serde_json::Value) 
 /// recorded event when replaying.
 fn metadata_args_match(recorded: &MetadataCallArgs, actual: &MetadataCallArgs) -> bool {
     fn relations_match(recorded_relations: &[String], actual_relations: &[String]) -> bool {
-        let recorded_set: HashSet<String> = recorded_relations
+        let recorded_set: HashSet<Cow<'_, str>> = recorded_relations
             .iter()
-            .map(|r| r.to_ascii_uppercase())
+            .map(|r| uppercase(Cow::Borrowed(r.as_str())))
             .collect();
         actual_relations
             .iter()
-            .all(|rel| recorded_set.contains(&rel.to_ascii_uppercase()))
+            .all(|rel| recorded_set.contains(&uppercase(rel.into())))
     }
 
     match (recorded, actual) {
@@ -184,7 +270,18 @@ pub(crate) fn adapter_args_match_for_type(
                 .map_or_else(
                     || values_match(recorded, actual),
                     |(rec_sql, act_sql)| {
-                        UuidSanitizer.sanitize(rec_sql) == UuidSanitizer.sanitize(act_sql)
+                        // Recordings made before the ephemeral select wrapper got its
+                        // `as <model_name>` alias have no alias. `compare_sql` removes it for
+                        // `execute`; remove it here too.
+                        let canonical = |sql: &str| {
+                            let sql = canonicalize_ephemeral_wrapper_alias(sql, adapter_type);
+                            canonicalize_complex_types_for(
+                                &UuidSanitizer.sanitize(&sql),
+                                adapter_type,
+                            )
+                            .into_owned()
+                        };
+                        canonical(rec_sql) == canonical(act_sql)
                     },
                 )
         }
@@ -195,7 +292,35 @@ pub(crate) fn adapter_args_match_for_type(
                 |(rec_sql, act_sql)| compare_sql(rec_sql, act_sql, adapter_type).is_ok(),
             ),
         "submit_python_job" => python_job_args_match(recorded, actual),
+        "update_columns" => {
+            let (mut recorded, mut actual) = (recorded.clone(), actual.clone());
+            fill_constraint_warn_flag_defaults(&mut recorded);
+            fill_constraint_warn_flag_defaults(&mut actual);
+            values_match(&recorded, &actual)
+        }
         _ => values_match(recorded, actual),
+    }
+}
+
+/// Set each missing `warn_unenforced` and `warn_unsupported` flag to `true` in the column
+/// constraints of `update_columns(relation, columns)` args.
+///
+/// PR #16910 changed the default of these flags from unset to `true`, as in dbt-core. Older
+/// recordings omit the keys and newer binaries serialize them. An omitted flag and `true` have
+/// the same meaning, so fill the default on both sides. An explicit `false` still mismatches.
+fn fill_constraint_warn_flag_defaults(args: &mut serde_json::Value) {
+    let constraints = args
+        .get_mut(1)
+        .and_then(serde_json::Value::as_object_mut)
+        .into_iter()
+        .flat_map(|columns| columns.values_mut())
+        .filter_map(|column| column.get_mut("constraints")?.as_array_mut())
+        .flatten()
+        .filter_map(serde_json::Value::as_object_mut);
+    for constraint in constraints {
+        for flag in ["warn_unenforced", "warn_unsupported"] {
+            constraint.entry(flag).or_insert(true.into());
+        }
     }
 }
 
@@ -264,31 +389,26 @@ fn strip_relation_type_flags(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Normalize `__dbt_tmp<suffix>` in every string, borrowing when no marker is present.
-///
-/// The sanitizer is the identity without a marker, so the gate only avoids the clone.
+/// Normalize temporary relation suffixes, borrowing when no marker needs normalization.
 fn normalized_tmp_suffixes(value: &serde_json::Value) -> Cow<'_, serde_json::Value> {
-    if has_tmp_marker(value) {
+    if has_tmp_suffix_marker(value) {
         Cow::Owned(normalize_tmp_suffixes(value))
     } else {
         Cow::Borrowed(value)
     }
 }
 
-/// True if any string in the JSON tree mentions `__dbt_tmp` (case-insensitive).
-fn has_tmp_marker(value: &serde_json::Value) -> bool {
+/// True if any string in the JSON tree contains a temporary-relation suffix marker.
+fn has_tmp_suffix_marker(value: &serde_json::Value) -> bool {
     match value {
-        serde_json::Value::String(s) => TMP_MARKER_RE.is_match(s),
-        serde_json::Value::Array(arr) => arr.iter().any(has_tmp_marker),
-        serde_json::Value::Object(obj) => obj.values().any(has_tmp_marker),
+        serde_json::Value::String(s) => TMP_MARKER_RE.is_match(s) || has_elementary_tmp_suffix(s),
+        serde_json::Value::Array(arr) => arr.iter().any(has_tmp_suffix_marker),
+        serde_json::Value::Object(obj) => obj.values().any(has_tmp_suffix_marker),
         _ => false,
     }
 }
 
-/// Recursively normalize `__dbt_tmp<suffix>` substrings in every string value.
-///
-/// Temp-relation identifiers carry a non-deterministic suffix; normalize both sides like
-/// `TmpSuffixSanitizer` does for SQL text, or replay false-fails.
+/// Recursively normalize temporary relation suffixes in adapter arguments.
 fn normalize_tmp_suffixes(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::String(s) => serde_json::Value::String(TmpSuffixSanitizer.sanitize(s)),
@@ -329,7 +449,7 @@ fn python_job_args_match(recorded: &serde_json::Value, actual: &serde_json::Valu
                     let is_model = obj
                         .get("__type__")
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(|type_name| type_name.ends_with("LazyModelWrapper"));
+                        .is_some_and(super::serde::is_node_context_type);
                     if is_model || inside_model && obj.contains_key("adapter") {
                         obj.remove("raw_code");
                         obj.remove("adapter");
@@ -524,6 +644,14 @@ impl std::fmt::Display for ReplayMode {
     }
 }
 
+/// Read `header.json` from a recording directory.
+pub(crate) fn read_recording_header(recording_dir: &Path) -> Result<RecordingHeader, ReplayError> {
+    let header_path = recording_dir.join("header.json");
+    let header_content = std::fs::read_to_string(&header_path)
+        .map_err(|e| ReplayError::InvalidFormat(format!("Failed to read header.json: {}", e)))?;
+    Ok(serde_json::from_str(&header_content)?)
+}
+
 /// Errors that can occur during replay.
 #[derive(Debug)]
 pub enum ReplayError {
@@ -632,8 +760,26 @@ pub struct Recording {
     /// Semantic mode state for metadata calls
     semantic_metadata_state: RwLock<HashMap<String, SemanticReplayState>>,
     /// Strict mode: seq numbers of read-only execute events already matched globally.
-    /// These events are skipped by take_next so they don't consume the wrong write slot.
+    /// These events are skipped by take_next so they do not consume the wrong write slot.
     ro_exec_matched: RwLock<HashMap<String, HashSet<u32>>>,
+    /// Precomputed read-only execute event sequence numbers, indexed by node.
+    read_only_execute_seqs_by_node: BTreeMap<String, HashSet<u32>>,
+}
+
+fn read_only_execute_seqs_by_node(
+    events_by_node: &BTreeMap<String, Vec<AdapterCallEvent>>,
+) -> BTreeMap<String, HashSet<u32>> {
+    events_by_node
+        .iter()
+        .filter_map(|(node_id, events)| {
+            let seqs = events
+                .iter()
+                .filter(|event| is_read_only_execute_event(event))
+                .map(|event| event.seq)
+                .collect::<HashSet<_>>();
+            (!seqs.is_empty()).then(|| (node_id.clone(), seqs))
+        })
+        .collect()
 }
 
 /// State for semantic replay mode per node/caller.
@@ -655,6 +801,11 @@ impl Recording {
     fn adapter_type(&self) -> AdapterType {
         AdapterType::from_str(&self.header.adapter_type).unwrap_or(AdapterType::Snowflake)
     }
+    fn is_read_only_execute_event(&self, event: &AdapterCallEvent) -> bool {
+        self.read_only_execute_seqs_by_node
+            .get(&event.node_id)
+            .is_some_and(|seqs| seqs.contains(&event.seq))
+    }
 
     /// Load a recording from disk.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ReplayError> {
@@ -664,12 +815,7 @@ impl Recording {
             return Err(ReplayError::NotFound(path.display().to_string()));
         }
 
-        // Load header
-        let header_path = path.join("header.json");
-        let header_content = std::fs::read_to_string(&header_path).map_err(|e| {
-            ReplayError::InvalidFormat(format!("Failed to read header.json: {}", e))
-        })?;
-        let header: RecordingHeader = serde_json::from_str(&header_content)?;
+        let header = read_recording_header(path)?;
 
         // Load events
         let events_path = path.join("events.ndjson.gz");
@@ -739,6 +885,8 @@ impl Recording {
 
         // Sort run_remote_adhoc events by seq
         run_remote_adhoc_events.sort_by_key(|e| e.seq);
+        let read_only_execute_seqs_by_node =
+            read_only_execute_seqs_by_node(&adapter_events_by_node);
 
         Ok(Self {
             header,
@@ -755,6 +903,7 @@ impl Recording {
             semantic_adapter_state: RwLock::new(HashMap::new()),
             semantic_metadata_state: RwLock::new(HashMap::new()),
             ro_exec_matched: RwLock::new(HashMap::new()),
+            read_only_execute_seqs_by_node,
         })
     }
 
@@ -885,7 +1034,7 @@ impl Recording {
 
         let event = events.iter().find(|e| {
             !already_matched.contains(&e.seq)
-                && is_read_only_execute_event(e)
+                && self.is_read_only_execute_event(e)
                 && e.method == method
                 && adapter_args_match_for_type(method, &e.args, args, adapter_type)
         })?;
@@ -978,7 +1127,7 @@ impl Recording {
         for (idx, event) in events[search_start..].iter().enumerate() {
             // Skip non-write operations and read-only execute events (SELECT/SHOW SQL).
             // Read-only executes are not barriers; they belong to the read search space.
-            if !event.semantic_category.is_mutating() || is_read_only_execute_event(event) {
+            if !event.semantic_category.is_mutating() || self.is_read_only_execute_event(event) {
                 continue;
             }
 
@@ -1006,6 +1155,29 @@ impl Recording {
         None
     }
 
+    /// Find a read-only `execute` event in the current segment for diagnostics.
+    ///
+    /// This does not consume the event or look beyond the next write barrier.
+    pub(crate) fn read_only_execute_candidate(
+        &self,
+        node_id: &str,
+        method: &str,
+    ) -> Option<&AdapterCallEvent> {
+        let events = self.adapter_events_by_node.get(node_id)?;
+        let state = self.semantic_adapter_state.read();
+        let search_start = state.get(node_id).map_or(0, |state| state.segment_start);
+        let search_end = events[search_start..]
+            .iter()
+            .position(|event| {
+                event.semantic_category.is_mutating() && !self.is_read_only_execute_event(event)
+            })
+            .map_or(events.len(), |pos| search_start + pos);
+
+        events[search_start..search_end]
+            .iter()
+            .find(|event| event.method == method && self.is_read_only_execute_event(event))
+    }
+
     /// Find a matching read operation within the current segment (untracked).
     ///
     /// In semantic mode, reads are NOT tracked for consumption. The same read
@@ -1029,7 +1201,7 @@ impl Recording {
         // their recorded semantic_category is Write; they live in the read search space.
         let segment_end = events[search_start..]
             .iter()
-            .position(|e| e.semantic_category.is_mutating() && !is_read_only_execute_event(e))
+            .position(|e| e.semantic_category.is_mutating() && !self.is_read_only_execute_event(e))
             .map(|pos| search_start + pos)
             .unwrap_or(events.len());
 
@@ -1072,6 +1244,9 @@ impl Recording {
     ///   read may be found, never *what* counts as an answer to it
     /// - real writes are skipped, so a read is never answered by a mutating event
     /// - this node's own stream only; a read recorded under a different node is still a miss
+    /// - the nearest earlier match wins. Normalized temp-relation names can collide:
+    ///   Elementary's `delete_and_insert` records a one-column delete table and then the insert
+    ///   table, so the earliest match can be the wrong table
     ///
     /// Logs on success: recorded and replayed call order diverged, which is worth seeing even
     /// though it is not fatal.
@@ -1085,9 +1260,9 @@ impl Recording {
     ) -> Option<&'a AdapterCallEvent> {
         let adapter_type = self.adapter_type();
         let already_passed = events.get(..state.segment_start)?;
-        let event = already_passed.iter().find(|event| {
+        let event = already_passed.iter().rfind(|event| {
             let is_real_write =
-                event.semantic_category.is_mutating() && !is_read_only_execute_event(event);
+                event.semantic_category.is_mutating() && !self.is_read_only_execute_event(event);
             !is_real_write
                 && event.method == method
                 && adapter_args_match_for_type(method, &event.args, args, adapter_type)
@@ -1604,6 +1779,104 @@ mod tests {
     use super::*;
     use crate::sql::diff::compare_sql;
 
+    #[test]
+    fn test_read_only_sql_classifies_ctes_and_plain_select() {
+        for sql in [
+            "select * from tables",
+            "select 'C:\\' as p",
+            "with tables as (select * from information_schema.tables) select * from tables",
+            " WITH tables as (select 1) select * from tables",
+            "with a as ((select 1) union all (select 2)) select * from a",
+            "with a as (/* ) */ select 1 -- )\n), b as (select 2) select * from a, b",
+            "with tables as (select * from information_schema.tables where (table_schema = 'x) as')), columns as (select column_name from information_schema.columns where table_schema = 'x' and column_name = 'as)') select * from tables join columns using (table_schema)",
+            "with recursive numbers (n) as (select 1 union all select n + 1 from numbers where n < 2) select * from numbers",
+            "with cte(\"as\") as (select 'as)' as \"as\") select \"as\" from cte",
+        ] {
+            assert!(is_read_only_sql(sql), "{sql}");
+        }
+
+        for sql in [
+            "with rows_to_delete as (select id from t) delete from t where id in (select id from rows_to_delete)",
+            "with rows_to_insert as (select 1 as id) insert into t select id from rows_to_insert",
+            "with rows_to_update as (select id from t) update t set x = 1",
+            "with rows_to_merge as (select id from s) merge into t using rows_to_merge on t.id = rows_to_merge.id when matched then update set x = 1",
+            "with deleted as (delete from t returning *) select count(*) from deleted",
+            "create table t as with rows as (select 1) select * from rows",
+            "with a as ((select 1) union all (select 2)) delete from t",
+            // A nested WITH body can end in DML, so any nested WITH body is a write.
+            "with d as (with x as (select 1) delete from t where id in (select * from x) returning *) select * from d",
+            "with d as (with x as (select 1) insert into t select * from x returning *) select * from d",
+            "with d as (with x as (select 1) select * from x) select * from d",
+            // A CTE needs AS after its name and optional column list.
+            "with t (select 1) insert into x with u as (select 2) select * from u",
+            "with t as materialized (select 1) select * from t",
+            // The tokenizer does not know these strings or comments, so it would see a SELECT.
+            "with a as (select 'x\\' ) select 1 --') delete from t",
+            "with a as (select $$ ) select 1 $$) delete from t",
+            "with a as (select $q$ ) select 1 $q$) delete from t",
+            "with a as (select 1 // ) select 1\n) delete from t",
+            "with a as (select '''it's ) select 1 --''') delete from t",
+            // Leading comments are not trimmed.
+            "/* c */ select 1",
+            "-- c\nshow parameters",
+            "/* catalog probe */ with tables as (select 1) select * from tables",
+        ] {
+            assert!(!is_read_only_sql(sql), "{sql}");
+        }
+    }
+
+    #[test]
+    fn test_semantic_mode_reorders_cte_reads_but_not_writes() {
+        let node_id = "node1";
+        let sql_a = "with a as (select 1) select * from a";
+        let sql_b = "with b as (select 2) select * from b";
+        let make_exec = |seq, sql| {
+            let mut event = make_event(node_id, seq, "execute", SemanticCategory::Write);
+            event.args = serde_json::json!([sql]);
+            event
+        };
+        let recording = make_recording(vec![make_exec(0, sql_a), make_exec(1, sql_b)]);
+        assert_eq!(
+            recording
+                .take_semantic_match(
+                    node_id,
+                    "execute",
+                    &serde_json::json!([sql_b]),
+                    SemanticCategory::Write
+                )
+                .unwrap()
+                .seq,
+            1
+        );
+        assert_eq!(
+            recording
+                .take_semantic_match(
+                    node_id,
+                    "execute",
+                    &serde_json::json!([sql_a]),
+                    SemanticCategory::Write
+                )
+                .unwrap()
+                .seq,
+            0
+        );
+
+        let dml_cte = "with deleted as (delete from t returning *) select count(*) from deleted";
+        let cte_read = "with a as (select 1) select * from a";
+        let recording = make_recording(vec![make_exec(0, dml_cte), make_exec(1, cte_read)]);
+        assert!(
+            recording
+                .take_semantic_match(
+                    node_id,
+                    "execute",
+                    &serde_json::json!([cte_read]),
+                    SemanticCategory::Write
+                )
+                .is_none(),
+            "a data-modifying CTE must remain a write barrier"
+        );
+    }
+
     /// Compare SQL args for execute/run_query methods.
     fn sql_args_match(
         recorded: &serde_json::Value,
@@ -1657,6 +1930,8 @@ mod tests {
         for events in adapter_events_by_node.values_mut() {
             events.sort_by_key(|e| e.seq);
         }
+        let read_only_execute_seqs_by_node =
+            read_only_execute_seqs_by_node(&adapter_events_by_node);
 
         Recording {
             header: RecordingHeader {
@@ -1681,6 +1956,7 @@ mod tests {
             semantic_adapter_state: RwLock::new(HashMap::new()),
             semantic_metadata_state: RwLock::new(HashMap::new()),
             ro_exec_matched: RwLock::new(HashMap::new()),
+            read_only_execute_seqs_by_node,
         }
     }
 
@@ -2390,6 +2666,8 @@ mod tests {
                 .or_default()
                 .push(event);
         }
+        let read_only_execute_seqs_by_node =
+            read_only_execute_seqs_by_node(&adapter_events_by_node);
 
         let recording = Recording {
             header: RecordingHeader {
@@ -2414,6 +2692,7 @@ mod tests {
             semantic_adapter_state: RwLock::new(HashMap::new()),
             semantic_metadata_state: RwLock::new(HashMap::new()),
             ro_exec_matched: RwLock::new(HashMap::new()),
+            read_only_execute_seqs_by_node,
         };
 
         // Request TABLE_B first (out of order by seq, but should match by args)
@@ -2453,6 +2732,143 @@ mod tests {
         assert!(result.is_none(), "Should not find TABLE_C");
     }
 
+    /// `update_columns` args with one column that carries the given constraint.
+    fn update_columns_args(constraint: serde_json::Value) -> serde_json::Value {
+        serde_json::json!([
+            { "__type__": "RelationObject", "identifier": "t" },
+            {
+                "__type__": "minijinja::value::object::mutable_map::MutableMap",
+                "id": { "constraints": [constraint], "name": "id" }
+            }
+        ])
+    }
+
+    #[test]
+    fn test_update_columns_treats_missing_constraint_warn_flags_as_true() {
+        // Recordings made before PR #16910 omit the flags. Newer binaries serialize the
+        // `true` default. The fill must not hide an explicit `false`.
+        let recorded = update_columns_args(serde_json::json!({"type": "primary_key"}));
+        let actual = update_columns_args(serde_json::json!({
+            "type": "primary_key",
+            "warn_unenforced": true,
+            "warn_unsupported": true
+        }));
+        let actual_false = update_columns_args(serde_json::json!({
+            "type": "primary_key",
+            "warn_unenforced": false,
+            "warn_unsupported": true
+        }));
+
+        assert!(adapter_args_match_for_type(
+            "update_columns",
+            &recorded,
+            &actual,
+            AdapterType::Bigquery
+        ));
+        assert!(adapter_args_match_for_type(
+            "update_columns",
+            &actual,
+            &recorded,
+            AdapterType::Bigquery
+        ));
+        assert!(!adapter_args_match_for_type(
+            "update_columns",
+            &recorded,
+            &actual_false,
+            AdapterType::Bigquery
+        ));
+    }
+
+    #[test]
+    fn test_column_schema_query_matches_complex_type_spelling() {
+        // Unit test fixtures used to cast to `struct<a:t>` and now cast to ``STRUCT<`a` t>``.
+        let args = |ty: &str| serde_json::json!([format!("select cast(null as {ty}) as payload")]);
+        let recorded = args("struct<id:string,tags:array<string>>");
+        let actual = args("STRUCT<`id` string, `tags` ARRAY<string>>");
+        let other_type = args("STRUCT<`id` string, `tags` ARRAY<int>>");
+
+        for method in ["get_column_schema_from_query", "execute"] {
+            assert!(
+                adapter_args_match_for_type(method, &recorded, &actual, AdapterType::Databricks),
+                "{method}"
+            );
+            assert!(
+                !adapter_args_match_for_type(
+                    method,
+                    &recorded,
+                    &other_type,
+                    AdapterType::Databricks
+                ),
+                "{method}"
+            );
+            assert!(
+                !adapter_args_match_for_type(method, &recorded, &actual, AdapterType::Snowflake),
+                "{method}"
+            );
+        }
+    }
+
+    /// Schema probe of a snapshot that selects from an ephemeral model. `marker` is the comment
+    /// that ends the ephemeral select wrapper.
+    fn ephemeral_schema_probe(
+        marker: &str,
+        wrapper_end: &str,
+        predicate: &str,
+    ) -> serde_json::Value {
+        serde_json::json!([format!(
+            "select * from (\n    with snapshot_query as (\n        with __dbt__cte__base as (\nselect 1 as id\n)\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\nselect * from __dbt__cte__base\n{marker}\n{wrapper_end}\n    )\n    select * from snapshot_query\n    ) as __dbt_sbq\n    where {predicate}\n    limit 0\n"
+        )])
+    }
+
+    const SCHEMA_PROBE_METHODS: [&str; 2] =
+        ["get_column_schema_from_query", "get_columns_in_select_sql"];
+
+    #[test]
+    fn test_column_schema_query_matches_ephemeral_wrapper_alias() {
+        // The recording was made before the wrapper ended with `as <model_name>`.
+        let probe = |wrapper_end: &str, predicate: &str| {
+            ephemeral_schema_probe("--EPHEMERAL-SELECT-WRAPPER-END", wrapper_end, predicate)
+        };
+        let recorded = probe(")", "false");
+
+        for adapter_type in [AdapterType::Snowflake, AdapterType::Redshift] {
+            for method in SCHEMA_PROBE_METHODS {
+                for alias in ["my_snapshot", "_leading__double", "\"QUOTED_MODEL\""] {
+                    let actual = probe(&format!(") as {alias}"), "false");
+                    assert_args_match_both_ways_for(adapter_type, method, &recorded, &actual);
+                }
+                let other_predicate = probe(") as my_snapshot", "true");
+                assert!(
+                    !adapter_args_match_for_type(method, &recorded, &other_predicate, adapter_type),
+                    "{adapter_type} {method}: predicate differs"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_column_schema_query_keeps_alias_without_wrapper_marker() {
+        // Without the marker comment, `) as my_snapshot` is part of the query, so the alias is
+        // the only difference and the args must not match.
+        let probe =
+            |wrapper_end: &str| ephemeral_schema_probe("-- other comment", wrapper_end, "false");
+        let recorded = probe(")");
+        let actual = probe(") as my_snapshot");
+
+        for adapter_type in [AdapterType::Snowflake, AdapterType::Redshift] {
+            for method in SCHEMA_PROBE_METHODS {
+                assert!(
+                    !adapter_args_match_for_type(method, &recorded, &actual, adapter_type),
+                    "{adapter_type} {method}: recorded -> actual"
+                );
+                assert!(
+                    !adapter_args_match_for_type(method, &actual, &recorded, adapter_type),
+                    "{adapter_type} {method}: actual -> recorded"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_submit_python_job_ignores_model_raw_code() {
         // Recordings made before raw_code was populated at parse time captured the
@@ -2464,7 +2880,7 @@ mod tests {
             "import pandas as pd\n\ndef model(dbt, session):\n    return None\n"
         ]);
         let actual = serde_json::json!([
-            { "__type__": "LazyModelWrapper", "alias": "m", "raw_code": "import pandas as pd\n\ndef model(dbt, session):\n    return None" },
+            { "__type__": "dbt_schemas::jinja_node::LazyNodeContext", "alias": "m", "raw_code": "import pandas as pd\n\ndef model(dbt, session):\n    return None" },
             "import pandas as pd\n\ndef model(dbt, session):\n    return None\n"
         ]);
 
@@ -2858,6 +3274,251 @@ mod tests {
             adapter_args_match_for_type(method, actual, recorded, adapter_type),
             "{adapter_type} args should match actual -> recorded"
         );
+    }
+
+    #[test]
+    fn test_get_relation_matches_elementary_timestamped_temp_name() {
+        let recorded = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "test_abc__schema_baseline__tmp_20240101000000000000"
+        ]);
+        let replayed = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "test_abc__schema_baseline__tmp_20240102030405123456"
+        ]);
+        assert_args_match_both_ways_for(
+            AdapterType::Snowflake,
+            "get_relation",
+            &recorded,
+            &replayed,
+        );
+        let legacy_recorded = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "test_abc__schema_baseline__tmp_20251230050355346279000"
+        ]);
+        let legacy_replayed = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "test_abc__schema_baseline__tmp_20251223070509606295"
+        ]);
+        assert_args_match_both_ways_for(
+            AdapterType::Snowflake,
+            "get_relation",
+            &legacy_recorded,
+            &legacy_replayed,
+        );
+
+        let different_relation = serde_json::json!([
+            "ANALYTICS",
+            "ELEMENTARY",
+            "another_test__schema_baseline__tmp_20240102030405123456"
+        ]);
+        assert!(!adapter_args_match_for_type(
+            "get_relation",
+            &recorded,
+            &different_relation,
+            AdapterType::Snowflake
+        ));
+
+        let recorded_columns = serde_json::json!([{
+            "database": "ANALYTICS",
+            "schema": "ELEMENTARY",
+            "identifier": "test_abc__schema_baseline__tmp_20240101000000000000",
+            "is_table": true
+        }]);
+        let replayed_columns = serde_json::json!([{
+            "database": "ANALYTICS",
+            "schema": "ELEMENTARY",
+            "identifier": "test_abc__schema_baseline__tmp_20240102030405123456",
+            "is_table": true
+        }]);
+        assert_args_match_both_ways_for(
+            AdapterType::Snowflake,
+            "get_columns_in_relation",
+            &recorded_columns,
+            &replayed_columns,
+        );
+        let different_columns = serde_json::json!([{
+            "database": "ANALYTICS",
+            "schema": "ELEMENTARY",
+            "identifier": "another_test__schema_baseline__tmp_20240102030405123456",
+            "is_table": true
+        }]);
+        assert!(!adapter_args_match_for_type(
+            "get_columns_in_relation",
+            &recorded_columns,
+            &different_columns,
+            AdapterType::Snowflake
+        ));
+    }
+
+    #[test]
+    fn test_get_relation_elementary_suffix_requires_valid_timestamp_shape() {
+        let relation =
+            |identifier: &str| serde_json::json!(["ANALYTICS", "ELEMENTARY", identifier]);
+        let recorded = relation("\"TEST_ABC__SCHEMA_BASELINE__TMP_20240101000000000000\"");
+        let replayed = relation("\"TEST_ABC__SCHEMA_BASELINE__TMP_20240102030405123456\"");
+        assert_args_match_both_ways_for(
+            AdapterType::Snowflake,
+            "get_relation",
+            &recorded,
+            &replayed,
+        );
+
+        for invalid in [
+            "\"TEST_ABC__SCHEMA_BASELINE__TMP_2024010100000000000\"",
+            "\"TEST_ABC__SCHEMA_BASELINE__TMP_202401020304051234567\"",
+            "\"TEST_ABC__SCHEMA_BASELINE__TMP_99999999999999999999\"",
+        ] {
+            assert!(!adapter_args_match_for_type(
+                "get_relation",
+                &recorded,
+                &relation(invalid),
+                AdapterType::Snowflake
+            ));
+        }
+    }
+
+    /// Elementary writes 20 digits. BigQuery and Postgres add `%H%M%S%f` (32 digits). Legacy
+    /// Fusion wrote a 9-digit `%f` (23 and 38 digits). All of them match the current forms.
+    #[test]
+    fn test_get_relation_elementary_suffix_matches_each_digit_count() {
+        let timestamp =
+            |first_digit: &str, len: usize| format!("2024{}", first_digit.repeat(len - 4));
+        let relation = |digits: &str, tail: &str| {
+            serde_json::json!(["proj", "elementary", format!("abc__tmp_{digits}{tail}")])
+        };
+
+        for (recorded_len, replayed_len) in [(20, 20), (23, 20), (32, 32), (38, 32)] {
+            for tail in ["", "_extra"] {
+                assert_args_match_both_ways_for(
+                    AdapterType::Bigquery,
+                    "get_relation",
+                    &relation(&timestamp("1", recorded_len), tail),
+                    &relation(&timestamp("2", replayed_len), tail),
+                );
+            }
+        }
+
+        let recorded = relation(&timestamp("1", 32), "");
+        for invalid_len in [19, 21, 22, 24, 31, 33, 37, 39] {
+            assert!(
+                !adapter_args_match_for_type(
+                    "get_relation",
+                    &recorded,
+                    &relation(&timestamp("2", invalid_len), ""),
+                    AdapterType::Bigquery
+                ),
+                "{invalid_len} digits must not match"
+            );
+        }
+        assert!(!adapter_args_match_for_type(
+            "get_relation",
+            &relation(&timestamp("1", 20), "_extra"),
+            &relation(&timestamp("2", 20), "_other"),
+            AdapterType::Bigquery
+        ));
+    }
+
+    /// Elementary's `delete_and_insert` records a one-column delete table and then the insert
+    /// table. Replay pins the clock, so it asks for both under one name that matches each after
+    /// normalization. The backward fallback must return the nearest read.
+    #[test]
+    fn test_semantic_mode_read_fallback_prefers_nearest_temp_relation() {
+        let args = |timestamp: &str| {
+            serde_json::json!([{
+                "database": "proj",
+                "schema": "elementary",
+                "identifier": format!("abc__tmp_{timestamp}")
+            }])
+        };
+        let columns_read = |seq: u32, timestamp: &str, columns: serde_json::Value| {
+            let mut event = make_event(
+                "node1",
+                seq,
+                "get_columns_in_relation",
+                SemanticCategory::MetadataRead,
+            );
+            event.args = args(timestamp);
+            event.result = columns;
+            event
+        };
+        let delete_timestamp = "20240101000000000001";
+        let insert_timestamp = "20240101000000000002";
+        let recording = make_recording(vec![
+            columns_read(0, delete_timestamp, serde_json::json!(["key"])),
+            make_event("node1", 1, "execute", SemanticCategory::Write),
+            columns_read(2, insert_timestamp, serde_json::json!(["key", "value"])),
+            make_event("node1", 3, "execute", SemanticCategory::Write),
+            make_event("node1", 4, "list_schemas", SemanticCategory::MetadataRead),
+        ]);
+        for _ in 0..2 {
+            recording
+                .take_semantic_match("node1", "execute", &empty_args(), SemanticCategory::Write)
+                .unwrap();
+        }
+
+        let read = |timestamp: &str| {
+            recording
+                .take_semantic_match(
+                    "node1",
+                    "get_columns_in_relation",
+                    &args(timestamp),
+                    SemanticCategory::MetadataRead,
+                )
+                .unwrap()
+                .seq
+        };
+        assert_eq!(read("20240203040506123456"), 2);
+        assert_eq!(read(insert_timestamp), 2);
+    }
+
+    #[test]
+    fn test_semantic_mode_matches_timestamped_relations_in_each_segment() {
+        let args = |timestamp: &str| {
+            serde_json::json!([
+                "ANALYTICS",
+                "ELEMENTARY",
+                format!("test_abc__schema_baseline__tmp_{timestamp}")
+            ])
+        };
+        let mut first_read = make_event("node1", 0, "get_relation", SemanticCategory::MetadataRead);
+        first_read.args = args("20240101000000000000");
+        first_read.result = serde_json::json!({"relation": "first"});
+        let first_write = make_event("node1", 1, "execute", SemanticCategory::Write);
+        let mut second_read =
+            make_event("node1", 2, "get_relation", SemanticCategory::MetadataRead);
+        second_read.args = args("20240102030405123456");
+        second_read.result = serde_json::json!({"relation": "second"});
+        let second_write = make_event("node1", 3, "execute", SemanticCategory::Write);
+        let recording = make_recording(vec![first_read, first_write, second_read, second_write]);
+
+        let first = recording
+            .take_semantic_match(
+                "node1",
+                "get_relation",
+                &args("20240203040506123456"),
+                SemanticCategory::MetadataRead,
+            )
+            .unwrap();
+        assert_eq!(first.result, serde_json::json!({"relation": "first"}));
+
+        recording
+            .take_semantic_match("node1", "execute", &empty_args(), SemanticCategory::Write)
+            .unwrap();
+
+        let second = recording
+            .take_semantic_match(
+                "node1",
+                "get_relation",
+                &args("20240203040506123457"),
+                SemanticCategory::MetadataRead,
+            )
+            .unwrap();
+        assert_eq!(second.result, serde_json::json!({"relation": "second"}));
     }
 
     #[test]
@@ -3347,6 +4008,8 @@ mod tests {
         for event in sao_events {
             sao_events_map.insert(event.node_id.clone(), event);
         }
+        let read_only_execute_seqs_by_node =
+            read_only_execute_seqs_by_node(&adapter_events_by_node);
 
         Recording {
             header: RecordingHeader {
@@ -3371,6 +4034,7 @@ mod tests {
             semantic_adapter_state: RwLock::new(HashMap::new()),
             semantic_metadata_state: RwLock::new(HashMap::new()),
             ro_exec_matched: RwLock::new(HashMap::new()),
+            read_only_execute_seqs_by_node,
         }
     }
 

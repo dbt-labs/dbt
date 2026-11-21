@@ -3,12 +3,11 @@
 use indexmap::IndexMap;
 use std::{
     collections::{BTreeMap, HashSet},
-    path::PathBuf,
     rc::Rc,
     sync::Arc,
 };
 
-use dbt_jinja_ctx::{LazyModelWrapper, ModelContextMap};
+use dbt_schemas::jinja_node::LazyNodeContext;
 
 use dbt_common::{
     CodeLocationWithFile, ErrorCode, fs_err, tracing::dbt_emit::emit_warn_log_from_fs_error,
@@ -26,12 +25,9 @@ use minijinja::{
 pub struct RunConfig {
     /// The `config` entry from `model` (converted from a ManifestModelConfig value)
     pub model_config: IndexMap<String, Value>,
-    /// A model's attributes/config values (converted from a DbtModel value). Shares its map with
-    /// the `model` / `node` wrappers so `model.update(...)` is visible here too.
-    pub model: ModelContextMap,
-    /// Where the node's compiled SQL lives, so `config.model` can serve `compiled_code` the way
-    /// the top-level `model` object does.
-    pub model_compiled_path: PathBuf,
+    /// The node-backed `model` dictionary. `config.model` is an alias of it, so
+    /// `model.update(...)` is visible here too.
+    pub model: Arc<LazyNodeContext>,
     /// Set of valid config field names for this config type
     pub valid_keys: HashSet<String>,
 }
@@ -51,10 +47,15 @@ impl Object for RunConfig {
     /// Get the value of a key from the config
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         if key.as_str().unwrap() == "model" {
-            return Some(Value::from_object(LazyModelWrapper::new(
-                self.model.clone(),
-                self.model_compiled_path.clone(),
-            )));
+            // Every access returns a new alias of `model`, whose nested maps keep their original
+            // values (see `LazyNodeContext::original_alias`). Top-level keys are shared, so a
+            // `model.update(...)` is visible here. `config.model is sameas model`, and even
+            // `config.model is sameas config.model`, are false, as they were when each access
+            // built a new wrapper.
+            // TODO(LazyNodeContext): In dbt-core, `config.model` is one object, so `config.model is sameas
+            // config.model` is true. Return one alias if that change is accepted; see also
+            // `LazyNodeContext::alias`.
+            return Some(Value::from_object(self.model.original_alias()));
         }
         self.model_config.get(key.as_str().unwrap()).cloned()
     }

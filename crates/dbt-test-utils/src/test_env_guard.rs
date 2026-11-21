@@ -68,6 +68,9 @@ impl TestEnvGuard {
         // debugging / comparing runs (see CompareThreadConcurrencySummary).
         "DBT_TEST_OTEL_CAPTURE_DIR",
         "DBT_TEST_OTEL_LABEL",
+        // Feature flags under test, and the frontend library one of them loads.
+        "DBT_ENGINE_FEATURES",
+        "DBT_FRONTEND_LIBRARY_PATH",
     ];
 
     /// Windows-specific environment variables required for system operations and DNS resolution

@@ -1,0 +1,4 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_create_schema`

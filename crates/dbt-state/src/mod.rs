@@ -1,9 +1,11 @@
 pub mod auth;
+pub mod column_aware;
 pub mod explain;
 pub mod hash;
 pub mod materialization;
 pub mod metadata_cache;
 pub mod node_session;
+pub mod node_state_config;
 pub mod proto;
 pub mod redis_config;
 pub mod request_builder;

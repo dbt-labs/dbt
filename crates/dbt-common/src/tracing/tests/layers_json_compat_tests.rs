@@ -14,12 +14,12 @@ use crate::{
 use dbt_telemetry::{
     ArtifactType, ArtifactWritten, CompiledCode, CompiledCodeInline, DepsAddPackage,
     DepsPackageInstalled, ExecutionPhase, HookOutcome, HookProcessed, HookType, Invocation,
-    InvocationEvalArgs, ListItemOutput, ListOutputFormat, LogMessage, NodeEvaluated,
-    NodeMaterialization, NodeOutcome, NodeOutcomeDetail, NodeProcessed, NodeSkipReason,
-    NodeSkipUpstreamDetail, NodeType, PackageType, ProgressMessage, QueryExecuted, QueryOutcome,
-    ShowDataOutput, ShowDataOutputFormat, ShowResult, ShowResultOutputFormat,
-    SourceFreshnessDetail, SourceFreshnessOutcome, UserLogMessage, node_processed,
-    update_dbt_core_event_code_for_node_processed_end,
+    InvocationEvalArgs, ListItemOutput, ListOutputFormat, LogMessage, MicrobatchBatchSize,
+    MicrobatchEvaluated, NodeEvaluated, NodeMaterialization, NodeOutcome, NodeOutcomeDetail,
+    NodeProcessed, NodeSkipReason, NodeSkipUpstreamDetail, NodeType, PackageType, ProgressMessage,
+    QueryExecuted, QueryOutcome, ShowDataOutput, ShowDataOutputFormat, ShowResult,
+    ShowResultOutputFormat, SourceFreshnessDetail, SourceFreshnessOutcome, UserLogMessage,
+    node_processed, update_dbt_core_event_code_for_node_processed_end,
 };
 use dbt_tracing::test_support::mocks::TestWriter;
 use dbt_tracing::test_support::mocks::{MockDynSpanEvent, test_data_layer};
@@ -1095,6 +1095,148 @@ fn test_node_events() {
             expected_node_finished,
         ],
     );
+}
+
+#[test]
+fn test_microbatch_events_use_best_effort_core_fields() {
+    for (outcome, status, node_status, level, action) in [
+        (NodeOutcome::Success, "OK", "success", "info", "Succeeded"),
+        (NodeOutcome::Error, "error", "error", "error", "Failed"),
+        (
+            NodeOutcome::Canceled,
+            "cancelled",
+            "cancelled",
+            "error",
+            "Cancelled",
+        ),
+        (
+            NodeOutcome::Skipped,
+            "skipped",
+            "skipped",
+            "info",
+            "Skipped",
+        ),
+    ] {
+        let invocation_id = Uuid::new_v4();
+        let unique_id = format!("model.my_project.{TEST_ALIAS}");
+        let description = format!("batch 2026-01-02 of {TEST_SCHEMA}.{TEST_ALIAS}");
+        let events = with_json_compat_layer(invocation_id, FsCommand::Build, || {
+            let parent = create_info_span(NodeEvaluated::start(
+                unique_id.clone(),
+                TEST_ALIAS.to_string(),
+                Some(TEST_DATABASE.to_string()),
+                Some(TEST_SCHEMA.to_string()),
+                Some(TEST_ALIAS.to_string()),
+                Some(NodeMaterialization::Incremental),
+                None,
+                NodeType::Model,
+                ExecutionPhase::Run,
+                TEST_REL_PATH.to_string(),
+                None,
+                None,
+                TEST_NODE_CHECKSUM.to_string(),
+            ));
+            parent.in_scope(|| {
+                let batch = create_info_span(MicrobatchEvaluated::start(
+                    unique_id.clone(),
+                    TEST_SCHEMA.to_string(),
+                    TEST_ALIAS.to_string(),
+                    "20260102".to_string(),
+                    MicrobatchBatchSize::Day,
+                    2,
+                    3,
+                    "2026-01-02T00:00:00Z".to_string(),
+                    "2026-01-03T00:00:00Z".to_string(),
+                ));
+                record_span_status_from_attrs(&batch, |attrs| {
+                    let event = attrs
+                        .downcast_mut::<MicrobatchEvaluated>()
+                        .expect("microbatch attributes");
+                    event.set_node_outcome(outcome);
+                    event.dbt_core_event_code = Some("Q046".to_string());
+                });
+            });
+        });
+        let mut batch_events: Vec<_> = events
+            .into_iter()
+            .filter(|event| matches!(event["info"]["code"].as_str(), Some("Q045" | "Q046")))
+            .collect();
+        assert_eq!(batch_events.len(), 2, "{outcome:?}");
+        let result = batch_events.pop().unwrap();
+        assert_eq!(result["info"]["code"], "Q046");
+        assert_eq!(result["info"]["name"], "LogBatchResult");
+        assert_eq!(result["info"]["level"], level);
+        assert!(
+            result["info"]["msg"]
+                .as_str()
+                .unwrap()
+                .trim_start()
+                .starts_with(&format!("{action} {description}"))
+        );
+        assert!(
+            result["info"]["msg"]
+                .as_str()
+                .unwrap()
+                .contains("[2 of 3 in ")
+        );
+        assert!(
+            result["data"]["execution_time"].is_f64(),
+            "duration is numeric seconds"
+        );
+        let node_info = |status: &str, finished: bool| {
+            json!({
+                "node_path": TEST_REL_PATH,
+                "node_name": TEST_ALIAS,
+                "unique_id": unique_id,
+                "resource_type": "model",
+                "materialized": "incremental",
+                "node_status": status,
+                "node_started_at": "<redacted::node_started_at>",
+                "node_finished_at": if finished { "<redacted::node_finished_at>" } else { "" },
+                "node_relation": {
+                    "database": TEST_DATABASE,
+                    "schema": TEST_SCHEMA,
+                    "alias": TEST_ALIAS,
+                    "relation_name": TEST_RELATION_NAME,
+                },
+                "node_checksum": TEST_NODE_CHECKSUM,
+            })
+        };
+        let result_scrub_keys = [
+            "node_info.node_started_at",
+            "node_info.node_finished_at",
+            "execution_time",
+        ];
+        assert_eq!(
+            scrub_json(result, &result_scrub_keys)["data"],
+            json!({
+                "node_info": node_info(node_status, true),
+                "description": description,
+                "status": status,
+                "batch_index": 2,
+                "total_batches": 3,
+                "execution_time": "<redacted::execution_time>",
+            }),
+            "{outcome:?}: compatibility JSON exposes Core fields without internal batch metadata"
+        );
+        let start = batch_events.pop().unwrap();
+        assert_eq!(start["info"]["code"], "Q045");
+        assert_eq!(start["info"]["name"], "LogStartBatch");
+        assert_eq!(start["info"]["level"], "info");
+        assert_eq!(
+            start["info"]["msg"],
+            format!("   Started {description} [2 of 3]")
+        );
+        assert_eq!(
+            scrub_json(start, &["node_info.node_started_at"])["data"],
+            json!({
+                "node_info": node_info("started", false),
+                "description": description,
+                "batch_index": 2,
+                "total_batches": 3,
+            })
+        );
+    }
 }
 
 #[test]
