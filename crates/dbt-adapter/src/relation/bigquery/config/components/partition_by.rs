@@ -59,6 +59,7 @@ fn from_remote_state(schema: &Schema) -> AdapterResult<PartitionBy> {
             }),
             // TODO(serramatutu): how do we determine the value of this?
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         })
     } else {
         None
@@ -97,6 +98,7 @@ fn from_remote_state(schema: &Schema) -> AdapterResult<PartitionBy> {
             }),
             // TODO(serramatutu): how do we determine the value of this?
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         })
     } else {
         None
@@ -165,6 +167,7 @@ mod tests {
                 time_ingestion_partitioning: false,
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         };
         let driver_data = make_driver_data(TestTableConfig {
             partition_by: Some(pb.clone()),
@@ -184,6 +187,7 @@ mod tests {
                 time_ingestion_partitioning: false,
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         };
         let driver_data = make_driver_data(TestTableConfig {
             partition_by: Some(pb.clone()),
@@ -220,6 +224,7 @@ mod tests {
                 },
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         };
         let driver_data = make_driver_data(TestTableConfig {
             partition_by: Some(pb.clone()),
@@ -246,6 +251,7 @@ mod tests {
                 time_ingestion_partitioning: false,
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         };
         let config = make_local_config(TestTableConfig {
             partition_by: Some(pb.clone()),
@@ -268,6 +274,7 @@ mod tests {
                 },
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         };
         let config = make_local_config(TestTableConfig {
             partition_by: Some(pb.clone()),
