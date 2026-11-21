@@ -1,7 +1,8 @@
 use arrow::array::ArrowNativeTypeOp as _;
-use arrow::datatypes::DecimalType;
+use arrow::datatypes::{Decimal32Type, Decimal64Type, Decimal128Type, Decimal256Type, DecimalType};
+use minijinja::arg_utils::ArgsIter;
 use minijinja::value::{Object, ObjectRepr};
-use minijinja::{Error, Value};
+use minijinja::{Environment, Error, ErrorKind, State, Value, assert_nullary_args};
 use std::fmt;
 use std::sync::Arc;
 
@@ -143,11 +144,30 @@ impl<T: DecimalType> Object for DecimalValue<T> {
 
     fn call_method(
         self: &Arc<Self>,
-        state: &minijinja::State<'_, '_>,
+        state: &State<'_, '_>,
         method: &str,
         args: &[Value],
         listeners: &[std::rc::Rc<dyn minijinja::listener::RenderingEventListener>],
     ) -> Result<Value, Error> {
+        if method == "__int__" {
+            assert_nullary_args!("DecimalValue.__int__", args)?;
+            // Arrow applies the scale with full decimal precision.
+            let decimal = T::format_decimal(self.value, self.precision, self.scale);
+            let whole = decimal
+                .split_once('.')
+                .map_or(decimal.as_str(), |(whole, _)| whole);
+            return whole
+                .parse::<i128>()
+                .map(Value::from)
+                .or_else(|_| whole.parse::<u128>().map(Value::from))
+                .map_err(|_| {
+                    Error::new(
+                        ErrorKind::InvalidOperation,
+                        "Decimal value does not fit in a Jinja integer",
+                    )
+                });
+        }
+
         if let Some(value) = self.get_value(&Value::from(method)) {
             return value.call(state, args, listeners);
         }
@@ -155,16 +175,57 @@ impl<T: DecimalType> Object for DecimalValue<T> {
         // TODO: implement decimal methods
 
         Err(Error::new(
-            minijinja::ErrorKind::UnknownMethod,
+            ErrorKind::UnknownMethod,
             format!("DecimalValue has no method named {method}"),
         ))
+    }
+}
+
+/// Register dbt's `int` filter with support for Agate decimal values.
+pub fn register_decimal_int_filter(env: &mut Environment<'_>) {
+    env.add_filter("int", int_filter);
+}
+
+fn int_filter(state: &State<'_, '_>, args: &[Value]) -> Result<Value, Error> {
+    let Some(decimal) = args
+        .iter()
+        .find(|value| !value.is_kwargs())
+        .and_then(Value::as_object)
+        .filter(|object| {
+            object
+                .downcast_ref::<DecimalValue<Decimal32Type>>()
+                .is_some()
+                || object
+                    .downcast_ref::<DecimalValue<Decimal64Type>>()
+                    .is_some()
+                || object
+                    .downcast_ref::<DecimalValue<Decimal128Type>>()
+                    .is_some()
+                || object
+                    .downcast_ref::<DecimalValue<Decimal256Type>>()
+                    .is_some()
+        })
+    else {
+        return minijinja::filters::int(args);
+    };
+
+    match decimal.call_method(state, "__int__", &[], &[]) {
+        // Out-of-range decimals use the built-in filter's default argument.
+        Err(error) if error.kind() == ErrorKind::InvalidOperation => minijinja::filters::int(args),
+        result => result,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::datatypes::Decimal128Type;
+    use arrow_buffer::i256;
+
+    fn decimal_environment() -> Environment<'static> {
+        let mut env = Environment::new();
+        register_decimal_int_filter(&mut env);
+        env
+    }
 
     #[test]
     fn decimal_value_truthiness_tracks_zero_state() {
@@ -175,5 +236,77 @@ mod tests {
         let value = Arc::new(DecimalValue::<Decimal128Type>::new(12345, 10, 2));
         assert!(!value.is_zero());
         assert!(value.is_true());
+    }
+
+    #[test]
+    fn decimal_values_convert_to_integers_in_jinja() {
+        let env = decimal_environment();
+        let template = env
+            .template_from_str("{{ value }}|{{ value | int(default=7) }}")
+            .unwrap();
+        let decimals128 =
+            [(400, "4.00|4"), (-499, "-4.99|-4"), (99, "0.99|0")].map(|(value, expected)| {
+                (
+                    Value::from_object(DecimalValue::<Decimal128Type>::new(value, 10, 2)),
+                    expected,
+                )
+            });
+        let decimals256 = [
+            (i256::from_i128(4), 0, "4|4"),
+            (i256::from_i128(4), -2, "400|400"),
+            (
+                i256::from_string("9007199254740993912345678901234567890123").unwrap(),
+                20,
+                "90071992547409939123.45678901234567890123|90071992547409939123",
+            ),
+            (
+                i256::from_parts(u128::MAX, 0),
+                0,
+                "340282366920938463463374607431768211455|340282366920938463463374607431768211455",
+            ),
+            (
+                i256::from_parts(0, 1),
+                0,
+                "340282366920938463463374607431768211456|7",
+            ),
+        ]
+        .map(|(value, scale, expected)| {
+            (
+                Value::from_object(DecimalValue::<Decimal256Type>::new(value, 76, scale)),
+                expected,
+            )
+        });
+        for (value, expected) in decimals128.into_iter().chain(decimals256) {
+            let rendered = template
+                .render(minijinja::context!(value => value), &[])
+                .unwrap();
+            assert_eq!(rendered, expected);
+        }
+    }
+
+    #[test]
+    fn decimal_comparison_uses_explicit_int_conversion() {
+        let env = decimal_environment();
+        let value = Value::from_object(DecimalValue::<Decimal128Type>::new(499, 10, 2));
+        let rendered = env
+            .render_str(
+                "{{ value == 4 }}|{{ value | int == 4 }}|{{ value.__int__() == 4 }}",
+                minijinja::context!(value => value),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(rendered, "False|True|True");
+    }
+
+    #[test]
+    fn int_filter_preserves_non_decimal_conversion() {
+        let rendered = decimal_environment()
+            .render_str(
+                "{{ 'ff' | int(base=16) }}|{{ 'invalid' | int(7) }}|{{ true | int }}",
+                (),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(rendered, "255|7|1");
     }
 }
