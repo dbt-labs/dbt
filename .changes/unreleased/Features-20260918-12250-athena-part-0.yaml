@@ -1,0 +1,7 @@
+kind: Features
+body: '[Athena] `dbt-adbc` maps `Backend::Athena` to `AdbcDriverAthenaInit` explicitly and sends the query-result location as `athena.output_location`, the option name the `dbt-labs/athena` driver reads'
+time: 2026-09-18T12:25:01.755826-07:00
+custom:
+    author: aoelvp94
+    issue: "16252"
+    project: dbt-core
