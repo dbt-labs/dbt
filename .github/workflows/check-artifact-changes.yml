@@ -17,13 +17,13 @@ jobs:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'artifact_minor_upgrade') }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Check for changes in core/dbt/artifacts
         # https://github.com/marketplace/actions/paths-changes-filter
-        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # dorny/paths-filter@v3
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # dorny/paths-filter@v3
         id: check_artifact_changes
         with:
           filters: |

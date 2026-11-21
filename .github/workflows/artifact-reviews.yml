@@ -114,7 +114,7 @@ jobs:
 
       - name: "Find Comment"
         if: steps.artifact_files_changed.outputs.artifact_changes == 'true' && steps.check_approvals.outputs.CORE_APPROVALS < env.required_approvals
-        uses: peter-evans/find-comment@a54c31d7fa095754bfef525c0c8e5e5674c4b4b1 # peter-evans/find-comment@v2
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # peter-evans/find-comment@v4.0.0
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -123,7 +123,7 @@ jobs:
 
       - name: "Create Comment"
         if: steps.artifact_files_changed.outputs.artifact_changes == 'true' && steps.find-comment.outputs.comment-id == '' && steps.check_approvals.outputs.CORE_APPROVALS < env.required_approvals
-        uses: peter-evans/create-or-update-comment@23ff15729ef2fc348714a3bb66d2f655ca9066f2 # peter-evans/create-or-update-comment@v3
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # peter-evans/create-or-update-comment@v5.0.0
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body: |
