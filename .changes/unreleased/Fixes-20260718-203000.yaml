@@ -1,0 +1,7 @@
+kind: Fixes
+body: Table headers now align with their column's data type (text left-justified, numeric right-justified) instead of always right-justifying, fixing misaligned headers in contract-mismatch and other printed tables
+time: 2026-07-18T20:30:00.000000+00:00
+custom:
+    author: DipakMandlik
+    issue: "13635"
+    project: dbt-fusion
