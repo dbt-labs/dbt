@@ -1,0 +1,6 @@
+kind: "Dependencies"
+body: "chore(deps): update pathspec requirement from <1.1,>=0.9 to >=0.9,<1.2 in /core"
+time: 2026-11-20T07:20:01.00000Z
+custom:
+  Author: dependabot[bot]
+  Issue: 17245
