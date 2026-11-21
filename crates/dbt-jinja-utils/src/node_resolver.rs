@@ -40,11 +40,15 @@ fn create_ref_relation(
     run_filter: Option<RunFilter>,
 ) -> FsResult<Box<dyn dbt_schemas::schemas::relations::base::BaseRelation>> {
     if node.base().effective_propagation_target == Some(AdapterType::Databricks) {
+        let ephemeral_identifier = (node.materialized() == DbtMaterialization::Ephemeral)
+            .then(|| dbt_common::string_utils::ephemeral_cte_identifier(node.unique_id()));
         let (database, schema, identifier) = canonical_relation_parts(
             Some(AdapterType::Databricks),
             node.database(),
             node.schema(),
-            node.alias(),
+            ephemeral_identifier
+                .as_deref()
+                .unwrap_or_else(|| node.alias()),
         );
         create_relation(
             node.node_adapter(),

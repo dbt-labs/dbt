@@ -135,7 +135,7 @@ fn render_default(
     let rendered_sql_maybe_with_cte = inject_and_persist_ephemeral_models(
         rendered_sql,
         &mut macro_spans,
-        &node.base().alias,
+        &ephemeral_storage_identifier(node.as_ref()),
         node.materialized() == DbtMaterialization::Ephemeral,
         &ctx.inner.arg.io.out_dir.join(DBT_EPHEMERAL_DIR_NAME),
     )
@@ -169,6 +169,14 @@ fn render_default(
         },
         config_map,
     ))
+}
+
+fn ephemeral_storage_identifier(node: &dyn InternalDbtNodeAttributes) -> String {
+    if node.materialized() == DbtMaterialization::Ephemeral {
+        dbt_common::string_utils::ephemeral_cte_identifier(node.unique_id())
+    } else {
+        node.alias().to_string()
+    }
 }
 
 fn report_rendering_progress(node: &Arc<dyn InternalDbtNodeAttributes>, ctx: &TaskRunnerCtx) {
