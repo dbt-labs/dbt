@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/po_auto_liquid_default.sql
+   Parsing models/po_auto_liquid_forced.sql
+   Parsing models/po_liquid_default.sql
+   Parsing models/po_liquid_forced.sql
+ Rendering models/po_liquid_default.sql
+   Running models/po_liquid_default.sql
+ Succeeded model adapters_databricks_predictive_optimization.po_liquid_default (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

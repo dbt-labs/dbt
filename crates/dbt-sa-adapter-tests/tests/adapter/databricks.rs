@@ -744,6 +744,27 @@ async fn adapters_databricks_liquid_clustering() -> FsResult<()> {
 }
 
 #[dbt_runtime::test]
+async fn adapters_databricks_predictive_optimization() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/databricks_predictive_optimization",
+        AdapterType::Databricks.as_ref(),
+        None,
+        &[
+            "run-operation enable_predictive_optimization",
+            "run",
+            "run-operation disable_predictive_optimization",
+            "run --select po_liquid_default",
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+#[dbt_runtime::test]
 async fn adapters_databricks_metric_view() -> FsResult<()> {
     run_fs_record_replay_task_seq(
         env!("CARGO_MANIFEST_DIR"),

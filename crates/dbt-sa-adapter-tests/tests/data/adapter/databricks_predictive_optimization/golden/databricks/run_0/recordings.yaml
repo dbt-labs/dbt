@@ -1,0 +1,8 @@
+b3882291:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_predictive_optimization`
+413e00c6:
+- sequence: 0
+  type: execute
+  sql: alter schema `e2e`.`adapters_databricks_predictive_optimization` enable predictive optimization
