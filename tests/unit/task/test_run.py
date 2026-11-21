@@ -16,20 +16,22 @@ from core.dbt.task.run import MicrobatchBatchRunner
 from dbt.adapters.contracts.connection import AdapterResponse
 from dbt.adapters.postgres import PostgresAdapter
 from dbt.artifacts.resources.base import FileHash
-from dbt.artifacts.resources.types import NodeType, RunHookType
+from dbt.artifacts.resources.types import BatchSize, NodeType, RunHookType
 from dbt.artifacts.resources.v1.components import DependsOn
 from dbt.artifacts.resources.v1.config import Hook, NodeConfig
 from dbt.artifacts.resources.v1.exposure import ExposureType
 from dbt.artifacts.resources.v1.model import LatestVersionPointer, ModelConfig
 from dbt.artifacts.resources.v1.owner import Owner
+from dbt.artifacts.schemas.batch_results import BatchResults
 from dbt.artifacts.schemas.results import RunStatus
-from dbt.artifacts.schemas.run import RunResult
+from dbt.artifacts.schemas.run import RunResult, process_run_result
 from dbt.config.runtime import RuntimeConfig
 from dbt.contracts.graph.manifest import Manifest
 from dbt.contracts.graph.nodes import Exposure, HookNode, ModelNode
 from dbt.events.types import LogModelResult
 from dbt.exceptions import DbtRuntimeError
 from dbt.flags import get_flags, set_from_args
+from dbt.graph.thread_pool import DbtThreadPool
 from dbt.task.run import MicrobatchModelRunner, ModelRunner, RunTask, _get_adapter_info
 from dbt.task.runnable import _rows_affected
 from dbt.tests.util import safe_set_invocation_context
@@ -577,6 +579,93 @@ class TestMicrobatchModelRunner:
             relation_exists=False,
             incremental_batch=False,
         )
+
+    def test_merge_batch_results_keeps_errors_when_batches_are_unfinished(
+        self, model_runner: MicrobatchModelRunner
+    ) -> None:
+        model = model_runner.node
+        model.config.batch_size = BatchSize.day
+        previous, successful, failed_first, failed_second, unfinished = [
+            (datetime(2025, 1, day), datetime(2025, 1, day + 1)) for day in range(1, 6)
+        ]
+        model.previous_batch_results = BatchResults(successful=[previous])
+
+        success = RunResult.from_node(model, RunStatus.Success, "OK")
+        success.batch_results = BatchResults(successful=[successful])
+        first_failure = RunResult.from_node(model, RunStatus.Error, "first error")
+        first_failure.batch_results = BatchResults(failed=[failed_first])
+        second_failure = RunResult.from_node(model, RunStatus.Error, "second error")
+        second_failure.batch_results = BatchResults(failed=[failed_second])
+
+        result = model_runner._initial_run_microbatch_model_result(model)
+        model_runner.merge_batch_results(
+            result,
+            [success, second_failure, first_failure],
+            expected_batches=[successful, failed_first, failed_second, unfinished],
+        )
+
+        assert result.status == RunStatus.PartialSuccess
+        assert result.message == (
+            "PARTIAL SUCCESS (2/5)\n"
+            "Batch 2025-01-03: first error\n"
+            "Batch 2025-01-04: second error"
+        )
+        assert result.batch_results == BatchResults(
+            successful=[previous, successful], failed=[failed_first, failed_second, unfinished]
+        )
+
+    def test_interrupted_microbatch_retry_keeps_summary_and_unique_successes(
+        self,
+        model_runner: MicrobatchModelRunner,
+        manifest: Manifest,
+        mocker: MockerFixture,
+    ) -> None:
+        model = model_runner.node
+        model.config.batch_size = BatchSize.day
+        previous, successful, failed, pending, unsubmitted = [
+            (datetime(2025, 1, day), datetime(2025, 1, day + 1)) for day in range(1, 6)
+        ]
+        model.previous_batch_results = BatchResults(
+            successful=[previous, previous],
+            failed=[successful, failed, pending, unsubmitted],
+        )
+
+        success = RunResult.from_node(model, RunStatus.Success, "OK")
+        success.batch_results = BatchResults(successful=[successful])
+        failure = RunResult.from_node(model, RunStatus.Error, "database rejected the batch")
+        failure.batch_results = BatchResults(failed=[failed])
+        completed = {0: success, 1: failure}
+
+        def submit_batch(*, batch_idx, batch_results, **kwargs):
+            if batch_idx in completed:
+                batch_results.append(completed[batch_idx])
+            return True
+
+        task = mocker.Mock(spec=RunTask)
+        task._submit_batch.side_effect = submit_batch
+        model_runner.set_parent_task(task)
+        pool = mocker.Mock(spec=DbtThreadPool)
+        pool.is_closed.return_value = True
+        model_runner.set_pool(pool)
+        mocker.patch.object(model_runner, "_has_relation", return_value=True)
+        mocker.patch.object(model_runner, "_is_incremental", return_value=True)
+
+        result = model_runner.execute(model, manifest)
+        pool.is_closed.assert_called_once_with()
+        catcher = EventCatcher(event_to_catch=LogModelResult)
+        add_callback_to_manager(catcher.catch)
+        model_runner.print_result_line(result)
+        assert [event.data.status for event in catcher.caught_events] == ["PARTIAL SUCCESS (2/5)"]
+
+        artifact_result = process_run_result(result).to_dict()
+        assert artifact_result["status"] == "partial success"
+        assert artifact_result["message"] == (
+            "PARTIAL SUCCESS (2/5)\nBatch 2025-01-03: database rejected the batch"
+        )
+        expected_batches = BatchResults(
+            successful=[previous, successful], failed=[failed, pending, unsubmitted]
+        )
+        assert artifact_result["batch_results"] == expected_batches.to_dict()
 
     @pytest.mark.parametrize(
         "has_relation,relation_type,materialized,full_refresh_config,full_refresh_flag,expectation",
