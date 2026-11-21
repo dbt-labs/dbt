@@ -6,13 +6,13 @@ from abc import ABCMeta, abstractmethod
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Generic, List, Optional, Set, TypeVar
+from typing import Any, Dict, Generic, List, Optional, Sequence, Set, TypeVar
 
 import dbt.exceptions
 import dbt_common.exceptions.base
 from dbt import tracking
 from dbt.adapters.base.impl import BaseAdapter
-from dbt.artifacts.resources import Catalog
+from dbt.artifacts.resources import Catalog, CatalogV2
 from dbt.artifacts.resources.types import NodeType
 from dbt.artifacts.schemas.results import (
     NodeResult,
@@ -127,7 +127,7 @@ class ConfiguredTask(BaseTask):
         args: Flags,
         config: RuntimeConfig,
         manifest: Optional[Manifest] = None,
-        catalogs: Optional[List[Catalog]] = None,
+        catalogs: Optional[Sequence[Catalog | CatalogV2]] = None,
     ) -> None:
         super().__init__(args)
         self.config = config
