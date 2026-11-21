@@ -22,7 +22,7 @@ use dbt_schemas::schemas::manifest::build_manifest;
 
 use dbt_tasks_core::task_runner_hooks::TaskRunnerHooksFactory;
 
-use crate::compilation::{DbtProjectCompilation, DbtProjectCompilationCacheState};
+use crate::compilation::{DbtProjectCompilation, DbtProjectCompilationCacheState, RunTasksError};
 
 pub struct DbtCompilationDriver {
     feature_stack: Arc<FeatureStack>,
@@ -121,7 +121,8 @@ impl TaskExecutionDriver for DbtTaskExecutionDriver {
                 Default::default(),
                 &mut DbtCommandExecutionArtifacts::default(),
             )
-            .await?;
+            .await
+            .map_err(RunTasksError::into_fs_error)?;
 
         let (run_task_args, run_task_results, _jinja_env, _adapter, cache_state) = result;
 

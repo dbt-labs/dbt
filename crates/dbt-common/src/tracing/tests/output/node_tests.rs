@@ -938,6 +938,52 @@ fn skipped_tests(cases: &mut Vec<Case>) {
             .expect_no_output(TERMINAL_QUIET),
     );
 
+    // Tests skipped by `--fail-fast` collapse the same way.
+    cases.push(
+        Case::new("failed model under --fail-fast skips a test, then a running model finishes")
+            .run(|clock| {
+                node_group(|| {
+                    processed(clock, failed_customers(3));
+                    let mut test =
+                        skipped_test(NodeType::Test, "not_null_customers_customer_id", 2, 3);
+                    test.set_node_skip_reason(NodeSkipReason::FailFast);
+                    processed(clock, test);
+                    processed(
+                        clock,
+                        numbered(model("orders", NodeMaterialization::Table), 3, 3),
+                    );
+                })
+            })
+            .expect(
+                DBT_LOG,
+                indoc! {"
+                    03:04:05.678901 [info ]: Started model analytics.customers
+                    03:04:05.928901 [info ]:     Failed model analytics.customers (table) [1 of 3 in 0.25s]
+                    03:04:05.928901 [info ]: Started test analytics_dbt_test__audit.not_null_customers_customer_id
+                    03:04:06.178901 [info ]:    Skipped test  not_null_customers_customer_id (models/schema.yml:12:15) [2 of 3]
+                    03:04:06.178901 [info ]: Started model analytics.orders
+                    03:04:06.428901 [info ]:  Succeeded model analytics.orders (table) [3 of 3 in 0.25s]
+                "},
+            )
+            .expect(
+                TERMINAL,
+                indoc! {"
+                    <red+bold>    Failed</> model <cyan+bold>analytics.</><blue+bold>customers</> (table) [1 of 3 in 0.25s]
+                    <yellow+bold>   Skipped</> test  '<yellow+bold>not_null_customers_customer_id</>'
+                    <green+bold> Succeeded</> model <cyan+bold>analytics.</><blue+bold>orders</> (table) [3 of 3 in 0.25s]
+                "},
+            )
+            .expect(
+                TEXT,
+                indoc! {"
+                    <red+bold>    Failed</> model <cyan+bold>analytics.</><blue+bold>customers</> (table) [1 of 3 in 0.25s]
+                    <yellow+bold>   Skipped</> test  <cyan+bold></><blue+bold>not_null_customers_customer_id</> (models/schema.yml:12:15) [2 of 3]
+                    <green+bold> Succeeded</> model <cyan+bold>analytics.</><blue+bold>orders</> (table) [3 of 3 in 0.25s]
+                "},
+            )
+            .expect_no_output(TERMINAL_QUIET),
+    );
+
     // More than three names are summarized.
     cases.push(
         Case::new("failed model skips its tests and unit tests, last in the run")

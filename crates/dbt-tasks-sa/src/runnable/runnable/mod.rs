@@ -668,6 +668,11 @@ impl Task for RunTask {
 
                     node_status
                 }
+                // Cancelled with the run: return the error without recording a stat or logging it.
+                // The visitor then skips the node (`--fail-fast`) or leaves it out (Ctrl+C).
+                Err(e) if e.code.is_cancellation() && ctx.is_cancelled(self.node.as_ref()) => {
+                    return Err(e);
+                }
                 Err(e) => {
                     // TODO: At some point, these should log as part of the same event
                     let node_status = NodeStatus::Errored;

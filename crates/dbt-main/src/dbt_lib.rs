@@ -8,6 +8,7 @@ use dbt_common::tracing::formatters::duration::FixedWidthDuration;
 use dbt_common::tracing::formatters::node::{NodeAction, NodeTypeFixedWidth};
 
 use dbt_adapter::load_store::ResultStore;
+use dbt_adapter::response::AdapterResponse;
 use dbt_adapter::{
     Adapter, convert_macro_result_to_record_batch,
     relation::{RelationObject, create_relation},
@@ -16,7 +17,7 @@ use dbt_clap_core::{
     Cli, Command, CompileArgs, CoreCommand, DocsServeArgs as ClapDocsServeArgs, DocsSubcommand,
     InternalCommand, LoginSubcommand, ProjectTemplate, ShowArgs, StateSubcommand,
 };
-use dbt_common::cancellation::CancellationToken;
+use dbt_common::cancellation::{CancellationToken, CancelledError};
 use dbt_common::io_utils::determine_project_dir;
 use dbt_common::{
     ErrorCode, FsResult,
@@ -107,7 +108,8 @@ use vortex_events::{
 use crate::{
     compilation::{
         DbtCustomScheduleDescription, DbtProjectCompilation, DbtProjectCompilationCacheChanges,
-        DbtRunTasksResult, DbtScheduleDescription, show_queries_info_schema, update_manifest,
+        DbtRunTasksResult, DbtScheduleDescription, RunTasksError, show_queries_info_schema,
+        update_manifest,
     },
     retry::{RETRIABLE_COMMANDS, RetryState},
     utils::{InvocationContext, write_runtime_results_parquet},
@@ -975,6 +977,46 @@ impl<'a> AllPhasesExecutor<'a> {
         .await
     }
 
+    /// Writes run_results.json, and the runtime results parquet with `--write-metadata`, from the
+    /// run's stats. Written eagerly so that it persists even if post-execution steps
+    /// (did_run_tasks, update_manifest, save_build_cache, did_compile, etc.) fail before the late
+    /// write_json() call.
+    ///
+    /// Checks are not tasks, so their verdicts are not in the stats — `check_result_rows` are the
+    /// rows the gate produced, keyed `check.<project>.<name>`, which is what `dbt retry` reads.
+    fn write_run_results(
+        &mut self,
+        compilation: &DbtProjectCompilation,
+        stats: &dbt_schemas::stats::Stats,
+        adapter_responses: &HashMap<String, AdapterResponse>,
+        mut check_result_rows: Vec<dbt_schemas::schemas::RunResultOutput>,
+        nodes: &Nodes,
+    ) {
+        let project_state = compilation.dbt_state();
+        let mut run_results_artifact = build_run_results_artifact(
+            stats,
+            nodes,
+            adapter_responses,
+            self.arg.as_ref(),
+            project_state.warn_error,
+            &project_state.warn_error_options,
+        );
+        run_results_artifact.results.append(&mut check_result_rows);
+
+        if self.arg.write_json && self.arg.command != FsCommand::Parse {
+            write_run_results_json_or_warn(&run_results_artifact, self.arg.as_ref());
+        }
+
+        report_selection_override_reconciliation(self.arg.as_ref(), &run_results_artifact, nodes);
+
+        // Save artifact for callers
+        self.captured_artifacts.run_results = Some(run_results_artifact);
+
+        if self.arg.write_metadata {
+            write_runtime_results_parquet(stats, nodes, adapter_responses, self.arg.as_ref());
+        }
+    }
+
     /// Run tasks based on the arguments.
     /// This can be called multiple times on the same compilation.
     async fn run_tasks(
@@ -984,7 +1026,7 @@ impl<'a> AllPhasesExecutor<'a> {
         compilation_cache_changes: Option<&DbtProjectCompilationCacheChanges>,
         schedule: Schedule<String>,
         token: &CancellationToken,
-    ) -> FsResult<DbtRunTasksResult> {
+    ) -> Result<DbtRunTasksResult, RunTasksError> {
         compilation
             .run_tasks(
                 self.arg.as_ref(),
@@ -1828,7 +1870,22 @@ impl<'a> AllPhasesExecutor<'a> {
         let (run_task_args, run_task_results, jinja_env, adapter, compilation_cache_state) =
             match run_tasks_result {
                 Ok(result) => result,
-                Err(err) => {
+                Err(run_error) => {
+                    // A cancelled run keeps the results it has. Any other failure reports every
+                    // selected node as an error below.
+                    let (err, has_results) = match run_error {
+                        RunTasksError::Cancelled(cancelled) => {
+                            self.write_run_results(
+                                &compilation,
+                                &cancelled.stats,
+                                &cancelled.adapter_responses,
+                                check_result_rows,
+                                &cancelled.resolved_state.nodes,
+                            );
+                            (CancelledError.into(), true)
+                        }
+                        RunTasksError::Failed(err) => (err, false),
+                    };
                     // The manifest represents the parsed project state and is always valid after
                     // load/resolve completes. Writing it unconditionally ensures downstream
                     // systems (codex ingestion, job.run.completed webhooks) can process failed
@@ -1840,7 +1897,7 @@ impl<'a> AllPhasesExecutor<'a> {
                         // Only write for real errors (no exit_status); normal phase-checkpoint
                         // exits (list, format, lint, schedule, source freshness) carry an
                         // exit_status and must not produce spurious "Compilation Error" results.
-                        if err.exit_status().is_none() {
+                        if !has_results && err.exit_status().is_none() {
                             let now = SystemTime::now();
                             let error_stats = dbt_schemas::stats::Stats {
                                 stats: schedule
@@ -1916,49 +1973,16 @@ impl<'a> AllPhasesExecutor<'a> {
 
         let resolved_state = Arc::clone(&run_task_results.resolved_state);
 
-        // Prepare artifact
-        let project_state = compilation.dbt_state();
-        let run_results_artifact = build_run_results_artifact(
+        self.write_run_results(
+            &compilation,
             &run_task_results.stats.run,
-            &resolved_state.nodes,
             &run_task_results.adapter_responses,
-            self.arg.as_ref(),
-            project_state.warn_error,
-            &project_state.warn_error_options,
-        );
-
-        // Write run_results.json eagerly from real stats so that it persists
-        // even if post-execution steps (did_run_tasks, update_manifest,
-        // save_build_cache, did_compile, etc.) fail before the late write_json() call.
-        //
-        // Checks are not tasks, so their verdicts are not in `stats.run` — merge the rows the gate
-        // produced, keyed `check.<project>.<name>`, which is what `dbt retry` reads.
-        let mut run_results_artifact = run_results_artifact;
-        run_results_artifact.results.append(&mut check_result_rows);
-
-        if self.arg.write_json && self.arg.command != FsCommand::Parse {
-            write_run_results_json_or_warn(&run_results_artifact, self.arg.as_ref());
-        }
-
-        report_selection_override_reconciliation(
-            self.arg.as_ref(),
-            &run_results_artifact,
+            check_result_rows,
             &resolved_state.nodes,
         );
 
-        // Save artifact for callers
-        self.captured_artifacts.run_results = Some(run_results_artifact);
         if let Some(Ok(preview)) = &run_task_results.preview {
             self.captured_artifacts.preview = Some(preview.clone());
-        }
-
-        if self.arg.write_metadata {
-            write_runtime_results_parquet(
-                &run_task_results.stats.run,
-                &resolved_state.nodes,
-                &run_task_results.adapter_responses,
-                self.arg.as_ref(),
-            );
         }
 
         for s in &run_task_results.storeables {

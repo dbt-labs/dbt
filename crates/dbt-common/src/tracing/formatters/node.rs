@@ -312,7 +312,7 @@ fn node_outcome_status_parts(
         (NodeOutcome::Success, _, None, None) => ("success", &GREEN),
         (NodeOutcome::Error, _, _, _) => ("error", &RED),
         (NodeOutcome::Skipped, s_reason, _, _) => match s_reason {
-            Some(NodeSkipReason::Upstream) => ("skipped", &YELLOW),
+            Some(NodeSkipReason::Upstream | NodeSkipReason::FailFast) => ("skipped", &YELLOW),
             Some(NodeSkipReason::Cached) => ("reused", &GREEN),
             Some(NodeSkipReason::NoOp) => ("no-op", &YELLOW),
             // Other skip reasons are just "skipped"
@@ -354,7 +354,7 @@ fn node_action_parts(
         (NodeOutcome::Success, _, None, None) => ("Succeeded", &GREEN),
         (NodeOutcome::Error, _, _, _) => ("Failed", &RED),
         (NodeOutcome::Skipped, s_reason, _, _) => match s_reason {
-            Some(NodeSkipReason::Upstream) => ("Skipped", &YELLOW),
+            Some(NodeSkipReason::Upstream | NodeSkipReason::FailFast) => ("Skipped", &YELLOW),
             Some(NodeSkipReason::Cached) => ("Reused", &GREEN),
             Some(NodeSkipReason::NoOp) => ("Skipped", &YELLOW),
             // Other skip reasons are just "skipped"

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter::{Adapter, AdapterStore};
@@ -11,7 +11,7 @@ use dbt_common::create_info_span;
 use dbt_common::io_args::FsCommand;
 use dbt_common::sccmap;
 use dbt_common::stats::{NodeStatus, Stat};
-use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
+use dbt_common::tracing::dbt_emit::{emit_debug_log_message, emit_error_log_from_fs_error};
 use dbt_common::tracing::span_info::{SpanStatusRecorder, record_span_status_with_attrs};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -52,6 +52,12 @@ use crate::utils::get_catalog_schemas_and_ids_by_adapter;
 use crate::utils::register_catalog_schemas_remote;
 use crate::visitor::visit_parallel;
 use crate::visitor::visit_sequential;
+
+/// After a cancelled run, how long the task runner waits for
+/// `TaskRunnerHooks::did_collect_all_run_task_results`. The whole command has
+/// `TIMEOUT_AFTER_CTRL_C` after the cancel, which must also cover the visit's wait for running
+/// tasks and writing the run's artifacts, so this stays well under it.
+const CANCELLED_RUN_HOOK_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub fn summarize_task_runner_stats(
     ctx: &TaskRunnerCtx,
@@ -449,15 +455,50 @@ impl TaskRunner {
                 &token,
             )
             .await?;
-        if run_task_args.no_parallel {
+        let abandoned = if run_task_args.no_parallel {
             visit_sequential(&run_task_args.io, &graph, &mut ctx, &token)
                 .in_current_span()
-                .await?;
+                .await?
         } else {
             visit_parallel(&run_task_args.io, &graph, &mut ctx, &token)
                 .in_current_span()
-                .await?;
+                .await?
+        };
+        // Ctrl+C or `--fail-fast` stopped the run. From the cancel, the whole command gets
+        // `TIMEOUT_AFTER_CTRL_C` (3s) before it is dropped, and run_results.json is only written
+        // after this returns. So a cancelled run only gathers its node results and releases its
+        // resources here: never add warehouse queries, network calls or other slow work to it.
+        if token.is_cancelled() {
+            let mut stats = summarize_task_runner_stats(&ctx, &schedule);
+            abandoned.apply(&mut stats.run.stats);
+            let adapter_responses = sccmap::to_vec_cloned(&ctx.inner.main_adapter_responses)
+                .into_iter()
+                .filter(|(unique_id, _)| !abandoned.contains(unique_id))
+                .collect();
+            // A slow hook must not cost the run its run_results.json, so stop waiting for it
+            // after `CANCELLED_RUN_HOOK_TIMEOUT`.
+            let hook =
+                self.hooks
+                    .did_collect_all_run_task_results(&run_task_args, &mut ctx, &token);
+            if tokio::time::timeout(CANCELLED_RUN_HOOK_TIMEOUT, hook)
+                .await
+                .is_err()
+            {
+                emit_debug_log_message(format!(
+                    "did_collect_all_run_task_results still running {CANCELLED_RUN_HOOK_TIMEOUT:?} after a cancelled run; not waiting for it"
+                ));
+            }
+            return Ok(RunTaskResults {
+                stats,
+                adapter_responses,
+                storeables: Vec::new(),
+                showables: Vec::new(),
+                jinja_env: self.jinja_env,
+                resolved_state: self.resolved_state,
+                preview: None,
+            });
         }
+
         self.hooks
             .did_visit_taskgraph(&run_task_args, &schedule, &graph, &mut ctx, &token)
             .await?;

@@ -558,6 +558,14 @@ impl ErrorCode {
         (*self as u16) >= (Self::NotSupported as u16)
     }
 
+    /// Whether this code is a cancelled operation or task rather than a failure.
+    pub fn is_cancellation(&self) -> bool {
+        matches!(
+            self,
+            ErrorCode::OperationCanceled | ErrorCode::TaskCancelled
+        )
+    }
+
     pub fn is_frontend(&self) -> bool {
         (*self as u16) < (Self::Generic as u16)
     }

@@ -20,10 +20,11 @@ use dbt_common::{
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_telemetry::{
-    ExecutionPhase, NodeCacheDetail, NodeCacheReason, NodeErrorType, NodeEvaluated, NodeOutcome,
-    NodeOutcomeDetail, NodeProcessed, NodeSkipReason, NodeSkipUpstreamDetail, NodeType,
-    PhaseExecuted, TestEvaluationDetail, TestOutcome, set_node_warning_outcome_no_warnings,
-    set_node_warning_outcome_warned, update_dbt_core_event_code_for_node_processed_end,
+    ExecutionPhase, NodeCacheDetail, NodeCacheReason, NodeCancelReason, NodeErrorType,
+    NodeEvaluated, NodeOutcome, NodeOutcomeDetail, NodeProcessed, NodeSkipReason,
+    NodeSkipUpstreamDetail, NodeType, PhaseExecuted, TestEvaluationDetail, TestOutcome,
+    set_node_warning_outcome_no_warnings, set_node_warning_outcome_warned,
+    update_dbt_core_event_code_for_node_processed_end,
 };
 use dbt_tracing::StaticName as _;
 use petgraph::graph::DiGraph;
@@ -104,6 +105,9 @@ pub fn update_node_outcome_from_skip_reason(ev: &mut NodeEvaluated, skip_reason:
     match skip_reason {
         SkipReason::FailedPhase => {
             ev.set_node_skip_reason(NodeSkipReason::PhaseSkipped);
+        }
+        SkipReason::FailFast => {
+            ev.set_node_skip_reason(NodeSkipReason::FailFast);
         }
         SkipReason::FailedUpstream(upstream_id) => {
             ev.set_node_skip_reason(NodeSkipReason::Upstream);
@@ -222,6 +226,10 @@ pub fn task_span_on_close(task_span: &tracing::Span, result: &FsResult<NodeStatu
         if let Some(ev) = attrs.downcast_mut::<NodeEvaluated>() {
             match result {
                 Ok(ns) => update_node_outcome_from_legacy_status(ev, ns.clone()),
+                Err(e) if e.code.is_cancellation() => {
+                    ev.set_node_outcome(NodeOutcome::Canceled);
+                    ev.set_node_cancel_reason(NodeCancelReason::UserCancelled);
+                }
                 Err(_) => {
                     ev.set_node_outcome(NodeOutcome::Error);
                     ev.set_node_error_type(NodeErrorType::Internal);
@@ -405,7 +413,7 @@ fn update_node_processed_from_node_evaluated(sum_ev: &mut NodeProcessed, phase_e
     // the previous outcome recorded for this node in NodeProcessed.
     let update_previous = match phase_ev.node_outcome() {
         NodeOutcome::Skipped => match phase_ev.node_skip_reason() {
-            NodeSkipReason::Upstream => true,
+            NodeSkipReason::Upstream | NodeSkipReason::FailFast => true,
             NodeSkipReason::Cached => true,
             NodeSkipReason::NoOp => true,
             // If we skipped the phase, or skipped because the phase is disabled,

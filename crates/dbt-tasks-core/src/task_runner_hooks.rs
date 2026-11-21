@@ -54,6 +54,15 @@ pub trait TaskRunnerHooks: Send + Sync {
         ctx: &mut TaskRunnerCtx,
     ) -> Vec<Box<dyn StoreableResults>>;
 
+    /// Runs at the end of a run, once its results are collected, so an implementation can
+    /// release what it set up for the run.
+    ///
+    /// It also runs after Ctrl+C or `--fail-fast` cancelled the run, with `token` cancelled. The
+    /// command then has `TIMEOUT_AFTER_CTRL_C` in total, counted from the cancel, and
+    /// run_results.json is only written after this returns. So when `token.is_cancelled()`, skip
+    /// anything that can wait long on a warehouse, the network or another process. The task
+    /// runner stops waiting for this call after a short timeout, which only takes effect at an
+    /// `.await`: never block the thread here.
     async fn did_collect_all_run_task_results(
         &self,
         run_task_args: &RunTasksArgs,

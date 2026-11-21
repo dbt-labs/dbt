@@ -938,6 +938,8 @@ pub enum NodeSkipReason {
     NoOp = 4,
     /// Current evaluation phase skipped for this node due to previous phase outcome.
     PhaseSkipped = 5,
+    /// Skipped because another node failed under `--fail-fast`, which stops the whole run.
+    FailFast = 6,
 }
 impl NodeSkipReason {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -952,6 +954,7 @@ impl NodeSkipReason {
             Self::PhaseDisabled => "NODE_SKIP_REASON_PHASE_DISABLED",
             Self::NoOp => "NODE_SKIP_REASON_NO_OP",
             Self::PhaseSkipped => "NODE_SKIP_REASON_PHASE_SKIPPED",
+            Self::FailFast => "NODE_SKIP_REASON_FAIL_FAST",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -963,6 +966,7 @@ impl NodeSkipReason {
             "NODE_SKIP_REASON_PHASE_DISABLED" => Some(Self::PhaseDisabled),
             "NODE_SKIP_REASON_NO_OP" => Some(Self::NoOp),
             "NODE_SKIP_REASON_PHASE_SKIPPED" => Some(Self::PhaseSkipped),
+            "NODE_SKIP_REASON_FAIL_FAST" => Some(Self::FailFast),
             _ => None,
         }
     }

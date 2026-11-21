@@ -322,14 +322,7 @@ pub fn execute_microbatch_batch(
     find_and_record_span_status_from_attrs(|batch: &mut MicrobatchEvaluated| {
         batch.set_node_outcome(match &result {
             Ok(()) => NodeOutcome::Success,
-            Err(error)
-                if matches!(
-                    error.code,
-                    ErrorCode::OperationCanceled | ErrorCode::TaskCancelled
-                ) =>
-            {
-                NodeOutcome::Canceled
-            }
+            Err(error) if error.code.is_cancellation() => NodeOutcome::Canceled,
             Err(_) => NodeOutcome::Error,
         });
         batch.dbt_core_event_code = Some("Q046".to_string());

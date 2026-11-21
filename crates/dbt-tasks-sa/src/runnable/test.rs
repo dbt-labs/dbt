@@ -563,9 +563,20 @@ impl Task for AggregatedTestRunRemoteTask {
 
             let status = self.run_task_inner(ctx, &mut spans_by_id).await;
 
-            if status.is_err() {
+            if let Err(e) = &status {
+                // This task closes its members' spans itself. When `--fail-fast` cancelled the
+                // query, the visitor records the members as skipped, so close them the same way.
+                let skipped_by_fail_fast = e.code.is_cancellation()
+                    && ctx.is_cancelled(self.group.aggregated_test.as_ref())
+                    && ctx.stopped_by_fail_fast();
                 for (_, span) in spans_by_id.into_values() {
-                    ctx.inner.span_manager().handle_task_finished(span, &status);
+                    if skipped_by_fail_fast {
+                        ctx.inner
+                            .span_manager()
+                            .handle_task_skipped(span, &SkipReason::FailFast);
+                    } else {
+                        ctx.inner.span_manager().handle_task_finished(span, &status);
+                    }
                 }
             }
 

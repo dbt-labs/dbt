@@ -505,6 +505,19 @@ impl TaskRunnerCtx {
         )
     }
 
+    /// Whether the invocation was cancelled (Ctrl+C or `--fail-fast`), read from the token of
+    /// [`Self::adapter_for`]`(node)`. A failed lookup returns false, so the task records a normal
+    /// error.
+    pub fn is_cancelled(&self, node: &dyn InternalDbtNodeAttributes) -> bool {
+        self.adapter_for(node)
+            .is_ok_and(|adapter| adapter.cancellation_token().is_cancelled())
+    }
+
+    /// Whether a failed node stopped the run under `--fail-fast`.
+    pub fn stopped_by_fail_fast(&self) -> bool {
+        self.inner.arg.fail_fast_flag && self.inner.arg.fail_fast.has_triggered()
+    }
+
     /// One node's run-phase base context: the node's task keys and its adapter overlay
     /// layered over the run's base context.
     pub fn run_base_context(&self, node: &dyn InternalDbtNodeAttributes) -> FsResult<Value> {

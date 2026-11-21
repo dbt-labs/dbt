@@ -161,6 +161,12 @@ fn apply_node_overrides(
     Ok(node_overrides)
 }
 
+/// Whether `e` is the run being cancelled (Ctrl+C or `--fail-fast`). The code alone does not say
+/// so: a statement the warehouse cancelled carries one too, and that is an error of the node.
+fn is_run_cancellation(e: &dbt_common::FsError, adapter: &Adapter) -> bool {
+    e.code.is_cancellation() && adapter.cancellation_token().is_cancelled()
+}
+
 /// Reset the per-node connection overrides (`USE` database / `use warehouse`) after a
 /// materialization. If a reset fails the connection is stuck in the wrong scope, so drop it
 /// (do NOT leave it in the thread-local slot) so no other node inherits it, then fail this
@@ -184,12 +190,20 @@ fn reset_node_overrides(
     for target in targets.iter().copied() {
         let result = match target {
             NodeOverride::Database => adapter.reset_database(unique_id).map_err(|e| {
+                // Keep the code so the task runner sees the cancel.
+                if is_run_cancellation(&e, adapter) {
+                    return e;
+                }
                 fs_err!(
                     ErrorCode::ExecutionError,
                     "Failed to reset database context (RESET USE) for node '{unique_id}': {e}"
                 )
             }),
             NodeOverride::Warehouse => adapter.restore_warehouse(unique_id).map_err(|e| {
+                // Keep the code so the task runner sees the cancel.
+                if is_run_cancellation(&e, adapter) {
+                    return e;
+                }
                 fs_err!(
                     ErrorCode::ExecutionError,
                     "Failed to restore warehouse for node '{unique_id}': {e}"
@@ -1454,6 +1468,7 @@ pub fn materialize_unit_test_fast_pass(
     jinja_env: Arc<JinjaEnv>,
     base_context: &Value,
     io_args: &IoArgs,
+    is_run_cancelled: &dyn Fn() -> bool,
 ) -> FsResult<(bool, usize, String, Option<AdapterResponse>)> {
     let (mut context, result_store) = build_run_node_context(
         unit_test,
@@ -1491,6 +1506,10 @@ pub fn materialize_unit_test_fast_pass(
             jinja_env
                 .render_str(materialization, &mut context, listeners)
                 .map_err(|e| {
+                    // Keep the code so the task runner sees the cancel.
+                    if e.code.is_cancellation() && is_run_cancelled() {
+                        return e;
+                    }
                     Box::new(
                         fs_err!(
                             ErrorCode::JinjaError,
@@ -1743,7 +1762,10 @@ pub fn materialize_test(
                 listeners,
             )
             .map_err(|e| {
-                if e.code.is_database_error() {
+                // Keep the code so the task runner sees the cancel.
+                if is_run_cancellation(&e, adapter) {
+                    e
+                } else if e.code.is_database_error() {
                     let indented_body = e
                         .context
                         .lines()

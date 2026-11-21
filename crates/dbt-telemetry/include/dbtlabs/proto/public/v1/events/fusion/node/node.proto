@@ -83,6 +83,8 @@ enum NodeSkipReason {
   NODE_SKIP_REASON_NO_OP = 4;
   // Current evaluation phase skipped for this node due to previous phase outcome.
   NODE_SKIP_REASON_PHASE_SKIPPED = 5;
+  // Skipped because another node failed under `--fail-fast`, which stops the whole run.
+  NODE_SKIP_REASON_FAIL_FAST = 6;
 }
 
 // Cache reuse classification when node_skip_reason == NODE_SKIP_REASON_CACHED.

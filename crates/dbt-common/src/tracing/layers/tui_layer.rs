@@ -286,6 +286,7 @@ fn node_evaluated_progress_status(
             NodeSkipReason::Cached => Some("reused"),
             NodeSkipReason::NoOp => Some("no-op"),
             NodeSkipReason::Upstream
+            | NodeSkipReason::FailFast
             | NodeSkipReason::PhaseSkipped
             | NodeSkipReason::PhaseDisabled
             | NodeSkipReason::Unspecified => Some("skipped"),
@@ -1431,7 +1432,10 @@ impl TuiLayer {
         // Determine if the current node is a skipped test
         let is_current_node_skipped_test = (node.node_type() == NodeType::Test
             || node.node_type() == NodeType::UnitTest)
-            && matches!(node.node_skip_reason(), NodeSkipReason::Upstream);
+            && matches!(
+                node.node_skip_reason(),
+                NodeSkipReason::Upstream | NodeSkipReason::FailFast
+            );
 
         // Check if we need to emit pending skipped tests summary before processing current node
         if !is_current_node_skipped_test
