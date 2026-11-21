@@ -5,19 +5,20 @@
 # **why?**
 # The automations are leaving behind branches and releases that clutter
 # the repository.  Sometimes we need them to debug processes so we don't
-# want them immediately deleted.  Running on Saturday to avoid running
-# at the same time as an actual release to prevent breaking a release
-# mid-release.
+# want them immediately deleted.  Running late Saturday, after the
+# Saturday nightly release (cron 09:00, runtime 3-5h) has finished and
+# before the Sunday one starts, to prevent deleting a release's
+# `prep-release/*` branch mid-release.
 
 # **when?**
-# Mainly on a schedule of 12:00 Saturday.
+# Mainly on a schedule of 23:00 Saturday.
 # Manual trigger can also run on demand
 
 name: Repository Cleanup
 
 on:
   schedule:
-    - cron: '0 12 * * SAT' # At 12:00 on Saturday - details in `why` above
+    - cron: '0 23 * * SAT' # At 23:00 on Saturday - details in `why` above
 
   workflow_dispatch: # for manual triggering
 
