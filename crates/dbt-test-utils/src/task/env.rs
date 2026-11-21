@@ -94,18 +94,27 @@ impl ProjectEnv {
 
     /// Creates a new (read-write) environment with an empty project directory.
     /// Use it for projects generated programmatically by the test itself rather
-    /// than copied from an on-disk fixture.
+    /// than copied from an on-disk fixture. As for [`Self::mutable`], the crate
+    /// of the environment is `dbt-cli`.
     pub fn empty() -> TestResult<Self> {
-        let temp_dir = tempfile::tempdir()?;
-        let absolute_project_dir = temp_dir.path().join("root");
-        stdfs::create_dir_all(&absolute_project_dir)?;
-        Ok(ProjectEnv {
-            crate_root: temp_dir.path().to_path_buf(),
-            mutable: true,
-            project_dir: PathBuf::from("."),
-            temp_dir_to_drop: Some(temp_dir),
-            absolute_project_dir,
-        })
+        let def_crate_root = env!("CARGO_MANIFEST_DIR");
+        for ancestor in PathBuf::from(def_crate_root).ancestors() {
+            let dbt_cli_path = ancestor.join("crates").join("dbt-cli");
+            if dbt_cli_path.exists() {
+                let temp_dir = tempfile::tempdir()?;
+                let absolute_project_dir = temp_dir.path().join("root");
+                stdfs::create_dir_all(&absolute_project_dir)?;
+                return Ok(ProjectEnv {
+                    crate_root: dbt_cli_path,
+                    mutable: true,
+                    project_dir: PathBuf::from("."),
+                    temp_dir_to_drop: Some(temp_dir),
+                    absolute_project_dir,
+                });
+            }
+        }
+
+        Err("Could not find crates/dbt-cli directory".into())
     }
 
     /// Creates a new environment (read-only). (The environment does not enforce
