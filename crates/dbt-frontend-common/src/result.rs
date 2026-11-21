@@ -10,6 +10,8 @@ pub enum ResultEncoding {
     SnowflakeGeographyGeoJson,
     SnowflakeGeometryGeoJson,
     SnowflakeVariantArrayJson,
+    /// Native VARIANT data, recursively located by the source schema.
+    SnowflakeVariantCarrier,
 }
 
 /// SQL and metadata needed to restore the source types of a query result.
