@@ -30,9 +30,13 @@ def upgrade_unrendered_config(manifest: dict) -> dict:
                 new_unrendered_config_from_code = (
                     statically_parse_unrendered_config(node.get("raw_code", "")) or {}
                 )
-                manifest["nodes"][unique_id]["unrendered_config"].update(
-                    new_unrendered_config_from_code
-                )
+                unrendered_config = manifest["nodes"][unique_id]["unrendered_config"]
+                # Older versions stored inline pre_hook/post_hook configs under their
+                # hyphenated names. Drop those so the hook is not present under both names.
+                for hook_key in ("pre_hook", "post_hook"):
+                    if hook_key in new_unrendered_config_from_code:
+                        unrendered_config.pop(hook_key.replace("_", "-"), None)
+                unrendered_config.update(new_unrendered_config_from_code)
 
     return manifest
 

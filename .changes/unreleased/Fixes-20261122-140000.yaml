@@ -1,0 +1,7 @@
+kind: Fixes
+body: Stop `state:modified` from flagging models with an inline `pre_hook` or `post_hook` when
+  the state manifest was produced by an older dbt version
+time: 2026-11-22T14:00:00.000000+09:00
+custom:
+    Author: 1yangsh
+    Issue: "2179"
