@@ -6,7 +6,7 @@
 # Testing if a test is flaky and if a previously flaky test has been fixed.  This allows easy testing on supported python versions and OS combinations.
 
 # **when?**
-# This is triggered manually from dbt-core.
+# This is triggered manually from dbt.
 
 name: Flaky Tester
 

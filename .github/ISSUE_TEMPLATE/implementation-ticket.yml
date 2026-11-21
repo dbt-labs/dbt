@@ -1,11 +1,11 @@
 name: 🛠️ Implementation
-description: This is an implementation ticket intended for use by the maintainers of dbt-core
+description: This is an implementation ticket intended for use by the maintainers of dbt
 title: "[<project>] <title>"
 labels: ["action:needs-docs"]
 body:
   - type: markdown
     attributes:
-      value: This is an implementation ticket intended for use by the maintainers of dbt-core
+      value: This is an implementation ticket intended for use by the maintainers of dbt
   - type: checkboxes
     attributes:
       label: Housekeeping
@@ -14,7 +14,7 @@ body:
           1. Remove the `action:needs-docs` label if the scope of this work does not require changes to https://docs.getdbt.com/docs: no end-user interface (e.g. yml spec, CLI, error messages, etc) or functional changes
           2. Link any blocking issues in the "Blocked on" field under the "Core devs & maintainers" project.
       options:
-        - label: I am a maintainer of dbt-core
+        - label: I am a maintainer of dbt
           required: true
   - type: textarea
     attributes:

@@ -44,10 +44,10 @@ on:
         description: |
           URL template; must contain `{filename}`. Used as the per-tarball
           download URL in the rendered formula. Defaults to the GitHub
-          Release download URL for `inputs.tag` on dbt-labs/dbt-core.
+          Release download URL for `inputs.tag` on dbt-labs/dbt.
         type: string
         required: false
-        default: "https://github.com/dbt-labs/dbt-core/releases/download/v{version}/{filename}"
+        default: "https://github.com/dbt-labs/dbt/releases/download/v{version}/{filename}"
       tap_repo:
         description: "Tap repo to push the formula to."
         type: string
@@ -90,7 +90,7 @@ on:
         description: "URL template; must contain `{filename}`."
         required: false
         type: string
-        default: "https://github.com/dbt-labs/dbt-core/releases/download/v{version}/{filename}"
+        default: "https://github.com/dbt-labs/dbt/releases/download/v{version}/{filename}"
       tap_repo:
         description: "Tap repo to push the formula to."
         required: false

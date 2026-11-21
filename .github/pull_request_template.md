@@ -26,7 +26,7 @@ Resolves #
 
 ### Checklist
 
-- [ ] I have read [the contributing guide](https://github.com/dbt-labs/dbt-core/blob/main/CONTRIBUTING.md) and understand what's expected of me.
+- [ ] I have read [the contributing guide](https://github.com/dbt-labs/dbt/blob/main/CONTRIBUTING.md) and understand what's expected of me.
 - [ ] I have run this code in development, and it appears to resolve the stated issue.
 - [ ] This PR includes tests, or tests are not required or relevant for this PR.
 - [ ] This PR has no interface changes (e.g., macros, CLI, logs, JSON artifacts, config files, adapter interface, etc.) or this PR has already received feedback and approval from Product or DX.

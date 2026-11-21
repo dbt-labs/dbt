@@ -1,12 +1,12 @@
 name: Copybara - Auto Public PR Migration
 
 # **what?**
-# When a PR is opened against dbt-core, trigger the reverse Copybara sync that
+# When a PR is opened against dbt, trigger the reverse Copybara sync that
 # mirrors the change into a PR on the private dbt-labs/fs repo (the dbt_core_pr
 # profile, which moves the root Rust tree into fs/sa/).
 #
 # **why?**
-# dbt-core is the public, copybara-synced mirror of fs/sa. Contributions that
+# dbt is the public, copybara-synced mirror of fs/sa. Contributions that
 # land here need to flow back into fs so the two stay in sync.
 #
 # **when?**
@@ -97,7 +97,7 @@ jobs:
           done
           echo "should_dispatch=$([ -n "$files" ] && echo true || echo false)" >> $GITHUB_OUTPUT
 
-      - name: Trigger dbt-core PR Copybara sync in fs
+      - name: Trigger dbt PR Copybara sync in fs
         if: steps.check.outputs.should_dispatch == 'true'
         run: |
           curl -L \
