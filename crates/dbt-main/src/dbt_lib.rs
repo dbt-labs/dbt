@@ -879,6 +879,10 @@ impl<'a> AllPhasesExecutor<'a> {
             arg_for_retry.static_analysis = effective_sa;
             arg_for_retry.full_refresh = retry_state.original_full_refresh;
             record_resolved_full_refresh(retry_state.original_full_refresh);
+            if let Some(vars) = retry_state.vars_for_retry(retry_args) {
+                emit_info_log_message("Using --vars from original run (override with --vars)");
+                arg_for_retry.vars = vars;
+            }
 
             // Create a custom schedule for the retryable nodes from the original run.
             // This keeps retry bounded to nodes recorded in run_results.json instead
