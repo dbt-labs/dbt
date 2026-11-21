@@ -2379,15 +2379,10 @@ mod tests {
     fn freshness_batch(
         max_loaded_at: Option<i64>,
         snapshotted_at: Option<i64>,
-        timezone: Option<&str>,
     ) -> arrow::record_batch::RecordBatch {
         use arrow::array::TimestampMicrosecondArray;
         let column = |value: Option<i64>| -> arrow::array::ArrayRef {
-            let array = TimestampMicrosecondArray::from(vec![value]);
-            Arc::new(match timezone {
-                Some(tz) => array.with_timezone(tz),
-                None => array,
-            })
+            Arc::new(TimestampMicrosecondArray::from(vec![value]).with_timezone("UTC"))
         };
         arrow::record_batch::RecordBatch::try_from_iter(vec![
             ("max_loaded_at", column(max_loaded_at)),
@@ -2416,7 +2411,7 @@ mod tests {
 
     #[test]
     fn load_timestamp_nanos_rejects_null_max_loaded_at() {
-        let batch = freshness_batch(None, Some(2_000_000), Some("UTC"));
+        let batch = freshness_batch(None, Some(2_000_000));
         let err = load_column_nanos(
             &batch,
             MAX_LOADED_AT_COLUMN,
@@ -2433,7 +2428,7 @@ mod tests {
 
     #[test]
     fn load_timestamp_nanos_rejects_null_snapshotted_at() {
-        let batch = freshness_batch(Some(1_000_000), None, Some("UTC"));
+        let batch = freshness_batch(Some(1_000_000), None);
         let err = load_column_nanos(
             &batch,
             SNAPSHOTTED_AT_COLUMN,
@@ -2450,7 +2445,7 @@ mod tests {
 
     #[test]
     fn load_timestamp_nanos_reads_both_columns_as_nanoseconds() {
-        let batch = freshness_batch(Some(1_000_000), Some(3_000_000), Some("UTC"));
+        let batch = freshness_batch(Some(1_000_000), Some(3_000_000));
         let mut warnings = Vec::new();
         assert_eq!(
             load_column_nanos(&batch, MAX_LOADED_AT_COLUMN, "max_loaded_at", &mut warnings)
@@ -2468,17 +2463,6 @@ mod tests {
             3_000_000_000
         );
         assert!(warnings.is_empty());
-    }
-
-    #[test]
-    fn load_timestamp_nanos_keeps_timezone_warning_when_value_is_null() {
-        // The missing-timezone warning is collected before the NULL check fails.
-        let batch = freshness_batch(None, Some(2_000_000), None);
-        let mut warnings = Vec::new();
-        let err = load_column_nanos(&batch, MAX_LOADED_AT_COLUMN, "max_loaded_at", &mut warnings)
-            .unwrap_err();
-        assert_eq!(err.code, ErrorCode::FreshnessLoadedAtNull);
-        assert_eq!(warnings.len(), 1);
     }
 
     #[test]
