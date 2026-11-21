@@ -105,6 +105,24 @@ mod tests {
         assert!(json.contains(r#""resource_type":"model""#), "got {json}");
     }
 
+    /// A `--state` sources.json may come from dbt v1, which writes lowercase statuses.
+    #[test]
+    fn status_is_read_in_either_casing() {
+        for (written, expected) in [
+            ("pass", FreshnessStatus::Pass),
+            ("warn", FreshnessStatus::Warn),
+            ("error", FreshnessStatus::Error),
+            ("Pass", FreshnessStatus::Pass),
+            ("Warn", FreshnessStatus::Warn),
+            ("Error", FreshnessStatus::Error),
+        ] {
+            let mut json = serde_json::to_value(result_node(None)).unwrap();
+            json["status"] = written.into();
+            let parsed: FreshnessResultsNode = serde_json::from_value(json).unwrap();
+            assert_eq!(parsed.status, expected, "status {written:?}");
+        }
+    }
+
     #[test]
     fn resource_type_defaults_to_none_when_absent() {
         let json = serde_json::to_string(&result_node(None)).unwrap();

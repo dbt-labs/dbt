@@ -1,0 +1,7 @@
+kind: Fixes
+body: Read lowercase freshness statuses from a dbt v1 sources.json so the source_status selector accepts a v1-written state file
+time: 2026-11-16T18:57:58.484939+05:30
+custom:
+    author: SAMARTHJAISWAL
+    issue: "17161"
+    project: dbt-core
