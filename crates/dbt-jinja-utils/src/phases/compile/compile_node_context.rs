@@ -22,7 +22,9 @@ use std::{
 
 use dbt_jinja_ctx::{CompileNodeCtx, JinjaObject, MacroLookupContext, to_jinja_btreemap};
 
-use crate::phases::compile_and_run_context::{FunctionFunction, SourceFunction};
+use crate::phases::compile_and_run_context::{
+    FunctionFunction, SourceFunction, relation_for_node_type,
+};
 use dbt_schemas::schemas::project::ConfigKeys;
 
 use super::super::compile_and_run_context::RefFunction;
@@ -187,7 +189,7 @@ where
                 &None,
                 &None,
             )?;
-            this_relation
+            relation_for_node_type(this_relation, NodeType::UnitTest)
         }
         NodeType::Model => {
             let ref_name = model.common().name.clone();
@@ -470,8 +472,10 @@ mod tests {
     use dbt_schemas::schemas::Nodes;
     use dbt_schemas::schemas::common::ResolvedQuoting;
     use dbt_schemas::schemas::nodes::{
-        CommonAttributes, DbtModel, DbtSnapshot, NodeBaseAttributes,
+        CommonAttributes, DbtModel, DbtSnapshot, DbtSource, DbtSourceAttr, DbtUnitTest,
+        NodeBaseAttributes,
     };
+    use dbt_schemas::schemas::ref_and_source::DbtRef;
     use dbt_schemas::state::ModelStatus;
 
     const ADAPTER_TYPE: AdapterType = AdapterType::Snowflake;
@@ -670,6 +674,111 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    fn fixture_source() -> DbtSource {
+        DbtSource {
+            __common_attr__: CommonAttributes {
+                name: "events".to_string(),
+                ..common("source.my_new_project.raw.events")
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter: ADAPTER_TYPE,
+                database: "Cat".to_string(),
+                schema: "Sch".to_string(),
+                alias: "events".to_string(),
+                quoting: ResolvedQuoting::trues(),
+                ..Default::default()
+            },
+            __source_attr__: DbtSourceAttr {
+                source_name: "raw".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn fixture_unit_test() -> DbtUnitTest {
+        DbtUnitTest {
+            __common_attr__: common("unit_test.my_new_project.down.fixtures"),
+            __base_attr__: NodeBaseAttributes {
+                adapter: ADAPTER_TYPE,
+                refs: vec![DbtRef {
+                    name: "down".to_string(),
+                    package: None,
+                    version: None,
+                    location: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn empty_build_resolver(models: &[&DbtModel], source: &DbtSource) -> Arc<NodeResolver> {
+        let mut resolver = NodeResolver {
+            run_filter: RunFilter {
+                empty: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for &model in models {
+            resolver
+                .insert_ref(model, ModelStatus::Enabled, false)
+                .unwrap();
+        }
+        resolver
+            .insert_source("my_new_project", source, ADAPTER_TYPE, ModelStatus::Enabled)
+            .unwrap();
+        Arc::new(resolver)
+    }
+
+    fn render_input_relations(
+        node: Arc<dyn InternalDbtNodeAttributes>,
+        resolver: Arc<NodeResolver>,
+        validation: DependencyValidationConfig,
+    ) -> String {
+        let (ctx, _) = build_compile_node_context_inner(
+            node,
+            ADAPTER_TYPE,
+            &MinijinjaValue::from(BTreeMap::<String, MinijinjaValue>::new()),
+            "my_new_project",
+            resolver,
+            Arc::new(DbtRuntimeConfig::default()),
+            validation,
+        )
+        .unwrap();
+        minijinja::Environment::new()
+            .render_str(
+                "{{ ref('up') }}|{{ source('raw', 'events') }}|{{ this }}",
+                ctx,
+                &[],
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn unit_test_relations_keep_fixture_rows_with_empty_run_filter() {
+        let upstream = model_on(ADAPTER_TYPE, "up");
+        let tested_model = model_on(ADAPTER_TYPE, "down");
+        let source = fixture_source();
+        let unit_test = fixture_unit_test();
+        let resolver = empty_build_resolver(&[&upstream, &tested_model], &source);
+        let validation = DependencyValidationConfig::new_for_node(&unit_test)
+            .validate()
+            .allow_dependencies([upstream.unique_id(), source.unique_id()]);
+        assert_eq!(
+            render_input_relations(Arc::new(unit_test), resolver.clone(), validation),
+            r#""Cat"."Sch"."up"|"Cat"."Sch"."events"|"Cat"."Sch"."down""#
+        );
+
+        let model_refs = render_input_relations(
+            Arc::new(tested_model),
+            resolver,
+            DependencyValidationConfig::new_unvalidated(),
+        );
+        assert_eq!(model_refs.matches("where false limit 0").count(), 3);
     }
 
     /// Renders `{{ ref('up') }}` from `caller`, with `prod_up` as `up`'s deferred node if given.

@@ -559,6 +559,20 @@ fn for_caller(
     Ok(respelled.map_or(relation, RelationObject::into_value))
 }
 
+/// Unit tests read fixture rows even when the enclosing build uses `--empty`.
+pub(crate) fn relation_for_node_type(
+    relation: MinijinjaValue,
+    node_type: NodeType,
+) -> MinijinjaValue {
+    if node_type != NodeType::UnitTest {
+        return relation;
+    }
+    let input = relation
+        .downcast_object_ref::<RelationObject>()
+        .and_then(RelationObject::without_empty_filter);
+    input.map_or(relation, RelationObject::into_value)
+}
+
 impl Object for RefFunction {
     fn call(
         self: &Arc<Self>,
@@ -586,7 +600,10 @@ impl Object for RefFunction {
                     (true, Some(deferred)) => deferred,
                     _ => relation,
                 };
-                let resolved_relation = for_caller(resolved_relation, self.caller_adapter)?;
+                let resolved_relation = relation_for_node_type(
+                    for_caller(resolved_relation, self.caller_adapter)?,
+                    self.validation_config.node_type,
+                );
 
                 for listener in listeners {
                     listener.on_ref_or_source_resolved(&unique_id);
@@ -734,6 +751,61 @@ impl SourceFunction {
         }
     }
 
+    fn resolve_args(args: &[MinijinjaValue]) -> Result<(String, String), MinijinjaError> {
+        let mut parser = ArgParser::new(args, None);
+        match parser.positional_len() + parser.kwargs_len() {
+            0 | 1 => Err(MinijinjaError::new(
+                MinijinjaErrorKind::MissingArgument,
+                "source macro requires 2 arguments: source name and table name",
+            )),
+            2 => {
+                let source_name_value = parser.get::<MinijinjaValue>("source_name")?;
+                let table_name_value = parser.get::<MinijinjaValue>("table_name")?;
+                let source_name = source_name_value.as_str().ok_or_else(|| {
+                    MinijinjaError::new(
+                        MinijinjaErrorKind::InvalidOperation,
+                        format!(
+                            "The source name (first) argument to source() must be a string, got {}",
+                            source_name_value.kind()
+                        ),
+                    )
+                })?;
+                let table_name = table_name_value.as_str().ok_or_else(|| {
+                    MinijinjaError::new(
+                        MinijinjaErrorKind::InvalidOperation,
+                        format!(
+                            "The table name (second) argument to source() must be a string, got {}",
+                            table_name_value.kind()
+                        ),
+                    )
+                })?;
+                Ok((source_name.to_string(), table_name.to_string()))
+            }
+            _ => Err(MinijinjaError::new(
+                MinijinjaErrorKind::TooManyArguments,
+                "source",
+            )),
+        }
+    }
+
+    fn microbatch_relation(
+        &self,
+        relation: &MinijinjaValue,
+        unique_id: &str,
+    ) -> Option<MinijinjaValue> {
+        let microbatch_ctx = self.microbatch_context.as_ref()?;
+        let event_time_col = microbatch_ctx.get_event_time(unique_id)?;
+        let relation = relation.downcast_object_ref::<RelationObject>()?;
+        Some(
+            relation
+                .with_filter(
+                    microbatch_ctx.to_run_filter(),
+                    Some(event_time_col.to_string()),
+                )
+                .into_value(),
+        )
+    }
+
     /// Validate that the referenced source is in the allowed dependencies.
     fn validate_dependency(
         &self,
@@ -786,79 +858,28 @@ impl Object for SourceFunction {
         args: &[MinijinjaValue],
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<MinijinjaValue, MinijinjaError> {
-        let mut parser = ArgParser::new(args, None);
-        let num_args = parser.positional_len() + parser.kwargs_len();
-        let (source_name, table_name) = match num_args {
-            0 | 1 => Err(MinijinjaError::new(
-                MinijinjaErrorKind::MissingArgument,
-                "source macro requires 2 arguments: source name and table name",
-            )),
-            2 => {
-                let source_name_value = parser.get::<MinijinjaValue>("source_name")?;
-                let table_name_value = parser.get::<MinijinjaValue>("table_name")?;
-                let source_name = source_name_value.as_str().ok_or_else(|| {
-                    MinijinjaError::new(
-                        MinijinjaErrorKind::InvalidOperation,
-                        format!(
-                            "The source name (first) argument to source() must be a string, got {}",
-                            source_name_value.kind()
-                        ),
-                    )
-                })?;
-                let table_name = table_name_value.as_str().ok_or_else(|| {
-                    MinijinjaError::new(
-                        MinijinjaErrorKind::InvalidOperation,
-                        format!(
-                            "The table name (second) argument to source() must be a string, got {}",
-                            table_name_value.kind()
-                        ),
-                    )
-                })?;
-                Ok((source_name.to_string(), table_name.to_string()))
-            }
-            _ => Err(MinijinjaError::new(
-                MinijinjaErrorKind::TooManyArguments,
-                "source",
-            )),
-        }?;
-        match self
+        let (source_name, table_name) = Self::resolve_args(args)?;
+        let (unique_id, relation, _) = self
             .node_resolver
             .lookup_source(&self.package_name, &source_name, &table_name)
-        {
-            Ok((unique_id, relation, _)) => {
-                for listener in listeners {
-                    listener.on_ref_or_source_resolved(&unique_id);
-                }
-
-                self.validate_dependency(&unique_id, &source_name, &table_name)?;
-
-                // Apply microbatch filtering if we have a microbatch context and
-                // the referenced source has event_time configured
-                if let Some(ref microbatch_ctx) = self.microbatch_context {
-                    if let Some(event_time_col) = microbatch_ctx.get_event_time(&unique_id) {
-                        // Extract the RelationObject and apply the filter
-                        if let Some(relation_obj) = relation
-                            .as_object()
-                            .and_then(|obj| obj.downcast_ref::<RelationObject>())
-                        {
-                            let filtered = relation_obj.with_filter(
-                                microbatch_ctx.to_run_filter(),
-                                Some(event_time_col.to_string()),
-                            );
-                            return Ok(filtered.into_value());
-                        }
-                    }
-                }
-
-                Ok(relation)
-            }
-            Err(_) => Err(MinijinjaError::new(
-                MinijinjaErrorKind::NonKey,
-                format!(
-                    "Source not found for source name: {source_name}, table name: {table_name}"
-                ),
-            )),
+            .map_err(|_| {
+                MinijinjaError::new(
+                    MinijinjaErrorKind::NonKey,
+                    format!(
+                        "Source not found for source name: {source_name}, table name: {table_name}"
+                    ),
+                )
+            })?;
+        for listener in listeners {
+            listener.on_ref_or_source_resolved(&unique_id);
         }
+
+        self.validate_dependency(&unique_id, &source_name, &table_name)?;
+
+        let relation = relation_for_node_type(relation, self.validation_config.node_type);
+        Ok(self
+            .microbatch_relation(&relation, &unique_id)
+            .unwrap_or(relation))
     }
 }
 
