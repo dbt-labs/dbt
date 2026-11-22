@@ -22,6 +22,7 @@ from dbt.artifacts.resources.v1.config import Hook, NodeConfig
 from dbt.artifacts.resources.v1.exposure import ExposureType
 from dbt.artifacts.resources.v1.model import LatestVersionPointer, ModelConfig
 from dbt.artifacts.resources.v1.owner import Owner
+from dbt.artifacts.schemas.batch_results import BatchResults
 from dbt.artifacts.schemas.results import RunStatus
 from dbt.artifacts.schemas.run import RunResult
 from dbt.config.runtime import RuntimeConfig
@@ -759,6 +760,117 @@ class TestMicrobatchModelRunner:
 
         builder = model_runner.get_microbatch_builder(model)
         assert builder.default_end_time == current_time
+
+    def test_build_failed_run_batch_result_includes_exception_message(
+        self,
+        batch_runner: MicrobatchBatchRunner,
+    ) -> None:
+        batch = (datetime(2024, 1, 1), datetime(2025, 1, 1))
+        error = RuntimeError("Conversion Error: could not convert string to INT32")
+
+        result = batch_runner._build_failed_run_batch_result(
+            batch_runner.node, batch, exception=error
+        )
+        assert result.status == RunStatus.Error
+        assert result.message == str(error)
+        assert result.batch_results == BatchResults(failed=[batch])
+
+    def test_build_failed_run_batch_result_without_exception_keeps_error_message(
+        self,
+        batch_runner: MicrobatchBatchRunner,
+    ) -> None:
+        batch = (datetime(2024, 1, 1), datetime(2025, 1, 1))
+
+        result = batch_runner._build_failed_run_batch_result(batch_runner.node, batch)
+        assert result.status == RunStatus.Error
+        assert result.message == "ERROR"
+        assert result.batch_results == BatchResults(failed=[batch])
+
+    def _batch_run_result(
+        self,
+        model_runner: MicrobatchModelRunner,
+        status: RunStatus,
+        message: str,
+        batch_start_year: int,
+    ) -> RunResult:
+        batch = (datetime(batch_start_year, 1, 1), datetime(batch_start_year + 1, 1, 1))
+        result = RunResult.from_node(model_runner.node, status, message)
+        result.batch_results = BatchResults(
+            successful=[batch] if status == RunStatus.Success else [],
+            failed=[batch] if status == RunStatus.Error else [],
+        )
+        return result
+
+    def test_merge_batch_results_propagates_failed_batch_errors(
+        self,
+        model_runner: MicrobatchModelRunner,
+    ) -> None:
+        # All batches failed with the same error: the message carries the
+        # error text, deduplicated, instead of the constant "ERROR".
+        result = RunResult.from_node(model_runner.node, RunStatus.Success, "")
+        batch_results = [
+            self._batch_run_result(model_runner, RunStatus.Error, "boom", 2024),
+            self._batch_run_result(model_runner, RunStatus.Error, "boom", 2025),
+        ]
+        model_runner.merge_batch_results(result, batch_results)
+        assert result.status == RunStatus.Error
+        assert result.message == "boom"
+        assert len(result.batch_results.failed) == 2
+
+        # Partial success: the aggregate message keeps its prefix and appends
+        # the failed batch's error text, so it survives into run_results.json.
+        result = RunResult.from_node(model_runner.node, RunStatus.Success, "")
+        batch_results = [
+            self._batch_run_result(model_runner, RunStatus.Success, "OK", 2024),
+            self._batch_run_result(model_runner, RunStatus.Success, "OK", 2025),
+            self._batch_run_result(model_runner, RunStatus.Error, "boom", 2026),
+        ]
+        model_runner.merge_batch_results(result, batch_results)
+        assert result.status == RunStatus.PartialSuccess
+        assert result.message == "PARTIAL SUCCESS (2/3)\nboom"
+
+        # Distinct errors from different batches are all kept, and the batch
+        # lists are sorted even when results arrive out of order.
+        result = RunResult.from_node(model_runner.node, RunStatus.Success, "")
+        batch_results = [
+            self._batch_run_result(model_runner, RunStatus.Error, "second boom", 2025),
+            self._batch_run_result(model_runner, RunStatus.Error, "first boom", 2024),
+        ]
+        model_runner.merge_batch_results(result, batch_results)
+        assert result.status == RunStatus.Error
+        assert result.message == "second boom\nfirst boom"
+        assert result.batch_results.failed == [
+            (datetime(2024, 1, 1), datetime(2025, 1, 1)),
+            (datetime(2025, 1, 1), datetime(2026, 1, 1)),
+        ]
+
+        # Batches that failed without a captured exception keep the old
+        # constant messages.
+        result = RunResult.from_node(model_runner.node, RunStatus.Success, "")
+        batch_results = [
+            self._batch_run_result(model_runner, RunStatus.Error, "ERROR", 2024),
+        ]
+        model_runner.merge_batch_results(result, batch_results)
+        assert result.status == RunStatus.Error
+        assert result.message == "ERROR"
+
+        result = RunResult.from_node(model_runner.node, RunStatus.Success, "")
+        batch_results = [
+            self._batch_run_result(model_runner, RunStatus.Success, "OK", 2024),
+            self._batch_run_result(model_runner, RunStatus.Error, "ERROR", 2025),
+        ]
+        model_runner.merge_batch_results(result, batch_results)
+        assert result.status == RunStatus.PartialSuccess
+        assert result.message == "PARTIAL SUCCESS (1/2)"
+
+        # All batches succeeded: unchanged.
+        result = RunResult.from_node(model_runner.node, RunStatus.Success, "")
+        batch_results = [
+            self._batch_run_result(model_runner, RunStatus.Success, "OK", 2024),
+        ]
+        model_runner.merge_batch_results(result, batch_results)
+        assert result.status == RunStatus.Success
+        assert result.message == "SUCCESS"
 
 
 class TestRunTask:

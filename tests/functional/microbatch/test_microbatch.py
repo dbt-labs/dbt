@@ -646,6 +646,10 @@ class TestMicrobatchIncrementalBatchFailure(BaseMicrobatchTest):
         assert batch_results is not None
         assert len(batch_results["successful"]) == 2
         assert len(batch_results["failed"]) == 1
+        # The failed batch's error text survives into the artifact message
+        # instead of only the constant "PARTIAL SUCCESS (2/3)".
+        assert microbatch_run_result["message"].startswith("PARTIAL SUCCESS (2/3)")
+        assert microbatch_run_result["message"] != "PARTIAL SUCCESS (2/3)"
         assert run_results["results"][2]["status"] == "skipped"
 
 
