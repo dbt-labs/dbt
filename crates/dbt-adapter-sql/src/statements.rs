@@ -83,6 +83,7 @@ pub fn is_update_statement(sql: &str, adapter_type: AdapterType) -> bool {
         | AdapterType::Dremio
         | AdapterType::Oracle
         | AdapterType::LakeCompute
+        | AdapterType::MariaDB
         | AdapterType::MotherDuck => false,
     }
 }

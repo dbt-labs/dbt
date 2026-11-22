@@ -85,6 +85,8 @@ pub enum AdapterType {
     Dremio,
     /// Oracle
     Oracle,
+    /// MariaDB
+    MariaDB,
     /// The dbt lake compute engine.
     ///
     /// `lakecompute` is the name everywhere -- profiles.yml `type:`,
@@ -141,6 +143,8 @@ pub fn quote_char(adapter_type: AdapterType) -> char {
         ClickHouse => '`',
         // Exasol is PostgreSQL-compatible, so it uses double quotes for identifiers.
         Exasol => '"',
+        // https://mariadb.com/docs/server/reference/sql-structure/sql-language-structure/identifier-names
+        MariaDB => '`',
         Dremio => todo!("Dremio"),
         Oracle => todo!("Oracle"),
     }
@@ -289,6 +293,7 @@ mod tests {
                 (AdapterType::Datafusion, "datafusion"),
                 (AdapterType::Dremio, "dremio"),
                 (AdapterType::Oracle, "oracle"),
+                (AdapterType::MariaDB, "mariadb"),
                 (AdapterType::LakeCompute, "lakecompute"),
                 (AdapterType::MotherDuck, "motherduck"),
             ]
@@ -301,6 +306,8 @@ mod tests {
             AdapterType::Bigquery,
             AdapterType::Databricks,
             AdapterType::Spark,
+            AdapterType::ClickHouse,
+            AdapterType::MariaDB,
         ] {
             assert_eq!(quote_char(adapter_type), '`', "{adapter_type:?}");
         }
@@ -322,11 +329,6 @@ mod tests {
         ] {
             assert_eq!(quote_char(adapter_type), '"', "{adapter_type:?}");
         }
-        assert_eq!(
-            quote_char(AdapterType::ClickHouse),
-            '`',
-            "ClickHouse uses backtick quoting"
-        );
     }
 
     #[test]

@@ -147,6 +147,11 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             // SAFETY: literal 127 is never 0
             Some(unsafe { NonZero::new_unchecked(127) })
         }
+        // https://mariadb.com/docs/server/reference/sql-structure/sql-language-structure/identifier-names
+        MariaDB => {
+            // SAFETY: literal 64 is never 0
+            Some(unsafe { NonZero::new_unchecked(64) })
+        }
         Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
         | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute
         | MotherDuck => None,
@@ -171,7 +176,7 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
 pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
-        Bigquery | Databricks | Spark | Athena => QuotingStyle::Backtick,
+        Bigquery | Databricks | Spark | Athena | MariaDB => QuotingStyle::Backtick,
         ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB
         | MotherDuck => QuotingStyle::Double,
         // https://learn.microsoft.com/en-us/sql/t-sql/statements/set-quoted-identifier-transact-sql?view=sql-server-ver17
@@ -210,6 +215,7 @@ pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
             | LakeCompute
             | MotherDuck
             | Exasol => c.is_alphanumeric() || c == '_',
+        MariaDB => c.is_alphanumeric() || c == '_' || c == '$',
     }
 }
 
@@ -593,6 +599,7 @@ mod quote_ident_tests {
         AdapterType::Trino,
         AdapterType::Datafusion,
         AdapterType::LakeCompute,
+        AdapterType::MariaDB,
         AdapterType::MotherDuck,
     ];
 
@@ -649,6 +656,7 @@ mod quote_ident_tests {
         quote_ident_matches_trino => AdapterType::Trino,
         quote_ident_matches_datafusion => AdapterType::Datafusion,
         quote_ident_matches_lakecompute => AdapterType::LakeCompute,
+        quote_ident_matches_mariadb => AdapterType::MariaDB,
         quote_ident_matches_motherduck => AdapterType::MotherDuck,
     }
 

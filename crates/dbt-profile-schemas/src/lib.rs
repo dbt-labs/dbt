@@ -8,6 +8,7 @@ mod databricks_config;
 mod duckdb_config;
 mod exasol_config;
 mod fabric_config;
+mod mariadb_config;
 mod postgres_config;
 mod redshift_config;
 mod snowflake_config;
@@ -102,6 +103,11 @@ impl ProfileSetup {
                 let c0 = unwrap_db_config!(Exasol);
                 let c1 = exasol_config::setup_exasol_profile(c0.map(Box::as_ref))?;
                 Ok(DbConfig::Exasol(c1))
+            }
+            MariaDB => {
+                let c0 = unwrap_db_config!(MariaDB);
+                let c1 = mariadb_config::setup_mariadb_profile(c0.map(Box::as_ref))?;
+                Ok(DbConfig::MariaDB(c1))
             }
             Athena => {
                 todo!("setup_athena_profile")
