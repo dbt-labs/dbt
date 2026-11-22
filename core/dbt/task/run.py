@@ -820,22 +820,9 @@ class MicrobatchModelRunner(ModelRunner):
         num_successes = len(result.batch_results.successful)
         num_failures = len(result.batch_results.failed)
         failed_messages = self._failed_batch_error_messages(batch_results)
-        if num_failures == 0:
-            status = RunStatus.Success
-            msg = "SUCCESS"
-        elif num_successes == 0:
-            status = RunStatus.Error
-            # Mirror the non-microbatch path, where the result message carries
-            # the underlying error text, so the failure reason survives into
-            # run_results.json instead of a constant "ERROR".
-            msg = failed_messages or "ERROR"
-        else:
-            status = RunStatus.PartialSuccess
-            msg = f"PARTIAL SUCCESS ({num_successes}/{num_successes + num_failures})"
-            if failed_messages:
-                msg = f"{msg}\n{failed_messages}"
-        result.status = status
-        result.message = msg
+        result.status, result.message = self._merge_result_status_and_message(
+            num_successes, num_failures, failed_messages
+        )
 
         result.batch_results.successful = sorted(result.batch_results.successful)
         result.batch_results.failed = sorted(result.batch_results.failed)
@@ -843,6 +830,25 @@ class MicrobatchModelRunner(ModelRunner):
         # # If retrying, propagate previously successful batches into final result, even thoguh they were not run in this invocation
         if self.node.previous_batch_results is not None:
             result.batch_results.successful += self.node.previous_batch_results.successful
+
+    @staticmethod
+    def _merge_result_status_and_message(
+        num_successes: int, num_failures: int, failed_messages: str
+    ) -> Tuple[RunStatus, str]:
+        """Decide the merged status and message for a microbatch model result.
+
+        Mirrors the non-microbatch path, where the result message carries the
+        underlying error text, so the failure reason survives into
+        run_results.json instead of a constant "ERROR".
+        """
+        if num_failures == 0:
+            return RunStatus.Success, "SUCCESS"
+        if num_successes == 0:
+            return RunStatus.Error, failed_messages or "ERROR"
+        msg = f"PARTIAL SUCCESS ({num_successes}/{num_successes + num_failures})"
+        if failed_messages:
+            msg = f"{msg}\n{failed_messages}"
+        return RunStatus.PartialSuccess, msg
 
     @staticmethod
     def _failed_batch_error_messages(batch_results: List[RunResult]) -> str:
