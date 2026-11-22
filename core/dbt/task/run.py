@@ -864,8 +864,13 @@ class MicrobatchModelRunner(ModelRunner):
             if batch_result.status != RunStatus.Error:
                 continue
             message = batch_result.message
-            if message and message != "ERROR" and message not in messages:
-                messages.append(message)
+            if not message:
+                continue
+            if message == "ERROR":
+                continue
+            if message in messages:
+                continue
+            messages.append(message)
         return "\n".join(messages)
 
     def _update_result_with_unfinished_batches(
