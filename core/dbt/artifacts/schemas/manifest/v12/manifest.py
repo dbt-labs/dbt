@@ -33,6 +33,7 @@ from dbt.artifacts.schemas.base import (
     schema_version,
 )
 from dbt.artifacts.schemas.upgrades import (
+    drop_unknown_resource_types,
     upgrade_manifest_json,
     upgrade_manifest_json_dbt_version,
 )
@@ -192,6 +193,7 @@ class WritableManifest(ArtifactMixin):
         """This overrides the "upgrade_schema_version" call in VersionedSchema (via
         ArtifactMixin) to modify the dictionary passed in from earlier versions of the manifest."""
         manifest_schema_version = get_artifact_schema_version(data)
+        data = drop_unknown_resource_types(data)
         if manifest_schema_version < cls.dbt_schema_version.version:
             data = upgrade_manifest_json(data, manifest_schema_version)
 

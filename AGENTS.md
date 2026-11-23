@@ -41,7 +41,7 @@ dbt-core depends on packages maintained in separate repos:
 ## Build System and Dev Setup
 
 - **Build backend:** Hatchling (`core/pyproject.toml`)
-- **Python:** ≥3.10 (CI tests 3.10–3.13)
+- **Python:** ≥3.11 (CI tests 3.11–3.14)
 - **Setup:** `cd core && hatch run setup`
 - **Entry point:** `dbt = dbt.cli.main:cli`
 

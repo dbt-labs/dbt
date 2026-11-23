@@ -27,6 +27,7 @@ from dbt.constants import (
 from dbt.contracts.project import PackageConfig
 from dbt.contracts.project import Project as ProjectContract
 from dbt.contracts.project import ProjectFlags, ProjectPackageMetadata, SemverString
+from dbt.events.types import LogDbtProjectError
 from dbt.exceptions import (
     DbtExclusivePropertyUseError,
     DbtProjectError,
@@ -41,6 +42,8 @@ from dbt.utils import MultiDict, coerce_dict_str, md5
 from dbt.version import get_installed_version
 from dbt_common.clients.system import load_file_contents, path_exists
 from dbt_common.dataclass_schema import ValidationError
+from dbt_common.events.functions import fire_event
+from dbt_common.events.types import Note
 from dbt_common.exceptions import SemverError
 from dbt_common.helper_types import NoValue
 from dbt_common.semver import VersionSpecifier, versions_compatible
@@ -228,7 +231,24 @@ def value_or(value: Optional[T], default: T) -> T:
         return value
 
 
-def load_raw_project(project_root: str, validate: bool = False) -> Dict[str, Any]:
+V2_ONLY_PROJECT_KEYS = ("info_schema", "check-paths", "checks")
+
+
+def _drop_v2_only_project_keys(project_dict: Dict[str, Any], note: bool) -> Dict[str, Any]:
+    for key in V2_ONLY_PROJECT_KEYS:
+        if note and key in project_dict:
+            fire_event(
+                Note(
+                    msg=f"{key} in project '{project_dict.get('name')}' is not being used "
+                    "because it's specific to the dbt v2 engine."
+                )
+            )
+    return {k: v for k, v in project_dict.items() if k not in V2_ONLY_PROJECT_KEYS}
+
+
+def load_raw_project(
+    project_root: str, validate: bool = False, note_v2_only_keys: bool = False
+) -> Dict[str, Any]:
     project_root = os.path.normpath(project_root)
     project_yaml_filepath = os.path.join(project_root, DBT_PROJECT_FILE_NAME)
 
@@ -241,6 +261,9 @@ def load_raw_project(project_root: str, validate: bool = False) -> Dict[str, Any
         )
 
     project_dict = _load_yaml(project_yaml_filepath, validate=validate)
+
+    if isinstance(project_dict, dict):
+        project_dict = _drop_v2_only_project_keys(project_dict, note_v2_only_keys)
 
     if validate:
         from dbt.jsonschemas.jsonschemas import jsonschema_validate, project_schema
@@ -640,10 +663,17 @@ class PartialProject(RenderComponents):
 
     @classmethod
     def from_project_root(
-        cls, project_root: str, *, verify_version: bool = False, validate: bool = False
+        cls,
+        project_root: str,
+        *,
+        verify_version: bool = False,
+        validate: bool = False,
+        note_v2_only_keys: bool = False,
     ) -> "PartialProject":
         project_root = os.path.normpath(project_root)
-        project_dict = load_raw_project(project_root, validate=validate)
+        project_dict = load_raw_project(
+            project_root, validate=validate, note_v2_only_keys=note_v2_only_keys
+        )
         (
             packages_dict,
             packages_specified_path,
@@ -842,8 +872,12 @@ class Project:
         validate: bool = False,
         vars_from_file: Optional[Dict[str, Any]] = None,
     ) -> "Project":
+        # Runs once per project per invocation, after the event logger is set up.
         partial = PartialProject.from_project_root(
-            project_root, verify_version=verify_version, validate=validate
+            project_root,
+            verify_version=verify_version,
+            validate=validate,
+            note_v2_only_keys=True,
         )
 
         # Check mutual exclusivity before rendering
@@ -896,8 +930,8 @@ def read_project_flags(project_dir: str, profiles_dir: str) -> ProjectFlags:
         if path_exists(project_yaml_filepath):
             try:
                 project_dict = load_raw_project(project_root)
-                if "flags" in project_dict:
-                    project_flags = project_dict.pop("flags")
+                if isinstance(project_dict.get("flags"), dict):
+                    project_flags = project_dict["flags"]
             except Exception:
                 # This is probably a yaml load error.The error will be reported
                 # later, when the project loads.
@@ -926,7 +960,8 @@ def read_project_flags(project_dir: str, profiles_dir: str) -> ProjectFlags:
             # handle collapsing `include` and `error` as well as collapsing `exclude` and `warn`
             # for warn_error_options
             warn_error_options = project_flags.get("warn_error_options", {})
-            normalize_warn_error_options(warn_error_options)
+            if isinstance(warn_error_options, dict):
+                normalize_warn_error_options(warn_error_options)
 
             ProjectFlags.validate(project_flags)
             return ProjectFlags.from_dict(project_flags)
@@ -934,6 +969,11 @@ def read_project_flags(project_dir: str, profiles_dir: str) -> ProjectFlags:
         # We don't want to eat the DbtProjectError for UserConfig to ProjectFlags or
         # DbtConfigError for warn_error_options munging
         raise exc
-    except (DbtRuntimeError, ValidationError):
+    except ValidationError as exc:
+        # Like the deprecation above, this is buffered because the event logger isn't set up yet.
+        flag = ".".join(str(part) for part in exc.path)
+        msg = f"Invalid project flag '{flag}': {exc.message}. All project flags were ignored."
+        deprecations.buffered_deprecations.append(lambda: fire_event(LogDbtProjectError(exc=msg)))
+    except DbtRuntimeError:
         pass
     return ProjectFlags()

@@ -43,7 +43,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # actions/setup-python@v6
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Checkout dbt repo
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
@@ -76,7 +76,10 @@ jobs:
           path: ${{ env.SCHEMA_REPO_DIRECTORY }}
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        run: |
+          # From PyPI: pypa/hatch@install curls a GitHub release asset with no retry,
+          # and has been failing intermittently with "gzip: stdin: not in gzip format".
+          python -m pip install hatch==1.18.2
 
       - name: Generate current schema
         if: steps.check_artifact_changes.outputs.artifacts_changed == 'true'

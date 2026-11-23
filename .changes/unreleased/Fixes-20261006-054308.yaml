@@ -1,0 +1,6 @@
+kind: Fixes
+body: Log invalid dbt_project.yml flags using existing project error events
+time: 2026-10-06T05:43:08Z
+custom:
+    Author: tauhid621
+    Issue: ""

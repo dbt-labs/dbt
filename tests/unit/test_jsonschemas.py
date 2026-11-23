@@ -178,6 +178,10 @@ class TestDatabricksConfigKeys:
         "use_safer_relation_operations": True,
         "unique_tmp_table_suffix": True,
         "skip_optimize": True,
+        "access_control_list": [{"group_name": "analysts", "permission_level": "CAN_VIEW"}],
+        "notebook_access_control_list": [
+            {"group_name": "analysts", "permission_level": "CAN_READ"}
+        ],
     }
 
     def test_model_config_no_warning(self):
@@ -205,6 +209,21 @@ class TestDatabricksConfigKeys:
             "version": "1.0.0",
             "profile": "my_project",
             "models": {"my_project": {f"+{k}": v for k, v in self.DATABRICKS_CONFIG_KEYS.items()}},
+        }
+        jsonschema_validate(project_schema(), project_dict, "dbt_project.yml")
+        assert active_deprecations == {}
+
+    def test_project_snapshot_optimize_config_no_warning(self):
+        reset_deprecations()
+
+        safe_set_invocation_context()
+        get_invocation_context().uses_adapter("databricks")
+
+        project_dict = {
+            "name": "my_project",
+            "version": "1.0.0",
+            "profile": "my_project",
+            "snapshots": {"my_project": {"+zorder": ["col_a"], "+skip_optimize": True}},
         }
         jsonschema_validate(project_schema(), project_dict, "dbt_project.yml")
         assert active_deprecations == {}

@@ -4,7 +4,7 @@ name = "dbt-core"
 dynamic = ["version"]
 description = "With dbt, data analysts and engineers can build analytics the way engineers build applications."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = { globs = ["LICENSE"] }
 keywords = []
@@ -20,7 +20,6 @@ classifiers = [
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -58,7 +57,7 @@ dependencies = [
     "dbt-common>=1.37.5,<2.0",
     "dbt-adapters>=1.24.5,<2.0",
     "dbt-protos>=1.0.514,<2.0",
-    "dbt-core-experimental-parser>=2.0.0b1,<3",
+    "dbt-core-experimental-parser>=2.0.11,<3",
     # Bundled plugin: installed by default but opt-in. PluginManager skips loading
     # unless the user passes `--manage-state` on the CLI, sets
     # `DBT_ENGINE_MANAGE_STATE=true`, or sets `manage_state: true` in dbt_project.yml's

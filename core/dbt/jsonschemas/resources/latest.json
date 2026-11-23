@@ -885,6 +885,7 @@
         "warn_unenforced": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
@@ -899,6 +900,7 @@
         "warn_unsupported": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
@@ -1381,6 +1383,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -1758,6 +1774,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -2109,6 +2131,12 @@
             }
           ]
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -2408,6 +2436,20 @@
             "null"
           ]
         },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "use_safer_relation_operations": {
           "anyOf": [
             {
@@ -2515,9 +2557,23 @@
       "additionalProperties": false
     },
     "DataTestState": {
-      "description": "The dbt State configs supported on data tests: only `require_fresh_data_from`, `evaluate_volatile_sql` and `compare_unrendered_code` (snapshots reuse the full `ModelState`). Other keys are not fields here, so they are flagged as unknown keys at parse time.",
+      "description": "The dbt State configs supported on data tests: only `require_fresh_data_from`, `evaluate_volatile_sql`, `compare_unrendered_code` and `compare_selected_columns` (snapshots reuse the full `ModelState`). Other keys are not fields here, so they are flagged as unknown keys at parse time.",
       "type": "object",
       "properties": {
+        "compare_selected_columns": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "compare_unrendered_code": {
           "anyOf": [
             {
@@ -3137,6 +3193,12 @@
       "type": "object",
       "properties": {
         "alias": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "database": {
           "type": [
             "string",
             "null"
@@ -3830,6 +3892,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -4168,6 +4244,12 @@
           ]
         },
         "max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_actions_explicit": {
           "type": [
             "string",
             "null"
@@ -4558,6 +4640,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -4835,6 +4923,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -6282,6 +6384,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -6781,6 +6897,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_exclude_columns": {
           "anyOf": [
             {
@@ -7256,6 +7378,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -7578,6 +7706,20 @@
             }
           ]
         },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "use_safer_relation_operations": {
           "anyOf": [
             {
@@ -7699,6 +7841,7 @@
         "warn_unenforced": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
@@ -7713,6 +7856,7 @@
         "warn_unsupported": {
           "anyOf": [
             {
+              "default": true,
               "type": [
                 "boolean",
                 "null"
@@ -8045,6 +8189,20 @@
     "ModelState": {
       "type": "object",
       "properties": {
+        "compare_selected_columns": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "compare_unrendered_code": {
           "anyOf": [
             {
@@ -8549,6 +8707,12 @@
             }
           ]
         },
+        "database": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "enabled": {
           "anyOf": [
             {
@@ -8714,6 +8878,21 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "all_varchar": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "as_columnstore": {
@@ -9017,6 +9196,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -9121,6 +9314,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "fast": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "fields": {
@@ -9386,6 +9593,12 @@
           ]
         },
         "max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_actions_explicit": {
           "type": [
             "string",
             "null"
@@ -9787,6 +10000,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -10043,6 +10262,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -10543,6 +10776,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -10938,6 +11185,12 @@
           ]
         },
         "max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_actions_explicit": {
           "type": [
             "string",
             "null"
@@ -11339,6 +11592,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -11487,6 +11746,12 @@
           ]
         },
         "table": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "table_format": {
           "type": [
             "string",
             "null"
@@ -11660,6 +11925,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -12117,6 +12396,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -12478,6 +12771,12 @@
             "null"
           ]
         },
+        "merge_actions_explicit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merge_with_schema_evolution": {
           "anyOf": [
             {
@@ -12814,6 +13113,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -13081,6 +13386,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {
@@ -13864,6 +14183,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -14177,6 +14510,12 @@
           ]
         },
         "max_staleness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_actions_explicit": {
           "type": [
             "string",
             "null"
@@ -14507,6 +14846,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -14763,6 +15108,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "use_safer_relation_operations": {

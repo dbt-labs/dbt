@@ -495,9 +495,10 @@ class TestMicrobatchBuilder:
             incremental_batch=True,
         )
 
-        assert context["model"] == microbatch_model.to_dict()
-        assert context["sql"] == microbatch_model.compiled_code
-        assert context["compiled_code"] == microbatch_model.compiled_code
+        # Model properties come from the runtime model context, not the batch context
+        assert "model" not in context
+        assert "sql" not in context
+        assert "compiled_code" not in context
 
         assert context["is_incremental"]() is True
         assert context["should_full_refresh"]() is False
@@ -508,9 +509,7 @@ class TestMicrobatchBuilder:
             incremental_batch=False,
         )
 
-        assert context["model"] == microbatch_model.to_dict()
-        assert context["sql"] == microbatch_model.compiled_code
-        assert context["compiled_code"] == microbatch_model.compiled_code
+        assert context == {}
 
         # Only build is_incremental callables when not first batch
         assert "is_incremental" not in context
