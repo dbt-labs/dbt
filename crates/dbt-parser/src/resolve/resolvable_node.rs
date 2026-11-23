@@ -2,6 +2,9 @@
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
+pub use crate::resolve::properties_extensions::{
+    Extension, ExtensionSet, Extensions, NoExtension, NoExtensions,
+};
 pub use crate::resolve::properties_index::{IndexCtx, IndexedName};
 use crate::resolve::properties_index::{PackageProperties, PropertiesEntry, section_of};
 use crate::resolve::resolve_analyses::Analyses;
@@ -95,13 +98,24 @@ impl Default for ResolvableNodes {
 impl ResolvableNodes {
     /// dbt's own kinds of node.
     pub fn dbt() -> Self {
+        Self::dbt_with::<NoExtensions>()
+    }
+
+    /// dbt's own kinds of node, which read the extensions `E` beside the properties of their
+    /// entries.
+    ///
+    /// # Panics
+    ///
+    /// If two extensions of one kind read the same field.
+    pub fn dbt_with<E: Extensions>() -> Self {
+        crate::resolve::properties_extensions::check::<E>();
         ResolvableNodes {
             nodes: vec![
-                Arc::new(Sources),
-                Arc::new(Seeds),
-                Arc::new(Snapshots),
+                Arc::new(Sources::<E>::default()),
+                Arc::new(Seeds::<E>::default()),
+                Arc::new(Snapshots::<E>::default()),
                 Arc::new(Groups),
-                Arc::new(Models),
+                Arc::new(Models::<E>::default()),
                 Arc::new(Analyses),
                 Arc::new(Checks),
                 Arc::new(Functions),

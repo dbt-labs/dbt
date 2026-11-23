@@ -49,7 +49,8 @@ pub use dbt_parser::experimental::{
     ExperimentalPackage,
 };
 pub use dbt_parser::resolve::resolvable_node::{
-    IndexCtx, IndexedName, ResolvableNode, ResolvableNodes, ResolveCtx,
+    Extension, ExtensionSet, Extensions, IndexCtx, IndexedName, NoExtension, NoExtensions,
+    ResolvableNode, ResolvableNodes, ResolveCtx,
 };
 
 /// Adds its own kind of node to a project ([`ResolvableNode`]) and runs the ones selected.
@@ -654,6 +655,8 @@ impl Task for ExperimentalTask {
 #[derive(Clone, Default)]
 pub struct Experimentals {
     experimentals: Vec<Arc<dyn ExperimentalNode>>,
+    /// dbt's own kinds of node, which the experimentals' kinds are added to.
+    dbt: ResolvableNodes,
 }
 
 impl Experimentals {
@@ -695,7 +698,17 @@ impl Experimentals {
                 );
             }
         }
-        Self { experimentals }
+        Self {
+            experimentals,
+            dbt: ResolvableNodes::dbt(),
+        }
+    }
+
+    /// The same experimentals, for a build whose own kinds of node read the extensions `E`
+    /// beside the properties of their entries.
+    pub fn with_extensions<E: Extensions>(mut self) -> Self {
+        self.dbt = ResolvableNodes::dbt_with::<E>();
+        self
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn ExperimentalNode>> {
@@ -730,7 +743,7 @@ impl Experimentals {
     pub fn resolvable_nodes(&self) -> ResolvableNodes {
         self.experimentals
             .iter()
-            .fold(ResolvableNodes::dbt(), |nodes, experimental| {
+            .fold(self.dbt.clone(), |nodes, experimental| {
                 nodes.with(Arc::clone(experimental) as Arc<dyn ResolvableNode>)
             })
     }

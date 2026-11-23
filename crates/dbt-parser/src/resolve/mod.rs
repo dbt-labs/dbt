@@ -1,5 +1,7 @@
 /// Utilities for inferring model primary keys from constraints and tests
 pub(crate) mod primary_key_inference;
+/// Fields that a build of dbt reads beside a node's own properties
+pub mod properties_extensions;
 /// The properties files of one package
 pub(crate) mod properties_index;
 /// The kinds of node a project resolves with, and what they resolve with

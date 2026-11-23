@@ -245,6 +245,7 @@ fn collect_model_version_info(model: &MinimalSchemaValue) -> Vec<(String, Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resolve::properties_extensions::NoExtensions;
     use crate::resolve::properties_index::PropertiesFile;
     use crate::resolve::resolve_models::Models;
     use std::path::Path;
@@ -265,7 +266,9 @@ mod tests {
                 &["models"],
                 &[],
             )?;
-            properties.index_file(&[&Models], file, &ctx).await?;
+            properties
+                .index_file(&[&Models::<NoExtensions>::default()], file, &ctx)
+                .await?;
         }
         take_model_entries(&mut properties, &jinja_env, &base_ctx)
     }
