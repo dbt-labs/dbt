@@ -1680,6 +1680,7 @@ mod tests {
         fn test_render_with_run_filter_empty() {
             let run_filter = RunFilter {
                 empty: true,
+                empty_marker: false,
                 sample: None,
             };
             let result = filter_relation().render_with_run_filter(&run_filter, &None);
@@ -1690,9 +1691,46 @@ mod tests {
         }
 
         #[test]
+        fn test_render_with_run_filter_empty_marker() {
+            let run_filter = RunFilter {
+                empty: true,
+                empty_marker: true,
+                sample: None,
+            };
+            let result = filter_relation().render_with_run_filter(&run_filter, &None);
+            assert_eq!(result, "/*dbt-empty*/my_db.my_schema.my_table");
+        }
+
+        #[test]
+        fn test_render_with_run_filter_empty_marker_and_sample() {
+            let run_filter = RunFilter {
+                empty: true,
+                empty_marker: true,
+                sample: Some(Sample {
+                    start: Some(DateTime::<Utc>::from_naive_utc_and_offset(
+                        NaiveDate::from_ymd_opt(2024, 7, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                        Utc,
+                    )),
+                    end: None,
+                }),
+            };
+            let result = filter_relation()
+                .render_with_run_filter(&run_filter, &Some("created_at".to_string()));
+            // The marker stays right before the table, inside the sample subquery.
+            assert!(
+                result.starts_with("(select * from /*dbt-empty*/my_db.my_schema.my_table where "),
+                "{result}"
+            );
+        }
+
+        #[test]
         fn test_render_with_run_filter_no_sample() {
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: None,
             };
             let event_time = Some("created_at".to_string());
@@ -1718,6 +1756,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1743,6 +1782,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1768,6 +1808,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1788,6 +1829,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1810,6 +1852,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
 
@@ -1835,6 +1878,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: true,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1871,6 +1915,7 @@ mod tests {
                 inner,
                 RunFilter {
                     empty: true,
+                    empty_marker: false,
                     sample: None,
                 },
                 Some("event_date".to_string()),
@@ -1879,6 +1924,7 @@ mod tests {
             // Microbatch overwrites the filter with a batch window (empty: false)
             let batch_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(Sample {
                     start: Some(start),
                     end: Some(end),

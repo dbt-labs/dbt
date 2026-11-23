@@ -2,10 +2,18 @@ use chrono::{DateTime, Duration, Utc};
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use serde::{Deserialize, Serialize};
 
+/// Precedes a relation rendered for `--empty` when the compiled SQL is rewritten
+/// afterwards instead of the relation being wrapped in a subquery. A block
+/// comment, so a copy that reaches a warehouse unrewritten is still valid SQL.
+pub const EMPTY_TABLE_MARKER: &str = "/*dbt-empty*/";
+
 /// The filter options for a dbt run
 #[derive(Debug, Clone, Default)]
 pub struct RunFilter {
     pub empty: bool,
+    /// With `empty`: render each relation after [`EMPTY_TABLE_MARKER`] and leave
+    /// the emptying to a rewrite of the compiled SQL.
+    pub empty_marker: bool,
     pub sample: Option<Sample>,
 }
 
@@ -50,6 +58,7 @@ impl RunFilter {
 
         Ok(Self {
             empty,
+            empty_marker: false,
             sample: parsed_sample,
         })
     }

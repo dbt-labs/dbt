@@ -8,6 +8,7 @@ use dbt_common::serde_utils::convert_yml_to_scc_map;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::emit::emit_debug_event;
 use dbt_common::{FsResult, MacroSpansOnly, stdfs};
+use dbt_jinja_utils::edit_mapping::EditMapping;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::utils::{
     inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec, render_sql,
@@ -132,6 +133,8 @@ fn render_default(
     let mut macro_spans = ctx
         .rendering_listener_factory
         .drain_macro_spans(&render_file_path);
+    let rendered_sql = rewrite_sql(node, ctx, rendered_sql, &mut macro_spans)
+        .map_err(|e| e.with_location(render_file_path.clone()))?;
     let rendered_sql_maybe_with_cte = inject_and_persist_ephemeral_models(
         rendered_sql,
         &mut macro_spans,
@@ -169,6 +172,26 @@ fn render_default(
         },
         config_map,
     ))
+}
+
+/// Applies the SQL rewriter's edits to `sql`, and moves `macro_spans` with them.
+fn rewrite_sql(
+    node: &Arc<dyn InternalDbtNodeAttributes>,
+    ctx: &TaskRunnerCtx,
+    sql: String,
+    macro_spans: &mut minijinja::MacroSpans,
+) -> FsResult<String> {
+    let edits = ctx
+        .inner
+        .sql_rewriter
+        .rewrite(node.as_ref(), &ctx.inner.arg, &sql)?;
+    if edits.is_empty() {
+        return Ok(sql);
+    }
+    let mapping = EditMapping::new(edits);
+    let edited = mapping.apply(&sql);
+    mapping.remap_macro_spans(macro_spans, &edited);
+    Ok(edited)
 }
 
 fn report_rendering_progress(node: &Arc<dyn InternalDbtNodeAttributes>, ctx: &TaskRunnerCtx) {

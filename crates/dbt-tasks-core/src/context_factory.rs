@@ -32,6 +32,7 @@ use crate::RunTasksArgs;
 use crate::context::{ExtendedCtx, RunCacheCtx, TaskRunnerCtx, TaskRunnerCtxInner};
 use crate::run_cache_lifecycle::{RunCacheLifecycle, RunCacheServiceLifecycle};
 use crate::span_manager::SpanManager;
+use crate::sql_rewriter::SqlRewriter;
 use crate::static_analysis_buckets::StaticAnalysisBuckets;
 use crate::task::Task;
 use crate::task_spans::populate_span_manager;
@@ -41,6 +42,7 @@ use crate::test_aggregation::GenericTestRelationships;
 pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
     fn rendering_listener_factory(&self) -> Arc<dyn RenderingEventListenerFactory>;
     fn sources_extractor(&self) -> Arc<dyn SourcesExtractor>;
+    fn sql_rewriter(&self) -> Arc<dyn SqlRewriter>;
 
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn build(
@@ -180,6 +182,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                     execute,
                     adapter_globals,
                     sources_extractor,
+                    self.sql_rewriter(),
                     run_cache_ctx,
                 )),
                 schema_cache,

@@ -46,6 +46,7 @@ use minijinja::value::OverlayMap;
 
 use crate::RunTasksArgs;
 use crate::span_manager::SpanManager;
+use crate::sql_rewriter::SqlRewriter;
 use crate::task::Task;
 use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
 use crate::unit_test_schema::UnitTestSchemaState;
@@ -201,6 +202,7 @@ pub struct TaskRunnerCtxInner {
     /// The run's adapter store and the adapter globals each node render takes from it.
     pub(crate) adapter_globals: NodeAdapterGlobals,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
+    pub sql_rewriter: Arc<dyn SqlRewriter>,
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
     pub generic_test_relationships: GenericTestRelationships,
@@ -236,6 +238,7 @@ impl TaskRunnerCtxInner {
         execute: dbt_schemas::schemas::profiles::Execute,
         adapter_globals: NodeAdapterGlobals,
         sources_extractor: Arc<dyn SourcesExtractor>,
+        sql_rewriter: Arc<dyn SqlRewriter>,
         run_cache_ctx: RunCacheCtx,
     ) -> Self {
         let runnable_set = schedule
@@ -291,6 +294,7 @@ impl TaskRunnerCtxInner {
             root_project_name: resolver_state.root_project_name.clone(),
             adapter_globals,
             sources_extractor,
+            sql_rewriter,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
             generic_test_relationships,

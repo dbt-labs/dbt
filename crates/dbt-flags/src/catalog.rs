@@ -94,6 +94,23 @@ pub static LAKECOMPUTE_PROFILE_SETUP: FlagDef = FlagDef {
     docs_url: None,
 };
 
+/// Whether `--empty` empties the tables a model reads by rewriting the model's
+/// compiled SQL. Off, each relation renders as a zero-row subquery.
+pub static USE_V2_EMPTY_SQL_REWRITE: FlagDef = FlagDef {
+    name: "use_v2_empty_sql_rewrite",
+    description: "Apply --empty by rewriting the compiled SQL to read zero rows from each \
+                  table, which keeps implicit table aliases, instead of rendering each \
+                  relation as a zero-row subquery.",
+    stage: Stage::Behavior,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
 /// Every flag declared in this crate.
 pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
@@ -102,6 +119,7 @@ pub static ALL: &[&FlagDef] = &[
     &FRONTEND_LIBRARY,
     &LOCK_WITH_STATE,
     &LAKECOMPUTE_PROFILE_SETUP,
+    &USE_V2_EMPTY_SQL_REWRITE,
 ];
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ pub mod run_task_hooks;
 mod run_tasks_args;
 pub mod show_task_hooks;
 pub mod span_manager;
+pub mod sql_rewriter;
 pub mod static_analysis_buckets;
 pub mod task;
 pub mod task_runner_hooks;

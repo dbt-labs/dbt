@@ -311,6 +311,8 @@ pub enum ErrorCode {
     SelectionOverrideSkipped = 1604,
     /// The nodes actually reported by the run differ from the externally supplied node set.
     SelectionOverrideDivergence = 1605,
+    /// `--empty` could not make a model's SQL read zero rows, so the model was not run.
+    EmptyRewriteFailed = 1606,
 
     // --------------------------------------------------------------------------------------------
     // Checks

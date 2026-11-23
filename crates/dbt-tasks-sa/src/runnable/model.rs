@@ -482,6 +482,7 @@ mod tests {
     fn sample(start: Option<DateTime<Utc>>, end: Option<DateTime<Utc>>) -> RunFilter {
         RunFilter {
             empty: false,
+            empty_marker: false,
             sample: Some(Sample { start, end }),
         }
     }

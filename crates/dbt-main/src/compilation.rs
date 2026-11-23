@@ -68,7 +68,8 @@ use dbt_common::{
     fs_err,
     io_args::{
         EvalArgs, EvalArgsBuilder, ListOutputFormat, Phases, ShowOptions,
-        optimize_test_defaults_from_project_flags, resolve_effective_optimize_tests,
+        optimize_test_defaults_from_project_flags, project_flag_bool,
+        resolve_effective_optimize_tests,
     },
     io_utils::{checkpoint_error_count_maybe_exit, checkpoint_maybe_exit},
     path::DbtPath,
@@ -779,11 +780,14 @@ impl<'a> CompilationPhasesExecutor<'a> {
         }
     }
 
+    /// `empty_by_sql_rewrite`: `--empty` is applied by rewriting the compiled SQL
+    /// rather than by rendering relations as zero-row subqueries.
     fn refresh_node_resolver(
         &self,
         loaded_project: &DbtLoadedProject,
         build_cache_changes: Option<&CacheState>,
         resolved_state: &mut ResolverState,
+        empty_by_sql_rewrite: bool,
     ) -> FsResult<()> {
         if build_cache_changes.is_some() {
             resolved_state.node_resolver = {
@@ -795,7 +799,10 @@ impl<'a> CompilationPhasesExecutor<'a> {
                     resolved_state.adapter_type,
                     root_project_name,
                     None,
-                    RunFilter::try_from(self.arg.empty, self.arg.sample.clone())?,
+                    RunFilter {
+                        empty_marker: empty_by_sql_rewrite,
+                        ..RunFilter::try_from(self.arg.empty, self.arg.sample.clone())?
+                    },
                     BTreeMap::new(), // renaming
                     compile_or_test,
                     PackageSearchOrder::resolve(
@@ -1508,8 +1515,24 @@ impl DbtProjectCompilation {
             CompleteStateWithKind::from_dbt_state(&executor.arg.io, &loaded_project.dbt_state())?;
         token.check_cancellation()?;
 
+        // Where the SQL rewriter applies `--empty`, relations render after a
+        // marker instead of as zero-row subqueries.
+        let empty_by_sql_rewrite = dbt_flags::USE_V2_EMPTY_SQL_REWRITE
+            .resolve_with_project(&project_flag_bool(
+                loaded_project.dbt_state().root_project().flags.as_ref(),
+            ))
+            .value
+            && feature_stack.task_runner.sql_rewriter.applies_empty(
+                loaded_project
+                    .dbt_state()
+                    .dbt_profile
+                    .default_db_config()
+                    .adapter_type(),
+            );
+
         let (mut resolved_state, jinja_env) = {
-            let resolve_args = ResolveArgs::try_from_eval_args(executor.arg.as_ref())?;
+            let mut resolve_args = ResolveArgs::try_from_eval_args(executor.arg.as_ref())?;
+            resolve_args.sample_config.empty_marker = empty_by_sql_rewrite;
             let invocation_args = InvocationArgs::from_eval_args(executor.arg.as_ref());
 
             loaded_project
@@ -1655,6 +1678,7 @@ impl DbtProjectCompilation {
             &loaded_project,
             build_cache_changes.as_ref(),
             &mut resolved_state,
+            empty_by_sql_rewrite,
         )?;
         token.check_cancellation()?;
 

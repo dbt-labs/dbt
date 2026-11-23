@@ -9421,6 +9421,7 @@ pub(crate) mod tests {
             Execute::Remote,
             test_adapter_globals(&resolver_state.dbt_profile),
             sources_extractor,
+            Arc::new(crate::sql_rewriter::DefaultSqlRewriter),
             RunCacheCtx {
                 run_cache_metadata: Arc::new(RunCacheMetadataCache::new()),
                 run_cache_dev_cloned_nodes: SccHashMap::default(),

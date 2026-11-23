@@ -1,6 +1,6 @@
 //! Reference: dbt-adapters/src/dbt/adapters/contracts/relation.py
 use crate::dbt_types::RelationType;
-use crate::filter::RunFilter;
+use crate::filter::{EMPTY_TABLE_MARKER, RunFilter};
 use crate::schemas::common::ResolvedQuoting;
 pub use crate::schemas::dbt_catalogs::TableFormat;
 
@@ -525,10 +525,12 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     ) -> String {
         let rendered = self.render_self_as_str();
 
-        let rendered = if run_filter.empty {
-            format!("(select * from {rendered} where false limit 0)")
-        } else {
+        let rendered = if !run_filter.empty {
             rendered
+        } else if run_filter.empty_marker {
+            format!("{EMPTY_TABLE_MARKER}{rendered}")
+        } else {
+            format!("(select * from {rendered} where false limit 0)")
         };
 
         // no event_time? no filter
