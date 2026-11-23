@@ -655,6 +655,12 @@ impl Task for ExperimentalTask {
 #[derive(Clone, Default)]
 pub struct Experimentals {
     experimentals: Vec<Arc<dyn ExperimentalNode>>,
+    /// The kinds of node that have nothing to run: [`Self::with_kind`].
+    kinds: Vec<Arc<dyn ResolvableNode>>,
+    /// The kinds of the nodes that the experimentals and the kinds add.
+    types: BTreeSet<&'static str>,
+    /// The keys that the experimentals and the kinds read.
+    keys: BTreeSet<&'static str>,
     /// dbt's own kinds of node, which the experimentals' kinds are added to.
     dbt: ResolvableNodes,
 }
@@ -666,41 +672,66 @@ impl Experimentals {
     /// key of a section: `section.key`) or names something dbt itself uses, if two experimentals have the same type or key, or if an
     /// experimental has no flag, or one that is on by default or is a behavior flag.
     pub fn new(experimentals: Vec<Arc<dyn ExperimentalNode>>) -> Self {
-        let dbt_keys: BTreeSet<&str> = ResolvableNodes::dbt().properties_keys().collect();
-        let mut types = BTreeSet::new();
-        let mut keys = BTreeSet::new();
+        let mut registry = Self::default();
         for experimental in &experimentals {
             let experimental_type = experimental.experimental_type();
-            check_name("experimental type", experimental_type);
-            assert!(
-                types.insert(experimental_type),
-                "experimental type `{experimental_type}` is registered twice"
+            registry.register(
+                experimental_type,
+                &[experimental_type],
+                experimental.as_ref(),
             );
-            check_flag(experimental_type, experimental.flag());
-            for key in experimental.properties_keys() {
-                // A key of a section, `section.key`, is two names. The section is the top-level
-                // key.
-                let (top_level, section_key) = match key.split_once('.') {
-                    Some((section, section_key)) => (section, Some(section_key)),
-                    None => (*key, None),
-                };
-                check_name("key", top_level);
-                if let Some(section_key) = section_key {
-                    check_name("key", section_key);
-                }
-                assert!(
-                    !dbt_keys.contains(top_level) && !matches!(top_level, "version" | "anchors"),
-                    "experimental `{experimental_type}` reads `{key}`, a key dbt reads"
-                );
-                assert!(
-                    keys.insert(*key),
-                    "`{key}` is read by more than one experimental, or twice by `{experimental_type}`"
-                );
-            }
         }
-        Self {
-            experimentals,
-            dbt: ResolvableNodes::dbt(),
+        registry.experimentals = experimentals;
+        registry
+    }
+
+    /// Adds `kind`, a kind of node that has nothing to run: its nodes are definitions, which
+    /// other nodes read. `node_kinds` are the kinds of its nodes: the prefixes of their unique
+    /// ids, and values `resource_type:` selects.
+    ///
+    /// It resolves after the experimentals, and is held to the same rules.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::new`] does, for the kind's keys, its flag and the kinds of its nodes.
+    pub fn with_kind(mut self, kind: Arc<dyn ResolvableNode>, node_kinds: &[&'static str]) -> Self {
+        let name = node_kinds.first().expect("a kind adds nodes of some kind");
+        self.register(name, node_kinds, kind.as_ref());
+        self.kinds.push(kind);
+        self
+    }
+
+    /// Checks `kind`, which adds nodes of the kinds `node_kinds`, against dbt's own names and
+    /// what is registered so far. `name` names it in an error.
+    fn register(&mut self, name: &str, node_kinds: &[&'static str], kind: &dyn ResolvableNode) {
+        let dbt_keys: BTreeSet<&str> = ResolvableNodes::dbt().properties_keys().collect();
+        for node_kind in node_kinds {
+            check_name("experimental type", node_kind);
+            assert!(
+                self.types.insert(node_kind),
+                "experimental type `{node_kind}` is registered twice"
+            );
+        }
+        check_flag(name, kind.flag());
+        for key in kind.properties_keys() {
+            // A key of a section, `section.key`, is two names. The section is the top-level
+            // key.
+            let (top_level, section_key) = match key.split_once('.') {
+                Some((section, section_key)) => (section, Some(section_key)),
+                None => (*key, None),
+            };
+            check_name("key", top_level);
+            if let Some(section_key) = section_key {
+                check_name("key", section_key);
+            }
+            assert!(
+                !dbt_keys.contains(top_level) && !matches!(top_level, "version" | "anchors"),
+                "experimental `{name}` reads `{key}`, a key dbt reads"
+            );
+            assert!(
+                self.keys.insert(*key),
+                "`{key}` is read by more than one experimental, or twice by `{name}`"
+            );
         }
     }
 
@@ -716,17 +747,20 @@ impl Experimentals {
     }
 
     /// Every feature flag this binary knows: dbt's own, and the flags that turn on its
-    /// experimentals, which aren't in `dbt_flags::ALL`.
+    /// experimentals and its kinds, which need not be in `dbt_flags::ALL`.
     pub fn known_flags(&self) -> Vec<&'static FlagDef> {
-        dbt_flags::ALL
+        let mut known: Vec<&'static FlagDef> = dbt_flags::ALL.to_vec();
+        let added = self
+            .experimentals
             .iter()
-            .copied()
-            .chain(
-                self.experimentals
-                    .iter()
-                    .filter_map(|experimental| experimental.flag()),
-            )
-            .collect()
+            .filter_map(|experimental| experimental.flag())
+            .chain(self.kinds.iter().filter_map(|kind| kind.flag()));
+        for flag in added {
+            if !known.iter().any(|known| known.name == flag.name) {
+                known.push(flag);
+            }
+        }
+        known
     }
 
     /// The experimental that owns `command`, if one does.
@@ -739,13 +773,14 @@ impl Experimentals {
             .find(|experimental| experimental.command() == Some(name))
     }
 
-    /// The kinds of node a project resolves with: dbt's own, then the experimentals'.
+    /// The kinds of node a project resolves with: dbt's own, then the experimentals', then
+    /// the kinds that have nothing to run.
     pub fn resolvable_nodes(&self) -> ResolvableNodes {
         self.experimentals
             .iter()
-            .fold(self.dbt.clone(), |nodes, experimental| {
-                nodes.with(Arc::clone(experimental) as Arc<dyn ResolvableNode>)
-            })
+            .map(|experimental| Arc::clone(experimental) as Arc<dyn ResolvableNode>)
+            .chain(self.kinds.iter().cloned())
+            .fold(self.dbt.clone(), |nodes, kind| nodes.with(kind))
     }
 }
 
@@ -1286,6 +1321,38 @@ mod tests {
             .collect();
         assert_eq!(keys[..dbt_keys.len()], dbt_keys);
         assert_eq!(keys[dbt_keys.len()..], [WIDGET, GADGET]);
+    }
+
+    /// A kind that has nothing to run resolves after the experimentals, and its flag is known.
+    #[test]
+    fn a_kind_with_nothing_to_run_resolves_last() {
+        let dbt_keys = ResolvableNodes::dbt().properties_keys().count();
+        let with_kind = experimentals(&[WIDGET]).with_kind(
+            Arc::new(WithKeys(&[GIZMO, "workshop.parts"])),
+            &[GADGET, GIZMO],
+        );
+        let keys: Vec<&str> = with_kind.resolvable_nodes().properties_keys().collect();
+        assert_eq!(keys[dbt_keys..], [WIDGET, GIZMO, "workshop.parts"]);
+        assert!(
+            with_kind
+                .known_flags()
+                .iter()
+                .any(|flag| flag.name == TEST_FLAG.name)
+        );
+        // It is not an experimental: nothing starts it.
+        assert_eq!(with_kind.iter().count(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "experimental type `widget` is registered twice")]
+    fn a_kind_adds_nodes_of_kinds_that_nothing_else_adds() {
+        experimentals(&[WIDGET]).with_kind(Arc::new(WithKeys(&[GIZMO])), &[GADGET, WIDGET]);
+    }
+
+    #[test]
+    #[should_panic(expected = "`widget` is read by more than one experimental")]
+    fn a_kind_reads_keys_that_nothing_else_reads() {
+        experimentals(&[WIDGET]).with_kind(Arc::new(WithKeys(&[WIDGET])), &[GADGET]);
     }
 
     #[test]

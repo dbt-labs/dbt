@@ -50,6 +50,9 @@ use crate::utils::get_node_fqn;
 pub struct ExperimentalPackage<'a> {
     /// The package's name.
     pub package_name: &'a str,
+    /// The package's root directory, which the paths of its entries are relative to. Empty for
+    /// an [unrendered](Self::unrendered) package.
+    pub package_root: &'a Path,
     pub(crate) entries: BTreeMap<&'static str, Vec<ExperimentalEntry>>,
     /// What entries are rendered with; `None` reads them as written.
     pub(crate) jinja: Option<(&'a JinjaEnv, &'a BTreeMap<String, MinijinjaValue>)>,
@@ -64,6 +67,7 @@ impl<'a> ExperimentalPackage<'a> {
     ) -> Self {
         Self {
             package_name,
+            package_root: Path::new(""),
             entries,
             jinja: None,
         }
@@ -98,6 +102,17 @@ impl<'a> ExperimentalPackage<'a> {
         path: &Path,
     ) -> Result<T, ExperimentalError> {
         self.render(value.clone(), path)
+    }
+
+    /// `text`, the contents of the file `path` that an entry names, with Jinja rendered as it is
+    /// in the package's properties files: with the package's macros, `doc()`, `var()` and
+    /// `target`. An [unrendered](Self::unrendered) package gives it as written.
+    pub fn render_text(&self, text: &str, path: &Path) -> Result<String, ExperimentalError> {
+        let Some((env, base_ctx)) = self.jinja else {
+            return Ok(text.to_string());
+        };
+        env.render_str(text, base_ctx, &[])
+            .map_err(|e| ExperimentalError::from_fs_error(*e, path))
     }
 
     fn render<T: DeserializeOwned>(
@@ -270,6 +285,7 @@ impl ResolveCtx<'_> {
             .collect();
         ExperimentalPackage {
             package_name,
+            package_root: &self.package.package_root_path,
             entries,
             jinja: Some((&self.jinja_env, &self.base_ctx)),
         }

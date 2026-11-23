@@ -17,8 +17,8 @@
 //!     widget_size: 3               # an extension's
 //! ```
 //!
-//! An extension reads fields of the entry, not of what is inside it: a field of one of the
-//! entry's `columns` is the column's.
+//! An extension reads fields of the entry, and, if it says so, fields of the entry's `columns`.
+//! A field with the same name anywhere else in the entry is not the extension's.
 
 use dbt_common::FsResult;
 use dbt_common::io_args::project_flag_bool;
@@ -42,6 +42,11 @@ pub trait Extension: DeserializeOwned + Debug + Send + Sync + 'static {
     /// that is not one of these is the kind's, or another extension's.
     const FIELDS: &'static [&'static str];
 
+    /// The fields of each of an entry's `columns` that the extension reads. The extension gets
+    /// them under `columns`: one mapping for each column that has one of them, with the column's
+    /// `name`.
+    const COLUMN_FIELDS: &'static [&'static str] = &[];
+
     /// The feature flag that turns the extension on. One without a flag is always on.
     ///
     /// While it is off, its fields are not read: they are keys that nothing reads.
@@ -51,7 +56,8 @@ pub trait Extension: DeserializeOwned + Debug + Send + Sync + 'static {
 
     /// Called by the kind that owns the entry, once it has added `node`, which it built from the
     /// same entry, to `ctx`'s nodes. It is called for an entry that has at least one of
-    /// [`Self::FIELDS`], and not for a node that is disabled.
+    /// [`Self::FIELDS`], or a column with one of [`Self::COLUMN_FIELDS`], and not for a node that
+    /// is disabled.
     ///
     /// The properties file is `node`'s `patch_path`.
     fn resolved(
@@ -85,6 +91,7 @@ impl<X: Extension> ExtensionSet for X {
         members.0.push(Member {
             name: std::any::type_name::<X>(),
             fields: X::FIELDS,
+            column_fields: X::COLUMN_FIELDS,
             flag: X::flag(),
             read: read::<X>,
         });
@@ -115,6 +122,7 @@ struct Member {
     /// The name of the extension's type, for the error of [`check`].
     name: &'static str,
     fields: &'static [&'static str],
+    column_fields: &'static [&'static str],
     flag: Option<&'static FlagDef>,
     /// Types the extension from its fields: [`read`].
     read: ReadFn,
@@ -168,11 +176,21 @@ fn check_set<S: ExtensionSet>(kind: &str) {
     let mut members = Members::default();
     S::members(&mut members);
     let mut readers: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut column_readers: BTreeMap<&str, &str> = BTreeMap::new();
     for member in &members.0 {
         for field in member.fields {
             if let Some(other) = readers.insert(field, member.name) {
                 panic!(
                     "`{field}` in the entries of `{kind}` is read by two extensions: `{other}` \
+                     and `{}`",
+                    member.name
+                );
+            }
+        }
+        for field in member.column_fields {
+            if let Some(other) = column_readers.insert(field, member.name) {
+                panic!(
+                    "`{field}` in the columns of `{kind}` is read by two extensions: `{other}` \
                      and `{}`",
                     member.name
                 );
@@ -221,9 +239,10 @@ impl ExtensionReader {
     fn new<S: ExtensionSet>(is_on: impl Fn(&'static FlagDef) -> bool) -> Self {
         let mut members = Members::default();
         S::members(&mut members);
-        members
-            .0
-            .retain(|member| !member.fields.is_empty() && member.flag.is_none_or(&is_on));
+        members.0.retain(|member| {
+            !(member.fields.is_empty() && member.column_fields.is_empty())
+                && member.flag.is_none_or(&is_on)
+        });
         ExtensionReader { members: members.0 }
     }
 
@@ -242,7 +261,7 @@ impl ExtensionReader {
     ) -> FsResult<Option<ReadExtensions>> {
         let mut read = Vec::new();
         for member in &self.members {
-            if let Some(fields) = take_fields(entry, member.fields) {
+            if let Some(fields) = take_fields(entry, member.fields, member.column_fields) {
                 read.push((member.read)(
                     fields,
                     jinja_env,
@@ -291,16 +310,51 @@ fn typed<X: Extension>(
 
 /// Takes `fields` out of the mapping `entry`, with their keys, as a mapping that is written
 /// where `entry` is. The other keys keep their order. None if `entry` has none of them.
-fn take_fields(entry: &mut Value, fields: &[&str]) -> Option<Value> {
+///
+/// `column_fields` are taken out of each mapping under the entry's `columns`, if they are a
+/// list. The columns that have one are given under `columns`, each with its `name`.
+fn take_fields(entry: &mut Value, fields: &[&str], column_fields: &[&str]) -> Option<Value> {
     let span = entry.span().clone();
     let entry = entry.as_mapping_mut()?;
+    let mut taken = take_keys(entry, fields);
+    let columns: Vec<Value> = entry
+        .get_mut(COLUMNS)
+        .and_then(Value::as_sequence_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|column| {
+            let span = column.span().clone();
+            let column = column.as_mapping_mut()?;
+            let fields = take_keys(column, column_fields);
+            if fields.is_empty() {
+                return None;
+            }
+            let mut named = Mapping::new();
+            if let Some(name) = column.get(NAME) {
+                named.insert(Value::string(NAME.to_string()), name.clone());
+            }
+            named.extend(fields);
+            Some(Value::mapping(named).with_span(span))
+        })
+        .collect();
+    if !columns.is_empty() {
+        taken.insert(Value::string(COLUMNS.to_string()), Value::sequence(columns));
+    }
+    (!taken.is_empty()).then(|| Value::mapping(taken).with_span(span))
+}
+
+const COLUMNS: &str = "columns";
+const NAME: &str = "name";
+
+/// Takes `keys` out of `mapping`, with their values. The other keys keep their order.
+fn take_keys(mapping: &mut Mapping, keys: &[&str]) -> Mapping {
     let mut taken = Mapping::new();
-    for field in fields {
-        if let Some((key, value)) = entry.shift_remove_entry(*field) {
+    for key in keys {
+        if let Some((key, value)) = mapping.shift_remove_entry(*key) {
             taken.insert(key, value);
         }
     }
-    (!taken.is_empty()).then(|| Value::mapping(taken).with_span(span))
+    taken
 }
 
 /// Gives the extensions of each entry back, with the entry's node: see [`Extension::resolved`].
@@ -450,7 +504,7 @@ columns:
     fn what_is_read_keeps_where_the_entry_is_written() {
         let mut entry = yaml("models:\n  - name: orders\n    tag: gold\n");
         let entry = &mut entry["models"][0];
-        let taken = take_fields(entry, Tagged::FIELDS).expect("the entry has a tag");
+        let taken = take_fields(entry, Tagged::FIELDS, &[]).expect("the entry has a tag");
         // The entry starts on the second line, and its tag is on the third.
         assert_eq!(taken.span().start.line, 2);
         assert_eq!(taken["tag"].span().start.line, 3);
@@ -515,6 +569,64 @@ config:
         // `size` is the kind's to report, and it is not typed.
         assert_eq!(entry, yaml("name: orders\nsize: [not, a, size]\n"));
         Ok(())
+    }
+
+    /// An extension that reads a field of columns, and gets them under `columns`.
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Units {
+        columns: Vec<ColumnUnit>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct ColumnUnit {
+        name: String,
+        unit: String,
+    }
+
+    impl Extension for Units {
+        const FIELDS: &'static [&'static str] = &[];
+        const COLUMN_FIELDS: &'static [&'static str] = &["unit"];
+    }
+
+    #[test]
+    fn an_extension_reads_the_fields_of_columns_that_it_names() -> FsResult<()> {
+        let mut entry = yaml(
+            "name: orders
+unit: an entry's
+columns:
+  - {name: id, description: d}
+  - {name: amount, unit: usd, description: d}
+",
+        );
+        let taken = take_fields(&mut entry.clone(), Units::FIELDS, Units::COLUMN_FIELDS)
+            .expect("a column has a unit");
+        assert_eq!(taken, yaml("columns: [{name: amount, unit: usd}]"));
+        // The column is on the fifth line.
+        assert_eq!(taken["columns"][0].span().start.line, 5);
+
+        assert_eq!(read_in::<Units>(&mut entry, |_| true)?, 1);
+        // The entry's own `unit` is not a column's, and the columns keep their other fields.
+        assert_eq!(
+            entry,
+            yaml(
+                "{name: orders, unit: an entry's, columns: [{name: id, description: d}, {name: amount, description: d}]}"
+            )
+        );
+
+        // Columns that a Jinja expression gives are not written in the entry.
+        let input = "name: orders\ncolumns: \"{{ var('columns') }}\"\n";
+        let mut entry = yaml(input);
+        assert_eq!(read_in::<Units>(&mut entry, |_| true)?, 0);
+        assert_eq!(entry, yaml(input));
+        Ok(())
+    }
+
+    #[test]
+    #[should_panic(expected = "`unit` in the columns of `models` is read by two extensions")]
+    fn two_extensions_of_a_kind_do_not_read_the_same_field_of_columns() {
+        check_set::<(Units, (Tagged, Units))>("models");
     }
 
     #[test]
