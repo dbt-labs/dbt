@@ -15,6 +15,9 @@ use std::collections::BTreeMap;
 pub struct ResolveArgs {
     /// The command to run
     pub command: FsCommand,
+    /// The command that the invocation started with, which is not `command` when another
+    /// command resolves the project to do its own work.
+    pub command_entrypoint: FsCommand,
     /// All io args
     pub io: IoArgs,
     /// Vars to pass to the jinja environment
@@ -69,6 +72,7 @@ impl ResolveArgs {
     pub fn try_from_eval_args(arg: &EvalArgs) -> FsResult<Self> {
         Ok(ResolveArgs {
             command: arg.command,
+            command_entrypoint: arg.command_entrypoint,
             io: arg.io.clone(),
             vars: arg.vars.clone(),
             from_main: arg.from_main,
