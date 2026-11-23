@@ -11,15 +11,15 @@ use dbt_yaml::Verbatim;
 use crate::context::DepsOperationContext;
 use crate::package_installer::StagedPackage;
 use crate::package_listing::{PackageListing, UnpinnedPackage};
-use crate::utils::{max_resolve_concurrency, scrub_package_name_secret_env_vars};
+use crate::utils::{max_resolve_concurrency, scrub_secret_env_vars};
 
 fn package_lock_needs_scrub(package: &DbtPackageLock) -> bool {
     match package {
         DbtPackageLock::Git(git_package_lock) => {
-            scrub_package_name_secret_env_vars(git_package_lock.git.as_str()).is_some()
+            scrub_secret_env_vars(git_package_lock.git.as_str()).is_some()
         }
         DbtPackageLock::Tarball(tarball_package_lock) => {
-            scrub_package_name_secret_env_vars(tarball_package_lock.tarball.as_str()).is_some()
+            scrub_secret_env_vars(tarball_package_lock.tarball.as_str()).is_some()
         }
         _ => false,
     }
@@ -29,15 +29,12 @@ fn scrub_package_lock_for_file(dbt_packages_lock: &mut DbtPackagesLock) {
     for package in dbt_packages_lock.packages.iter_mut() {
         match package {
             DbtPackageLock::Git(git_package_lock) => {
-                if let Some(scrubbed) =
-                    scrub_package_name_secret_env_vars(git_package_lock.git.as_str())
-                {
+                if let Some(scrubbed) = scrub_secret_env_vars(git_package_lock.git.as_str()) {
                     git_package_lock.git = Verbatim::from(scrubbed.into_owned());
                 }
             }
             DbtPackageLock::Tarball(tarball_package_lock) => {
-                if let Some(scrubbed) =
-                    scrub_package_name_secret_env_vars(tarball_package_lock.tarball.as_str())
+                if let Some(scrubbed) = scrub_secret_env_vars(tarball_package_lock.tarball.as_str())
                 {
                     tarball_package_lock.tarball = Verbatim::from(scrubbed.into_owned());
                 }

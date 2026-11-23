@@ -44,6 +44,7 @@ use tracing::Instrument as _;
 
 use crate::context::DepsOperationContext;
 use crate::private_package::PrivatePackageResolver;
+use crate::utils::scrub_secret_env_vars_from_error;
 
 /// Loads and installs packages, and returns the packages lock and the dependencies map
 #[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
@@ -156,9 +157,12 @@ pub async fn get_or_install_packages(
                 format!("resolving packages from {}", package_yml_name.as_ref()),
                 None,
             ));
+            // Scrub before the error reaches the span status, the fallback warning below or
+            // the caller: it may repeat a package URL that carries a secret.
             let lock_result = compute_package_lock(&deps_context, dbt_packages)
                 .instrument(fetch_span.clone())
-                .await;
+                .await
+                .map_err(scrub_secret_env_vars_from_error);
 
             match lock_result {
                 Ok(lock) => {
@@ -253,6 +257,7 @@ pub async fn get_or_install_packages(
         install_packages(&deps_context, &dbt_packages_lock, packages_install_path)
             .instrument(install_span.clone())
             .await
+            .map_err(scrub_secret_env_vars_from_error)
             .record_status(&install_span)
             .inspect_err(|_| {
                 deps_context.flush_notices(&dbt_packages_lock);
@@ -297,6 +302,7 @@ pub async fn get_or_install_packages(
             install_packages(&deps_context, &dbt_packages_lock, packages_install_path)
                 .instrument(install_span.clone())
                 .await
+                .map_err(scrub_secret_env_vars_from_error)
                 .record_status(&install_span)
                 .inspect_err(|_| {
                     deps_context.flush_notices(&dbt_packages_lock);

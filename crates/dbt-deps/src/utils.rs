@@ -2,12 +2,13 @@ use std::{
     borrow::Cow,
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
 use dbt_path::normalize;
 use dbt_schemas::schemas::{packages::LocalPackage, project::DbtProjectNameOnly};
 
-use dbt_common::{ErrorCode, FsResult, constants::DBT_PROJECT_YML, fs_err, tokiofs};
+use dbt_common::{ErrorCode, FsError, FsResult, constants::DBT_PROJECT_YML, fs_err, tokiofs};
 
 const DEFAULT_DEPS_MAX_CONCURRENCY: usize = 8;
 const MAX_DEPS_CONCURRENCY: usize = 16;
@@ -63,11 +64,20 @@ pub fn get_local_package_full_path(in_dir: &Path, local_package: &LocalPackage) 
     }
 }
 
-pub fn scrub_package_name_secret_env_vars(package_name: &str) -> Option<Cow<'_, str>> {
-    let mut scrubbed = Cow::Borrowed(package_name);
-    for (_, secret) in std::env::vars()
+/// The non-blank values of the `DBT_ENV_SECRET*` environment variables, which is what
+/// dbt Core's `env_secrets` returns.
+fn secret_env_var_values() -> Vec<String> {
+    std::env::vars()
         .filter(|(key, value)| key.starts_with(SECRET_ENV_VAR_PREFIX) && !value.trim().is_empty())
-    {
+        .map(|(_, value)| value)
+        .collect()
+}
+
+/// Replaces every occurrence of each of `secrets` in `text` with `*****`, as dbt Core's
+/// `scrub_secrets` does. Returns `None` when `text` holds none of them.
+fn scrub_secrets<'a>(text: &'a str, secrets: &[String]) -> Option<Cow<'a, str>> {
+    let mut scrubbed = Cow::Borrowed(text);
+    for secret in secrets {
         if scrubbed.contains(secret.as_str()) {
             scrubbed = Cow::Owned(scrubbed.replace(secret.as_str(), "*****"));
         }
@@ -79,6 +89,43 @@ pub fn scrub_package_name_secret_env_vars(package_name: &str) -> Option<Cow<'_, 
     }
 }
 
+/// Replaces the value of every `DBT_ENV_SECRET*` environment variable found in `text` with
+/// `*****`. Returns `None` when `text` holds no secret.
+pub fn scrub_secret_env_vars(text: &str) -> Option<Cow<'_, str>> {
+    scrub_secrets(text, &secret_env_var_values())
+}
+
+/// Scrubs the values of the `DBT_ENV_SECRET*` environment variables from the message of
+/// `err` and of every error chained to it.
+///
+/// A package URL in `packages.yml` may carry a secret, for example
+/// `https://{{ env_var('DBT_ENV_SECRET_GIT_TOKEN') }}@github.com/org/repo.git`, and an error
+/// about that package may repeat the rendered URL. Call this before the error is logged,
+/// recorded on a span or returned.
+pub(crate) fn scrub_secret_env_vars_from_error(err: Box<FsError>) -> Box<FsError> {
+    scrub_secrets_from_error(err, &secret_env_var_values())
+}
+
+fn scrub_secrets_from_error(mut err: Box<FsError>, secrets: &[String]) -> Box<FsError> {
+    let next = err
+        .pop_next()
+        .map(|next| scrub_secrets_from_error(next, secrets));
+    if let Some(context) = scrub_secrets(&err.context, secrets) {
+        err.context = context.into_owned();
+    }
+    // The message also includes the cause, which can't be edited. If a secret is there,
+    // keep the scrubbed message and drop the cause.
+    if let Some(message) = scrub_secrets(&err.to_string(), secrets) {
+        let mut scrubbed = FsError::new(err.code, message);
+        scrubbed.location = err.location.take();
+        *err = scrubbed;
+    }
+    match next {
+        Some(next) => Box::new(err.with_chained_errors(next)),
+        None => err,
+    }
+}
+
 /// Build the error raised when a package's `dbt_project.yml` cannot be found.
 ///
 /// `checkout_path` is the resolved package directory (which may contain `..`
@@ -87,7 +134,7 @@ pub fn scrub_package_name_secret_env_vars(package_name: &str) -> Option<Cow<'_, 
 /// genuinely-missing directory cannot be canonicalized. `dir_exists` selects
 /// between "directory missing entirely" and "directory present but missing
 /// `dbt_project.yml`".
-fn missing_dbt_project_error(checkout_path: &Path, dir_exists: bool) -> Box<dbt_common::FsError> {
+fn missing_dbt_project_error(checkout_path: &Path, dir_exists: bool) -> Box<FsError> {
     let normalized = normalize(checkout_path);
     if dir_exists {
         fs_err!(
@@ -158,9 +205,43 @@ pub async fn read_and_validate_dbt_project(
     )
 }
 
+/// Matches the credentials of a URL anywhere in a text: `scheme://user[:password]@`.
+static URL_CREDENTIALS_REGEX: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r#"(?i)\b([a-z][a-z0-9+.-]*://)[^/?#\s'"]+@"#).unwrap());
+
+/// Removes the credentials from every URL in `text`, e.g. in git's stderr:
+/// `fatal: could not read Password for 'https://token@github.com': ...`
+///   becomes `fatal: could not read Password for 'https://github.com': ...`
+///
+/// Use this for text that contains URLs. [`sanitize_git_url`] is for a string that is a
+/// URL as a whole: it returns git's `fatal: ...` and `remote: ...` lines unchanged,
+/// because they parse as URLs with the scheme `fatal` or `remote`.
+pub(crate) fn strip_url_credentials(text: &str) -> Cow<'_, str> {
+    URL_CREDENTIALS_REGEX.replace_all(text, "$1")
+}
+
+/// The URL of a git or tarball package as logs and telemetry show it: without credentials,
+/// and with the values of the `DBT_ENV_SECRET*` environment variables as `*****`. A secret
+/// can be anywhere in the URL, for example in the query string.
+pub(crate) fn package_url_for_display(url: &str) -> String {
+    package_url_for_display_with_secrets(url, &secret_env_var_values())
+}
+
+fn package_url_for_display_with_secrets(url: &str, secrets: &[String]) -> String {
+    // Scrub first. `sanitize_git_url` percent-encodes some characters, and an encoded
+    // secret would no longer match.
+    match scrub_secrets(url, secrets) {
+        Some(scrubbed) => sanitize_git_url(&scrubbed),
+        None => sanitize_git_url(url),
+    }
+}
+
 /// Sanitizes username/password segments from git urls
 /// e.g. https://username:password@github.com/dbt-labs/secret-project
 ///   becomes https://github.com/dbt-labs/secret-project
+///
+/// `url` must be a URL as a whole. For text that contains URLs, such as git's stderr, use
+/// [`strip_url_credentials`].
 pub fn sanitize_git_url(url: &str) -> String {
     if let Ok(mut parsed) = url::Url::parse(url) {
         let _ = parsed.set_username("");
@@ -234,6 +315,155 @@ mod tests {
             !msg.contains("does not contain a dbt_project.yml file"),
             "got: {msg}"
         );
+    }
+
+    fn secrets(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn scrub_secrets_replaces_every_secret_with_asterisks() {
+        let scrubbed = scrub_secrets(
+            "Failed to get tarball from https://tok-1@example.com/tok-2.tar.gz: tok-1",
+            &secrets(&["tok-1", "tok-2"]),
+        );
+        assert_eq!(
+            scrubbed.as_deref(),
+            Some("Failed to get tarball from https://*****@example.com/*****.tar.gz: *****")
+        );
+    }
+
+    #[test]
+    fn scrub_secrets_returns_none_without_a_secret() {
+        assert_eq!(
+            scrub_secrets("Package not found", &secrets(&["tok-1"])),
+            None
+        );
+        assert_eq!(scrub_secrets("Package not found", &[]), None);
+    }
+
+    #[test]
+    fn scrub_secrets_from_error_scrubs_the_message_and_keeps_the_code() {
+        let err = fs_err!(
+            ErrorCode::PackageDownloadFailed,
+            "Failed to get tarball from https://tok-1@example.com/pkg.tar.gz"
+        );
+        let scrubbed = scrub_secrets_from_error(err, &secrets(&["tok-1"]));
+        assert_eq!(scrubbed.code, ErrorCode::PackageDownloadFailed);
+        assert_eq!(
+            scrubbed.to_string(),
+            "Failed to get tarball from https://*****@example.com/pkg.tar.gz"
+        );
+    }
+
+    #[test]
+    fn scrub_secrets_from_error_scrubs_a_secret_in_the_cause() {
+        let cause = std::io::Error::other("could not read https://tok-1@example.com");
+        let err = Box::new(FsError::new(ErrorCode::IoError, "Failed to fetch").with_cause(cause));
+        assert!(err.to_string().contains("tok-1"), "got: {err}");
+
+        let scrubbed = scrub_secrets_from_error(err, &secrets(&["tok-1"]));
+        assert_eq!(scrubbed.code, ErrorCode::IoError);
+        assert_eq!(
+            scrubbed.to_string(),
+            "Failed to fetch: could not read https://*****@example.com"
+        );
+    }
+
+    #[test]
+    fn scrub_secrets_from_error_scrubs_chained_errors() {
+        let err = fs_err!(ErrorCode::PackageDownloadFailed, "first: tok-1")
+            .with_chained_errors(fs_err!(ErrorCode::AuthFailed, "second: tok-1"));
+        let mut scrubbed = scrub_secrets_from_error(Box::new(err), &secrets(&["tok-1"]));
+        assert_eq!(scrubbed.to_string(), "first: *****");
+        let next = scrubbed.pop_next().expect("the chained error is kept");
+        assert_eq!(next.code, ErrorCode::AuthFailed);
+        assert_eq!(next.to_string(), "second: *****");
+    }
+
+    #[test]
+    fn scrub_secrets_from_error_leaves_an_error_without_secrets_unchanged() {
+        let cause = std::io::Error::other("connection refused");
+        let err = Box::new(FsError::new(ErrorCode::IoError, "Failed to fetch").with_cause(cause));
+        let scrubbed = scrub_secrets_from_error(err, &secrets(&["tok-1"]));
+        assert_eq!(scrubbed.to_string(), "Failed to fetch: connection refused");
+        assert!(
+            std::error::Error::source(&*scrubbed).is_some(),
+            "the cause is kept when it holds no secret"
+        );
+    }
+
+    #[test]
+    fn package_url_for_display_scrubs_a_secret_anywhere_in_the_url() {
+        let secrets = secrets(&["tok-1", "p@ss word"]);
+        for (url, expected) in [
+            (
+                "https://example.com/pkg.tar.gz?private_token=tok-1",
+                "https://example.com/pkg.tar.gz?private_token=*****",
+            ),
+            (
+                "https://example.com/tok-1/pkg.tar.gz",
+                "https://example.com/*****/pkg.tar.gz",
+            ),
+            (
+                "https://tok-1@github.com/org/repo.git",
+                "https://github.com/org/repo.git",
+            ),
+            // The URL parser would encode this secret as `p@ss%20word`.
+            (
+                "https://example.com/pkg.tar.gz?key=p@ss word",
+                "https://example.com/pkg.tar.gz?key=*****",
+            ),
+            (
+                "https://example.com/pkg.tar.gz",
+                "https://example.com/pkg.tar.gz",
+            ),
+        ] {
+            assert_eq!(
+                package_url_for_display_with_secrets(url, &secrets),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn strip_url_credentials_strips_the_token_git_repeats_in_stderr() {
+        // git's stderr when the token in the package URL is rejected and git can't prompt
+        // for a password (no terminal, as in a container).
+        for reason in ["No such device or address", "Device not configured"] {
+            let stderr = format!(
+                "fatal: could not read Password for 'https://ghp_token123@github.com': {reason}"
+            );
+            assert_eq!(
+                strip_url_credentials(&stderr),
+                format!("fatal: could not read Password for 'https://github.com': {reason}")
+            );
+        }
+    }
+
+    #[test]
+    fn strip_url_credentials_strips_every_url_in_the_text() {
+        assert_eq!(
+            strip_url_credentials(
+                "remote: denied for https://user:p@ss@github.com/org/repo.git\n\
+                 fatal: unable to access 'ssh://git:tok@example.com:22/org/repo.git/'"
+            ),
+            "remote: denied for https://github.com/org/repo.git\n\
+             fatal: unable to access 'ssh://example.com:22/org/repo.git/'"
+        );
+    }
+
+    #[test]
+    fn strip_url_credentials_leaves_text_without_credentials_unchanged() {
+        for text in [
+            "fatal: repository 'https://github.com/org/repo.git/' not found",
+            "error: pathspec 'user@example.com' did not match any file(s) known to git",
+            "fatal: couldn't find remote ref https://github.com/org/repo/tree/a@b",
+            "fatal: unable to access 'https://example.com:8443?next=a@b'",
+            "",
+        ] {
+            assert_eq!(strip_url_credentials(text), text);
+        }
     }
 
     #[test]

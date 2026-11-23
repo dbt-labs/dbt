@@ -18,7 +18,10 @@ use crate::types::{
     GitUnpinnedPackage, HubUnpinnedPackage, LocalUnpinnedPackage, PrivateUnpinnedPackage,
     TarballUnpinnedPackage,
 };
-use crate::utils::{ensure_dir, make_tempdir, read_and_validate_dbt_project, sanitize_git_url};
+use crate::utils::{
+    ensure_dir, make_tempdir, package_url_for_display, read_and_validate_dbt_project,
+    sanitize_git_url, scrub_secret_env_vars_from_error,
+};
 
 /// A package installed into its own scratch dir under the install path.
 /// `install_packages` moves `path` to `<install path>/<name>`.
@@ -80,7 +83,11 @@ pub(crate) trait PackageInstaller {
             self.update_span_end(&outcome, ev);
         });
 
-        let result = inner.record_status(&span);
+        // Scrub before the error reaches the span status: it may repeat a package URL that
+        // carries a secret.
+        let result = inner
+            .map_err(scrub_secret_env_vars_from_error)
+            .record_status(&span);
 
         if result.is_ok() && ctx.io.send_anonymous_usage_stats {
             package_install_event(
@@ -219,7 +226,7 @@ impl PackageInstaller for GitUnpinnedPackage {
             None,
             PackageType::Git,
             None,
-            Some(sanitize_git_url(self.git.as_str())),
+            Some(package_url_for_display(self.git.as_str())),
         )
     }
 
@@ -324,7 +331,7 @@ impl PackageInstaller for TarballUnpinnedPackage {
             None,
             PackageType::Tarball,
             None,
-            Some(sanitize_git_url(&self.tarball)),
+            Some(package_url_for_display(&self.tarball)),
         )
     }
 
