@@ -659,8 +659,8 @@ pub struct Experimentals {
 impl Experimentals {
     /// # Panics
     ///
-    /// If an experimental's type or one of its keys isn't a lowercase identifier or names
-    /// something dbt itself uses, if two experimentals have the same type or key, or if an
+    /// If an experimental's type or one of its keys isn't a lowercase identifier (or two, for a
+    /// key of a section: `section.key`) or names something dbt itself uses, if two experimentals have the same type or key, or if an
     /// experimental has no flag, or one that is on by default or is a behavior flag.
     pub fn new(experimentals: Vec<Arc<dyn ExperimentalNode>>) -> Self {
         let dbt_keys: BTreeSet<&str> = ResolvableNodes::dbt().properties_keys().collect();
@@ -675,9 +675,18 @@ impl Experimentals {
             );
             check_flag(experimental_type, experimental.flag());
             for key in experimental.properties_keys() {
-                check_name("key", key);
+                // A key of a section, `section.key`, is two names. The section is the top-level
+                // key.
+                let (top_level, section_key) = match key.split_once('.') {
+                    Some((section, section_key)) => (section, Some(section_key)),
+                    None => (*key, None),
+                };
+                check_name("key", top_level);
+                if let Some(section_key) = section_key {
+                    check_name("key", section_key);
+                }
                 assert!(
-                    !dbt_keys.contains(key) && !matches!(*key, "version" | "anchors"),
+                    !dbt_keys.contains(top_level) && !matches!(top_level, "version" | "anchors"),
                     "experimental `{experimental_type}` reads `{key}`, a key dbt reads"
                 );
                 assert!(
@@ -1293,6 +1302,33 @@ mod tests {
     #[should_panic(expected = "experimental `widget` reads `models`, a key dbt reads")]
     fn a_key_cannot_be_a_key_dbt_reads() {
         Experimentals::new(vec![Arc::new(WithKeys(&["models"]))]);
+    }
+
+    #[test]
+    fn a_key_can_be_a_key_of_a_section() {
+        let keys: Vec<&str> = Experimentals::new(vec![Arc::new(WithKeys(&["workshop.parts"]))])
+            .resolvable_nodes()
+            .properties_keys()
+            .collect();
+        assert_eq!(keys.last(), Some(&"workshop.parts"));
+    }
+
+    #[test]
+    #[should_panic(expected = "experimental `widget` reads `models.parts`, a key dbt reads")]
+    fn a_section_cannot_be_a_key_dbt_reads() {
+        Experimentals::new(vec![Arc::new(WithKeys(&["models.parts"]))]);
+    }
+
+    #[test]
+    #[should_panic(expected = "key `Parts` is not a lowercase identifier")]
+    fn a_key_of_a_section_is_a_lowercase_identifier() {
+        Experimentals::new(vec![Arc::new(WithKeys(&["workshop.Parts"]))]);
+    }
+
+    #[test]
+    #[should_panic(expected = "key `parts.bolts` is not a lowercase identifier")]
+    fn a_section_has_no_sections() {
+        Experimentals::new(vec![Arc::new(WithKeys(&["workshop.parts.bolts"]))]);
     }
 
     #[test]

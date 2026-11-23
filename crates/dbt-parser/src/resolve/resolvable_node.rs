@@ -3,7 +3,7 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
 pub use crate::resolve::properties_index::{IndexCtx, IndexedName};
-use crate::resolve::properties_index::{PackageProperties, PropertiesEntry};
+use crate::resolve::properties_index::{PackageProperties, PropertiesEntry, section_of};
 use crate::resolve::resolve_analyses::Analyses;
 use crate::resolve::resolve_checks::Checks;
 use crate::resolve::resolve_exposures::Exposures;
@@ -51,6 +51,9 @@ pub trait ResolvableNode: Send + Sync {
     }
 
     /// The top-level keys of properties files that hold the kind's items.
+    ///
+    /// A key may be a section's: `section.key` is the list under `key` in the top-level mapping
+    /// `section`. Kinds can own keys of the same section.
     fn properties_keys(&self) -> &'static [&'static str] {
         &[]
     }
@@ -114,8 +117,22 @@ impl ResolvableNodes {
     }
 
     /// Adds `node` after the kinds added so far. It resolves after them.
+    ///
+    /// # Panics
+    ///
+    /// If a key of `node` is a section's and a kind owns the section's name as a top-level key,
+    /// or the reverse: `parts.bolts` and `parts`.
     pub fn with(mut self, node: Arc<dyn ResolvableNode>) -> Self {
         self.nodes.push(node);
+        let keys: Vec<&str> = self.properties_keys().collect();
+        for key in &keys {
+            if let Some(section) = section_of(key) {
+                assert!(
+                    !keys.contains(&section),
+                    "`{section}` is a top-level key and the section of `{key}`"
+                );
+            }
+        }
         self
     }
 

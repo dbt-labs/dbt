@@ -51,6 +51,11 @@ impl PropertiesFile {
     /// anything else is an error, and the file is not read. A key that dbt doesn't read is
     /// reported as unused, and the rest of the file is still read. A key in `ignored_keys` is
     /// neither read nor reported here: the file only keeps that it has it.
+    ///
+    /// A key may be a section's: `section.key` is the list under `key` in the top-level mapping
+    /// `section`. A key of the section that dbt doesn't read is reported as unused, as
+    /// `section.key`. A section whose keys are all in `ignored_keys` is ignored as a whole, as
+    /// `section`.
     pub(crate) fn read(
         input: &str,
         path: &Path,
@@ -85,21 +90,42 @@ impl PropertiesFile {
                     file.ignored_keys.push(name.to_string());
                 }
                 Some(name) if list_keys.contains(&name) => {
+                    file.read_items(name.to_string(), key, value)?;
+                }
+                Some(name) if has_section(list_keys, name) => {
                     let name = name.to_string();
-                    let items = match value {
-                        Value::Null(..) => None,
-                        Value::Sequence(items, ..) => Some(items),
-                        // A tagged list, or what is not a list.
-                        value => typed_key(key, value)?,
-                    };
-                    if let Some(items) = items {
-                        if let Some(item) = items.iter().find(|item| !is_entry(item)) {
-                            return Err(not_an_entry(&name, item));
+                    // A tag on the section's mapping is not read, as on the file's.
+                    let mut value = value;
+                    while let Value::Tagged(tagged, ..) = value {
+                        value = tagged.value;
+                    }
+                    let section = match value {
+                        Value::Null(..) => continue,
+                        Value::Mapping(section, ..) => section,
+                        // What is not a mapping is an error that names the section.
+                        value => {
+                            typed_key::<BTreeMap<String, Value>>(key, value)?;
+                            continue;
                         }
-                        file.items.insert(name, items);
+                    };
+                    for (key, value) in section {
+                        let full = format!("{name}.{}", key.as_str().unwrap_or_default());
+                        if list_keys.contains(&full.as_str()) {
+                            file.read_items(full, key, value)?;
+                        } else if ignored_keys.contains(&full.as_str()) {
+                            file.ignored_keys.push(full);
+                        } else {
+                            unused.push((key, full));
+                        }
                     }
                 }
-                Some(_) => unused.push(key),
+                Some(name) if has_section(ignored_keys, name) => {
+                    file.ignored_keys.push(name.to_string());
+                }
+                Some(name) => {
+                    let name = name.to_string();
+                    unused.push((key, name));
+                }
                 // A key that is not a string is an error.
                 None => {
                     let mut entry = Mapping::new();
@@ -108,11 +134,27 @@ impl PropertiesFile {
                 }
             }
         }
-        for key in unused {
-            let path = key.as_str().unwrap_or_default();
-            emit_strict_parse_error(*unused_key_error(&key, path), dependency_package_name);
+        for (key, path) in unused {
+            emit_strict_parse_error(*unused_key_error(&key, &path), dependency_package_name);
         }
         Ok(file)
+    }
+
+    /// Reads the list `value`, under the key `key`, as the items of `name`.
+    fn read_items(&mut self, name: String, key: Value, value: Value) -> FsResult<()> {
+        let items = match value {
+            Value::Null(..) => None,
+            Value::Sequence(items, ..) => Some(items),
+            // A tagged list, or what is not a list.
+            value => typed_key(key, value)?,
+        };
+        if let Some(items) = items {
+            if let Some(item) = items.iter().find(|item| !is_entry(item)) {
+                return Err(not_an_entry(&name, item));
+            }
+            self.items.insert(name, items);
+        }
+        Ok(())
     }
 
     /// Whether the file has a list under `key`, even an empty one.
@@ -597,7 +639,7 @@ pub(crate) async fn index_properties(
         .await?;
     }
     for key in ignored_keys_found {
-        if let Some(flag) = off_keys.get(key.as_str()) {
+        if let Some(flag) = off_flag(off_keys, &key) {
             emit_warn_log_message(
                 ErrorCode::ExperimentalNotEnabled,
                 format!(
@@ -621,6 +663,29 @@ fn typed_key<T: DeserializeOwned>(key: Value, value: Value) -> FsResult<T> {
         .into_values()
         .next()
         .expect("a mapping with one key is typed as one value"))
+}
+
+/// The section of `key`, if it is a section's key: `section` for `section.key`.
+pub(crate) fn section_of(key: &str) -> Option<&str> {
+    key.split_once('.').map(|(section, _)| section)
+}
+
+/// Whether one of `keys` is a key of the section `name`: `name.<key>`.
+fn has_section(keys: &[&str], name: &str) -> bool {
+    keys.iter().any(|key| section_of(key) == Some(name))
+}
+
+/// The flag that turns on the kind that owns `key`, a key of `off_keys`, or a key of the section
+/// `key`.
+fn off_flag(
+    off_keys: &BTreeMap<&'static str, &'static FlagDef>,
+    key: &str,
+) -> Option<&'static FlagDef> {
+    off_keys.get(key).copied().or_else(|| {
+        off_keys
+            .iter()
+            .find_map(|(off, flag)| (section_of(off) == Some(key)).then_some(*flag))
+    })
 }
 
 /// Whether `item`, in the list of a top-level key, can be an entry: a mapping.
@@ -1001,5 +1066,130 @@ mod tests {
         let file = read("unknown: 1\nmodels: []\n").unwrap();
         assert!(file.has_items("models"));
         assert!(!file.has_items("unknown"));
+    }
+
+    /// Reads `input` with the section keys `parts.bolts` and `parts.nuts`: the ones in `off` are
+    /// ignored.
+    fn read_section(input: &str, off: &[&str]) -> FsResult<PropertiesFile> {
+        let list_keys: Vec<&str> = ["parts.bolts", "parts.nuts"]
+            .into_iter()
+            .filter(|key| !off.contains(key))
+            .collect();
+        PropertiesFile::read(
+            input,
+            Path::new("models/schema.yml"),
+            Path::new("/project/models/schema.yml"),
+            None,
+            &list_keys,
+            off,
+        )
+    }
+
+    #[test]
+    fn a_section_key_is_the_list_under_a_key_of_a_top_level_mapping() -> FsResult<()> {
+        let mut file = read_section(
+            "parts:\n  bolts:\n    - name: m4\n  nuts: []\n  washers:\n    - name: w\n",
+            &[],
+        )?;
+        assert!(file.has_items("parts.bolts"));
+        assert!(file.has_items("parts.nuts"));
+        // Not a key anything reads: reported, and not read.
+        assert!(!file.has_items("parts.washers"));
+        assert!(!file.has_items("parts"));
+        let location = PropertiesLocation {
+            file: 0,
+            key: "parts.bolts",
+            item: 0,
+            part: 0,
+        };
+        let bolt = file.take_item(&location);
+        assert_eq!(bolt.get("name").and_then(Value::as_str), Some("m4"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_section_is_a_mapping_of_lists() -> FsResult<()> {
+        assert!(read_section("parts:\n", &[])?.items.is_empty());
+        // A tag on the section is not read.
+        assert!(read_section("parts: !tag\n  bolts: []\n", &[])?.has_items("parts.bolts"));
+        assert!(read_section("parts: []\n", &[]).is_err());
+        assert!(read_section("parts:\n  bolts: m4\n", &[]).is_err());
+        assert!(read_section("parts:\n  bolts:\n    - m4\n", &[]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_section_whose_keys_are_all_ignored_is_ignored_as_a_whole() -> FsResult<()> {
+        // Whatever it holds: it is not typed.
+        let file = read_section("parts: 1\n", &["parts.bolts", "parts.nuts"])?;
+        assert_eq!(file.ignored_keys, ["parts"]);
+        assert!(file.items.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn an_ignored_key_of_a_section_that_is_read_is_kept_by_its_own_name() -> FsResult<()> {
+        let file = read_section(
+            "parts:\n  bolts:\n    - name: m4\n  nuts: 1\n",
+            &["parts.nuts"],
+        )?;
+        assert_eq!(file.ignored_keys, ["parts.nuts"]);
+        assert!(file.has_items("parts.bolts"));
+        assert!(!file.has_items("parts.nuts"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_flag_of_an_ignored_section_is_the_flag_of_its_keys() {
+        let flag = dbt_flags::ALL[0];
+        let off_keys = BTreeMap::from([("parts.bolts", flag), ("gizmo", flag)]);
+        assert!(off_flag(&off_keys, "parts.bolts").is_some());
+        assert!(off_flag(&off_keys, "parts").is_some());
+        assert!(off_flag(&off_keys, "gizmo").is_some());
+        assert!(off_flag(&off_keys, "part").is_none());
+        assert!(off_flag(&off_keys, "parts.nuts").is_none());
+    }
+
+    /// A kind that owns the keys it is given.
+    struct Owns(&'static [&'static str]);
+
+    #[async_trait::async_trait]
+    impl ResolvableNode for Owns {
+        fn properties_keys(&self) -> &'static [&'static str] {
+            self.0
+        }
+
+        async fn resolve(
+            &self,
+            _ctx: &mut crate::resolve::resolvable_node::ResolveCtx<'_>,
+        ) -> FsResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn kinds_own_the_keys_of_one_section() {
+        use crate::resolve::resolvable_node::ResolvableNodes;
+        let keys: Vec<&str> = ResolvableNodes::dbt()
+            .with(Arc::new(Owns(&["parts.bolts"])))
+            .with(Arc::new(Owns(&["parts.nuts", "gizmo"])))
+            .properties_keys()
+            .filter(|key| section_of(key).is_some())
+            .collect();
+        assert_eq!(keys, ["parts.bolts", "parts.nuts"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "`models` is a top-level key and the section of `models.extras`")]
+    fn a_section_cannot_be_a_top_level_key() {
+        use crate::resolve::resolvable_node::ResolvableNodes;
+        let _ = ResolvableNodes::dbt().with(Arc::new(Owns(&["models.extras"])));
+    }
+
+    #[test]
+    #[should_panic(expected = "`parts` is a top-level key and the section of `parts.bolts`")]
+    fn a_kind_cannot_own_a_section_and_its_name() {
+        use crate::resolve::resolvable_node::ResolvableNodes;
+        let _ = ResolvableNodes::dbt().with(Arc::new(Owns(&["parts.bolts", "parts"])));
     }
 }
