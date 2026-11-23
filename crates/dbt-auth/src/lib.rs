@@ -17,6 +17,7 @@ mod databricks;
 mod duckdb;
 mod exasol;
 mod lake_compute;
+mod motherduck;
 mod postgres;
 mod redshift;
 mod salesforce;
@@ -88,7 +89,7 @@ pub fn auth_for_backend_with_warnings(
         Backend::Athena => Box::new(athena::AthenaAuth::new(warning_printer)),
         Backend::Exasol => Box::new(exasol::ExasolAuth::new(warning_printer)),
         Backend::Trino => unimplemented!("trino backend authentication"),
-        Backend::MotherDuck => unimplemented!("MotherDuck backend authentication"),
+        Backend::MotherDuck => Box::new(motherduck::MotherDuckAuth::new(warning_printer)),
         Backend::Generic { .. } => unimplemented!("generic backend authentication"),
     }
 }
