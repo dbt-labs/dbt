@@ -11,3 +11,4 @@ pub mod context;
 pub mod dbt_csv_mem_table;
 pub mod delayed_table;
 pub mod in_memory_providers;
+pub mod schema_only_table;
