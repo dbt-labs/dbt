@@ -111,6 +111,20 @@ pub static USE_V2_EMPTY_SQL_REWRITE: FlagDef = FlagDef {
     docs_url: None,
 };
 
+/// Models written in MetricFlow's semantic SQL.
+pub static METRICFLOW_V2: FlagDef = FlagDef {
+    name: "metricflow_v2",
+    description: "MetricFlow SQL: models written in MetricFlow's semantic SQL.",
+    stage: Stage::Preview,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
 /// Every flag declared in this crate.
 pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
@@ -120,6 +134,7 @@ pub static ALL: &[&FlagDef] = &[
     &LOCK_WITH_STATE,
     &LAKECOMPUTE_PROFILE_SETUP,
     &USE_V2_EMPTY_SQL_REWRITE,
+    &METRICFLOW_V2,
 ];
 
 #[cfg(test)]

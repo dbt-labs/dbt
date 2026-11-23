@@ -445,6 +445,15 @@ pub struct ProjectModelConfig {
         deserialize_with = "bool_or_string_bool"
     )]
     pub use_anonymous_sproc: Option<bool>,
+    /// Whether the models are written in MetricFlow SQL. It is read only while the
+    /// `metricflow_v2` flag is on, and is not in the published JSON schema.
+    #[serde(
+        default,
+        rename = "+metricflow",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    #[schemars(skip)]
+    pub metricflow: Option<bool>,
     #[serde(rename = "+partition_by")]
     pub partition_by: Option<PartitionConfig>,
     /// Exasol: PARTITION BY column list (name matches the Python dbt-exasol adapter)
@@ -808,6 +817,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.secrets.is_some()
             || self.external_access_integrations.is_some()
             || self.use_anonymous_sproc.is_some()
+            || self.metricflow.is_some()
             || self.partition_by.is_some()
             || self.partition_expiration_days.is_some()
             || self.partitions.is_some()
@@ -934,6 +944,15 @@ pub struct ModelConfig {
     pub external_access_integrations: Option<StringOrArrayOfStrings>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub use_anonymous_sproc: Option<bool>,
+    /// Whether the model is written in MetricFlow SQL. It is read only while the `metricflow_v2`
+    /// flag is on, and is not in the published JSON schema.
+    #[serde(
+        default,
+        deserialize_with = "bool_or_string_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(skip)]
+    pub metricflow: Option<bool>,
     pub contract: Option<DbtContract>,
     #[serde(default, deserialize_with = "event_time_or_map_to_string")]
     pub event_time: Option<String>,
@@ -1047,6 +1066,7 @@ impl From<ProjectModelConfig> for ModelConfig {
             secrets: config.secrets,
             external_access_integrations: config.external_access_integrations,
             use_anonymous_sproc: config.use_anonymous_sproc,
+            metricflow: config.metricflow,
             persist_docs: config.persist_docs,
             post_hook: config.post_hook,
             pre_hook: config.pre_hook,
@@ -1268,6 +1288,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             secrets: config.secrets,
             external_access_integrations: config.external_access_integrations,
             use_anonymous_sproc: config.use_anonymous_sproc,
+            metricflow: config.metricflow,
             persist_docs: config.persist_docs,
             post_hook: config.post_hook,
             pre_hook: config.pre_hook,
@@ -1587,6 +1608,8 @@ impl ModelConfig {
         let sql_header_eq = self.sql_header == other.sql_header;
         let location_eq = self.location == other.location;
         let predicates_eq = self.predicates == other.predicates;
+        // A model without the config is not written in MetricFlow SQL, as one with `false`.
+        let metricflow_eq = self.metricflow.unwrap_or(false) == other.metricflow.unwrap_or(false);
         let warehouse_config_eq = same_warehouse_config(
             &self.__warehouse_specific_config__,
             &other.__warehouse_specific_config__,
@@ -1629,6 +1652,7 @@ impl ModelConfig {
             && sql_header_eq
             && location_eq
             && predicates_eq
+            && metricflow_eq
             && warehouse_config_eq;
 
         if !result {
@@ -1895,6 +1919,14 @@ impl ModelConfig {
                         Some((
                             format!("{:?}", &self.predicates),
                             format!("{:?}", &other.predicates),
+                        )),
+                    ),
+                    (
+                        "metricflow",
+                        metricflow_eq,
+                        Some((
+                            format!("{:?}", &self.metricflow),
+                            format!("{:?}", &other.metricflow),
                         )),
                     ),
                     ("warehouse_config", warehouse_config_eq, None),

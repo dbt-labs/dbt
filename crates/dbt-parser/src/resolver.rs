@@ -5,11 +5,13 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_GENERIC_TESTS_DIR_NAME;
-use dbt_common::io_args::{FsCommand, multi_adapter_enabled};
+use dbt_common::io_args::{FsCommand, multi_adapter_enabled, project_flag_bool};
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::path::DbtPath;
 use dbt_common::stdfs;
-use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
+use dbt_common::tracing::dbt_emit::{
+    emit_error_log_from_fs_error, emit_strict_parse_error, emit_warn_log_from_fs_error,
+};
 use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_jinja_utils::JinjaFactory;
@@ -477,6 +479,33 @@ pub async fn resolve(
     // Validate function configuration against per-adapter capabilities:
     // JS UDF language support, JS-aggregate restrictions, default arguments.
     validate_function_config(&nodes, adapter_type);
+
+    // `metricflow` is a config of models only while `metricflow_v2` is on. While it is off, it
+    // is a config that nothing reads, on whichever of a model's config sources it is set.
+    if !dbt_flags::METRICFLOW_V2
+        .resolve_with_project(&project_flag_bool(dbt_state.root_project().flags.as_ref()))
+        .value
+    {
+        for model in nodes.models.values_mut() {
+            if model.deprecated_config.metricflow.is_none() {
+                continue;
+            }
+            let model = Arc::make_mut(model);
+            model.deprecated_config.metricflow = None;
+            let package_name = &model.__common_attr__.package_name;
+            emit_strict_parse_error(
+                *fs_err!(
+                    code => ErrorCode::UnusedConfigKey,
+                    loc => model.__common_attr__.original_file_path.to_path_buf(),
+                    "Ignored unexpected config `metricflow` of model '{}': the `{}` feature \
+                     flag is off",
+                    model.__common_attr__.name,
+                    dbt_flags::METRICFLOW_V2.name
+                ),
+                (package_name != root_project_name).then_some(package_name.as_str()),
+            );
+        }
+    }
 
     resolver_hooks.post_resolve(
         &arg.io,
