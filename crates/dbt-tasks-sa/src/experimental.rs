@@ -45,8 +45,7 @@ use minijinja::listener::RenderingEventListener;
 use minijinja::value::{Object, OverlayMap};
 
 pub use dbt_parser::experimental::{
-    ExperimentalDiagnostics, ExperimentalEntry, ExperimentalError, ExperimentalNodeDef,
-    ExperimentalPackage,
+    ExperimentalDiagnostics, ExperimentalError, InjectedNodeDef, KindEntries, KindEntry,
 };
 pub use dbt_parser::resolve::resolvable_node::{
     Extension, ExtensionSet, Extensions, IndexCtx, IndexedName, LinkCtx, NoExtension, NoExtensions,
@@ -61,7 +60,7 @@ pub use dbt_parser::resolve::resolvable_node::{
 /// An experimental node runs only when it is selected directly, and only in its Run phase: it has
 /// nothing to render or analyze.
 #[async_trait]
-pub trait ExperimentalNode: ResolvableNode {
+pub trait Experimental: ResolvableNode {
     /// The kind of node the experimental adds, e.g. `widget`: the prefix of its nodes' unique ids
     /// (`<experimental type>.<package>.<name>`), and a value `resource_type:` selects.
     fn experimental_type(&self) -> &'static str;
@@ -654,7 +653,7 @@ impl Task for ExperimentalTask {
 /// The experimentals an invocation runs with.
 #[derive(Clone, Default)]
 pub struct Experimentals {
-    experimentals: Vec<Arc<dyn ExperimentalNode>>,
+    experimentals: Vec<Arc<dyn Experimental>>,
     /// The kinds of node that have nothing to run: [`Self::with_kind`].
     kinds: Vec<Arc<dyn ResolvableNode>>,
     /// The kinds of the nodes that the experimentals and the kinds add.
@@ -671,7 +670,7 @@ impl Experimentals {
     /// If an experimental's type or one of its keys isn't a lowercase identifier (or two, for a
     /// key of a section: `section.key`) or names something dbt itself uses, if two experimentals have the same type or key, or if an
     /// experimental has no flag, or one that is on by default or is a behavior flag.
-    pub fn new(experimentals: Vec<Arc<dyn ExperimentalNode>>) -> Self {
+    pub fn new(experimentals: Vec<Arc<dyn Experimental>>) -> Self {
         let mut registry = Self::default();
         for experimental in &experimentals {
             let experimental_type = experimental.experimental_type();
@@ -742,7 +741,7 @@ impl Experimentals {
         self
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn ExperimentalNode>> {
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Experimental>> {
         self.experimentals.iter()
     }
 
@@ -764,7 +763,7 @@ impl Experimentals {
     }
 
     /// The experimental that owns `command`, if one does.
-    pub fn command_owner(&self, command: FsCommand) -> Option<&Arc<dyn ExperimentalNode>> {
+    pub fn command_owner(&self, command: FsCommand) -> Option<&Arc<dyn Experimental>> {
         let FsCommand::Extension(name) = command else {
             return None;
         };
@@ -1018,7 +1017,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ExperimentalNode for WithKeys {
+    impl Experimental for WithKeys {
         fn experimental_type(&self) -> &'static str {
             WIDGET
         }
@@ -1031,7 +1030,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ExperimentalNode for TestExperimental {
+    impl Experimental for TestExperimental {
         fn experimental_type(&self) -> &'static str {
             self.0
         }
@@ -1080,7 +1079,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ExperimentalNode for CountingExperimental {
+    impl Experimental for CountingExperimental {
         fn experimental_type(&self) -> &'static str {
             self.experimental_type
         }
@@ -1177,7 +1176,7 @@ mod tests {
                 .iter()
                 .map(|experimental_type| {
                     Arc::new(TestExperimental(experimental_type, Some(&TEST_FLAG)))
-                        as Arc<dyn ExperimentalNode>
+                        as Arc<dyn Experimental>
                 })
                 .collect(),
         )
@@ -1462,7 +1461,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ExperimentalNode for Named {
+    impl Experimental for Named {
         fn experimental_type(&self) -> &'static str {
             self.0
         }

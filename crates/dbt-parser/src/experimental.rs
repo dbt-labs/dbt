@@ -13,8 +13,8 @@
 //! ```
 //!
 //! When it resolves a package, it takes the entries under its keys
-//! ([`ResolveCtx::experimental_package`]), decides what each one deserializes to, its `config:`
-//! included, and gives back the nodes they define ([`ResolveCtx::add_experimental_nodes`]). dbt
+//! ([`ResolveCtx::take_entries`]), decides what each one deserializes to, its `config:`
+//! included, and gives back the nodes they define ([`ResolveCtx::add_injected_nodes`]). dbt
 //! resolves each node's `depends_on` with the project's own `ref()`, `source()` and `metric()`
 //! rules. The nodes are of the kind's own type
 //! ([`InjectedNodeType`](dbt_schemas::schemas::InjectedNodeType)): dbt reads only their common
@@ -47,23 +47,23 @@ use crate::utils::get_node_fqn;
 
 /// What one package gives a kind of node, by key: the entries under each of the kind's top-level
 /// keys in the package's properties files.
-pub struct ExperimentalPackage<'a> {
+pub struct KindEntries<'a> {
     /// The package's name.
     pub package_name: &'a str,
     /// The package's root directory, which the paths of its entries are relative to. Empty for
     /// an [unrendered](Self::unrendered) package.
     pub package_root: &'a Path,
-    pub(crate) entries: BTreeMap<&'static str, Vec<ExperimentalEntry>>,
+    pub(crate) entries: BTreeMap<&'static str, Vec<KindEntry>>,
     /// What entries are rendered with; `None` reads them as written.
     pub(crate) jinja: Option<(&'a JinjaEnv, &'a BTreeMap<String, MinijinjaValue>)>,
 }
 
-impl<'a> ExperimentalPackage<'a> {
+impl<'a> KindEntries<'a> {
     /// A package whose entries are read as written, without rendering Jinja: for the unit tests
     /// of a kind of node.
     pub fn unrendered(
         package_name: &'a str,
-        entries: BTreeMap<&'static str, Vec<ExperimentalEntry>>,
+        entries: BTreeMap<&'static str, Vec<KindEntry>>,
     ) -> Self {
         Self {
             package_name,
@@ -75,7 +75,7 @@ impl<'a> ExperimentalPackage<'a> {
 
     /// The entries under the top-level key `key`, one per name, ordered by name. `key` is one of
     /// the kind's keys.
-    pub fn entries(&self, key: &str) -> &[ExperimentalEntry] {
+    pub fn entries(&self, key: &str) -> &[KindEntry] {
         self.entries.get(key).map_or(&[], Vec::as_slice)
     }
 
@@ -89,7 +89,7 @@ impl<'a> ExperimentalPackage<'a> {
     /// with [`Self::deserialize_value`] once its variant is known.
     pub fn deserialize<T: DeserializeOwned>(
         &self,
-        entry: &ExperimentalEntry,
+        entry: &KindEntry,
     ) -> Result<T, ExperimentalError> {
         self.render(entry.value.clone(), &entry.path)
     }
@@ -149,7 +149,7 @@ impl<'a> ExperimentalPackage<'a> {
 
 /// One entry under one of a kind's top-level keys in a properties file.
 #[derive(Debug, Clone)]
-pub struct ExperimentalEntry {
+pub struct KindEntry {
     /// The entry's `name`.
     pub name: String,
     /// The properties file, relative to its package's root.
@@ -158,7 +158,7 @@ pub struct ExperimentalEntry {
     pub value: dbt_yaml::Value,
 }
 
-impl ExperimentalEntry {
+impl KindEntry {
     /// Where `value`, the entry or a value in it, is in its file.
     pub fn location_of(&self, value: &dbt_yaml::Value) -> CodeLocationWithFile {
         let start = &value.span().start;
@@ -171,10 +171,10 @@ impl ExperimentalEntry {
     }
 }
 
-/// A node an experimental defines.
+/// A node that a kind defines: an injected node.
 #[derive(Debug, Default)]
-pub struct ExperimentalNodeDef {
-    /// The node's name. Its unique id is `<experimental type>.<package>.<name>`.
+pub struct InjectedNodeDef {
+    /// The node's name. Its unique id is `<kind>.<package>.<name>`.
     pub name: String,
     /// The properties file that defines the node, relative to its package's root.
     pub path: PathBuf,
@@ -274,16 +274,16 @@ impl ResolveCtx<'_> {
     /// package's properties.
     ///
     /// Two entries under the same key with the same name are reported, and neither is given.
-    pub fn experimental_package(&mut self, keys: &[&'static str]) -> ExperimentalPackage<'_> {
+    pub fn take_entries(&mut self, keys: &[&'static str]) -> KindEntries<'_> {
         let package_name = self.package_name;
         let entries = keys
             .iter()
             .map(|key| {
                 let by_name = self.properties.take_entries(key);
-                (*key, experimental_entries(key, package_name, by_name))
+                (*key, kind_entries(key, package_name, by_name))
             })
             .collect();
-        ExperimentalPackage {
+        KindEntries {
             package_name,
             package_root: &self.package.package_root_path,
             entries,
@@ -299,33 +299,33 @@ impl ResolveCtx<'_> {
     ///
     /// `defs` that are an error give no node, and the error is reported. A node that is defined
     /// twice is reported and gets no second node.
-    pub fn add_experimental_nodes<T: InjectedNodeType, D>(
+    pub fn add_injected_nodes<T: InjectedNodeType, D>(
         &mut self,
-        experimental_type: &str,
-        defs: Result<Vec<(ExperimentalNodeDef, D)>, ExperimentalError>,
+        kind: &str,
+        defs: Result<Vec<(InjectedNodeDef, D)>, ExperimentalError>,
         diagnostics: ExperimentalDiagnostics,
         node: impl Fn(CommonAttributes, NodeBaseAttributes, D) -> T,
     ) -> FsResult<()> {
-        report(experimental_type, diagnostics);
+        report(kind, diagnostics);
         let defs = match defs {
             Ok(defs) => defs,
             Err(error) => {
                 emit_error_log_from_fs_error(
-                    *error.into_fs_error(experimental_type, ErrorCode::ExperimentalError),
+                    *error.into_fs_error(kind, ErrorCode::ExperimentalError),
                 );
                 return Ok(());
             }
         };
         let package_name = self.package_name;
         for (def, data) in defs {
-            let unique_id = format!("{experimental_type}.{package_name}.{}", def.name);
+            let unique_id = format!("{kind}.{package_name}.{}", def.name);
             if self.nodes.injected.contains_key(&unique_id)
                 || self.disabled_nodes.injected.contains_key(&unique_id)
             {
                 emit_error_log_from_fs_error(*fs_err!(
                     code => ErrorCode::InvalidConfig,
                     loc => def.path.clone(),
-                    "There is more than one {experimental_type} named '{}' in package \
+                    "There is more than one {kind} named '{}' in package \
                      '{package_name}'",
                     def.name
                 ));
@@ -335,7 +335,7 @@ impl ResolveCtx<'_> {
             let checksum = DbtChecksum::hash(
                 &stdfs::read(self.package.package_root_path.join(&def.path)).unwrap_or_default(),
             );
-            let (common, base) = self.node_attributes(experimental_type, def, checksum)?;
+            let (common, base) = self.node_attributes(kind, def, checksum)?;
             let nodes = if base.enabled {
                 &mut self.nodes
             } else {
@@ -352,12 +352,12 @@ impl ResolveCtx<'_> {
     /// project's own rules.
     fn node_attributes(
         &self,
-        experimental_type: &str,
-        def: ExperimentalNodeDef,
+        kind: &str,
+        def: InjectedNodeDef,
         checksum: DbtChecksum,
     ) -> FsResult<(CommonAttributes, NodeBaseAttributes)> {
         let package_name = self.package_name;
-        let unique_id = format!("{experimental_type}.{package_name}.{}", def.name);
+        let unique_id = format!("{kind}.{package_name}.{}", def.name);
         let fqn = get_node_fqn(
             package_name,
             def.path.clone(),
@@ -412,11 +412,11 @@ impl ResolveCtx<'_> {
 }
 
 /// The entries under one key, reporting names that appear more than once.
-fn experimental_entries(
+fn kind_entries(
     key: &str,
     package_name: &str,
     by_name: BTreeMap<String, PropertiesEntry>,
-) -> Vec<ExperimentalEntry> {
+) -> Vec<KindEntry> {
     let mut entries = Vec::new();
     for (name, mpe) in by_name {
         if mpe.schema_value.is_null() {
@@ -436,7 +436,7 @@ fn experimental_entries(
             ));
             continue;
         }
-        entries.push(ExperimentalEntry {
+        entries.push(KindEntry {
             name,
             path: mpe.relative_path,
             value: mpe.schema_value,
@@ -446,16 +446,12 @@ fn experimental_entries(
 }
 
 /// Reports what a kind of node reported, under the experimental codes.
-fn report(experimental_type: &str, diagnostics: ExperimentalDiagnostics) {
+fn report(kind: &str, diagnostics: ExperimentalDiagnostics) {
     for error in diagnostics.errors {
-        emit_error_log_from_fs_error(
-            *error.into_fs_error(experimental_type, ErrorCode::ExperimentalError),
-        );
+        emit_error_log_from_fs_error(*error.into_fs_error(kind, ErrorCode::ExperimentalError));
     }
     for warning in diagnostics.warnings {
-        emit_warn_log_from_fs_error(
-            *warning.into_fs_error(experimental_type, ErrorCode::ExperimentalWarning),
-        );
+        emit_warn_log_from_fs_error(*warning.into_fs_error(kind, ErrorCode::ExperimentalWarning));
     }
 }
 
@@ -472,15 +468,13 @@ mod tests {
             size: dbt_yaml::Value,
         }
         let value: dbt_yaml::Value = dbt_yaml::from_str("name: bolt\nsize: \"{{ 3 }}\"\n").unwrap();
-        let entry = ExperimentalEntry {
+        let entry = KindEntry {
             name: "bolt".to_string(),
             path: PathBuf::from("models/parts.yml"),
             value,
         };
-        let package = ExperimentalPackage::unrendered(
-            "widgets",
-            BTreeMap::from([("part", vec![entry.clone()])]),
-        );
+        let package =
+            KindEntries::unrendered("widgets", BTreeMap::from([("part", vec![entry.clone()])]));
         let part: Part = package.deserialize(&package.entries("part")[0]).unwrap();
         assert_eq!(part.name, "bolt");
         let size: String = package.deserialize_value(&part.size, &entry.path).unwrap();
