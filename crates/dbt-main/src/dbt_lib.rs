@@ -1357,6 +1357,18 @@ impl<'a> AllPhasesExecutor<'a> {
             arg.write_index = true;
             arg.write_index_implied = true;
         }
+        // Same for the information schema default, but only for a retry: other callers that
+        // reach here with a synthesized command, such as the LSP, do not take it.
+        if self.arg.command_entrypoint == FsCommand::Retry
+            && dbt_clap_core::info_schema_is_default_for(self.arg.command)
+            && !self.arg.generate_info_schema
+            && self.cli.common_args.defaults_info_schema()
+        {
+            let arg = self.arg.to_mut();
+            arg.write_metadata = true;
+            arg.generate_info_schema = true;
+            arg.generate_info_schema_implied = true;
+        }
 
         let (mut compilation, jinja_env, compilation_cache_changes) =
             self.load_and_resolve_state(token).await?;
@@ -1374,16 +1386,19 @@ impl<'a> AllPhasesExecutor<'a> {
         // `--warn-error` it would fail the export. The export prints its own lineage hint,
         // which names the command that would produce it.
         //
-        // Nor when the index came from a command default (`write_index_implied`), for exactly
-        // the same reason: a plain `dbt build` never mentioned the index, so telling it which
-        // flags would enrich one is noise on every invocation, and fails under `--warn-error`.
-        let advise_index_flags = self.arg.write_metadata
-            && matches!(
-                self.arg.command,
-                FsCommand::Compile | FsCommand::Build | FsCommand::Run
-            )
-            && self.arg.command_entrypoint != FsCommand::Docs
-            && !self.arg.write_index_implied;
+        // Nor when the index or information schema came from a command default, for exactly
+        // the same reason: a plain `dbt build` never mentioned them, so telling it which
+        // flags would enrich them is noise on every invocation, and fails under `--warn-error`.
+        let explicit_index = self.arg.write_index && !self.arg.write_index_implied;
+        let explicit_info_schema =
+            self.arg.generate_info_schema && !self.arg.generate_info_schema_implied;
+        let advise_index_flags =
+            (explicit_index || explicit_info_schema || self.cli.common_args.write_metadata)
+                && matches!(
+                    self.arg.command,
+                    FsCommand::Compile | FsCommand::Build | FsCommand::Run
+                )
+                && self.arg.command_entrypoint != FsCommand::Docs;
         let strict_static_analysis = self
             .arg
             .static_analysis
@@ -1391,7 +1406,7 @@ impl<'a> AllPhasesExecutor<'a> {
         // Name the public flag when the user passed one, so the advice is actionable.
         // `--write-index` / `--write-metadata` are hidden; still name them if that is
         // what the invocation actually set.
-        let advised_flag = if self.arg.generate_info_schema {
+        let advised_flag = if explicit_info_schema {
             "--generate-info-schema"
         } else if self.arg.write_index {
             "--write-index"

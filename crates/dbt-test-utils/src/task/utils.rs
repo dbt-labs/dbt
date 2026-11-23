@@ -29,8 +29,11 @@ use dbt_common::{
     tokiofs, unexpected_err,
 };
 use dbt_features::feature_stack::FeatureStack;
-use dbt_telemetry::CallTrace;
-use dbt_tracing::{SpanStartInfo, data_provider::DataProvider, layer::TelemetryMiddleware};
+use dbt_telemetry::{CallTrace, LogMessage};
+use dbt_tracing::{
+    LogRecordInfo, SeverityNumber, SpanStartInfo, data_provider::DataProvider,
+    layer::TelemetryMiddleware,
+};
 
 // Pre-compiled regex patterns for optimal performance
 static SCHEMA_PATTERN: LazyLock<Regex> =
@@ -436,6 +439,25 @@ impl TelemetryMiddleware for NoiseFilter {
             return None;
         }
         Some(span)
+    }
+
+    fn on_log_record(
+        &self,
+        record: LogRecordInfo,
+        _data_provider: &mut DataProvider<'_>,
+    ) -> Option<LogRecordInfo> {
+        // The ADBC driver's debug line carries its version, so every driver bump would change
+        // the goldens. A DuckDB found on the system skips the line altogether.
+        let driver_resolved = record.severity_number == SeverityNumber::Debug
+            && record
+                .attributes
+                .downcast_ref::<LogMessage>()
+                .is_some_and(|log| log.code.is_none())
+            && record.body.contains(" driver resolved: ");
+        if driver_resolved {
+            return None;
+        }
+        Some(record)
     }
 }
 

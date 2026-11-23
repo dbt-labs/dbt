@@ -500,8 +500,12 @@ impl<'a> CompilationPhasesExecutor<'a> {
         // parse-time gate queries. Stating it as its own condition rather than leaning on the
         // implied index is the point — `--no-write-index` must not decide whether a check runs,
         // and it did for as long as this was the index's write site alone.
+        //
+        // The information schema is built from the same epochs, so its default needs them
+        // for the same reason the index's does.
         if self.cli.common_args.effective_partial_parse()
             || self.arg.write_index
+            || self.arg.generate_info_schema
             || self.parse_time_checks_will_run(resolved_state)
         {
             let dbt_state = loaded_project.dbt_state();
