@@ -1,11 +1,12 @@
 //! Rewrites of the SQL a node renders to.
 
 use dbt_adapter_core::AdapterType;
-use dbt_common::FsResult;
+use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_jinja_utils::edit_mapping::SqlEdit;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 
 use crate::RunTasksArgs;
+use crate::metricflow::is_metricflow_sql;
 
 /// Rewrites the SQL a node renders to, before that SQL is compiled or run.
 pub trait SqlRewriter: Send + Sync {
@@ -26,7 +27,20 @@ pub trait SqlRewriter: Send + Sync {
     ) -> FsResult<Vec<SqlEdit>>;
 }
 
+/// The error of a rewriter that cannot expand the SQL of `node`, a model written in MetricFlow
+/// SQL ([`is_metricflow_sql`]).
+pub fn cannot_expand_metricflow_sql(node: &dyn InternalDbtNodeAttributes) -> Box<FsError> {
+    fs_err!(
+        ErrorCode::UnsupportedFusionFeature,
+        "'{}' is written in MetricFlow SQL (`metricflow: true`), which this build of dbt cannot \
+         expand",
+        node.common().name
+    )
+}
+
 /// Leaves the SQL as it rendered. `--empty` is applied where relations render.
+///
+/// It cannot expand MetricFlow SQL: a model written in it is an error.
 #[derive(Default)]
 pub struct DefaultSqlRewriter;
 
@@ -37,10 +51,13 @@ impl SqlRewriter for DefaultSqlRewriter {
 
     fn rewrite(
         &self,
-        _node: &dyn InternalDbtNodeAttributes,
+        node: &dyn InternalDbtNodeAttributes,
         _arg: &RunTasksArgs,
         _sql: &str,
     ) -> FsResult<Vec<SqlEdit>> {
+        if is_metricflow_sql(node) {
+            return Err(cannot_expand_metricflow_sql(node));
+        }
         Ok(Vec::new())
     }
 }

@@ -18,6 +18,7 @@ use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::TaskRunnerCtx;
+use dbt_tasks_core::metricflow::is_metricflow_sql;
 use dbt_tasks_core::task::run_blocking_task_operation_with_wait_parents;
 use dbt_telemetry::{CompiledCode, NodeType};
 use minijinja::Value as MinijinjaValue;
@@ -55,10 +56,13 @@ fn render_default(
 ) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     report_rendering_progress(node, ctx);
 
+    // What a model written in MetricFlow SQL compiles to depends on more than its file, so its
+    // compiled SQL is not taken from the cache.
     if let Some((rendered_sql_maybe_with_cte, macro_spans, reclassify_spans)) = ctx
         .inner
         .compiled_sql_cache
         .try_get_compiled_sql(&ctx.inner.arg.io, node.common())
+        .filter(|_| !is_metricflow_sql(node.as_ref()))
     {
         let config_map = Arc::new(convert_yml_to_scc_map(node.serialized_config()));
         emit_compiled_code(node, ctx, &rendered_sql_maybe_with_cte);
