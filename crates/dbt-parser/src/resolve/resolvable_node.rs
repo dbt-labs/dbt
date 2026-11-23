@@ -24,9 +24,9 @@ use crate::resolve::resolve_tests::resolve_data_tests::DataTests;
 use crate::resolve::resolve_tests::resolve_unit_tests::UnitTests;
 use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
-use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::project_flag_bool;
+use dbt_common::{CodeLocationWithFile, FsResult};
 use dbt_flags::FlagDef;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
@@ -77,6 +77,85 @@ pub trait ResolvableNode: Send + Sync {
     /// Resolves the kind's nodes of `ctx.package`, and adds them to `ctx.nodes` and
     /// `ctx.disabled_nodes`.
     async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()>;
+
+    /// Adds dependencies between the project's nodes that only the kind knows of
+    /// ([`LinkCtx::add_dependency`]). The default adds none.
+    ///
+    /// It runs once, after every package has resolved and every `ref()` and `source()` is a
+    /// dependency, and before the checks that read dependencies. The kinds link in the order
+    /// they resolve, and a kind sees the dependencies that the kinds before it added.
+    async fn link(&self, _ctx: &mut LinkCtx<'_>) -> FsResult<()> {
+        Ok(())
+    }
+}
+
+/// What a kind reads to link the project's nodes, and the dependencies it adds:
+/// [`ResolvableNode::link`].
+pub struct LinkCtx<'a> {
+    pub(crate) arg: &'a ResolveArgs,
+    pub(crate) dbt_state: &'a DbtState,
+    pub(crate) jinja_env: &'a JinjaEnv,
+    pub(crate) macros: &'a Macros,
+    pub(crate) root_runtime_config: &'a Arc<DbtRuntimeConfig>,
+    pub(crate) nodes: &'a Nodes,
+    pub(crate) dependencies: Vec<LinkedDependency>,
+}
+
+/// A dependency that a kind adds: `node` depends on `depends_on`.
+pub(crate) struct LinkedDependency {
+    pub(crate) node: String,
+    pub(crate) depends_on: String,
+    pub(crate) location: CodeLocationWithFile,
+}
+
+impl<'a> LinkCtx<'a> {
+    /// The project's enabled nodes, of every package and every kind, with their dependencies
+    /// as unique ids.
+    pub fn nodes(&self) -> &'a Nodes {
+        self.nodes
+    }
+
+    /// The arguments of the resolve.
+    pub fn arg(&self) -> &'a ResolveArgs {
+        self.arg
+    }
+
+    /// The project as it was loaded.
+    pub fn dbt_state(&self) -> &'a DbtState {
+        self.dbt_state
+    }
+
+    /// The Jinja environment that the project's nodes were resolved with.
+    pub fn jinja_env(&self) -> &'a JinjaEnv {
+        self.jinja_env
+    }
+
+    /// The project's macros.
+    pub fn macros(&self) -> &'a Macros {
+        self.macros
+    }
+
+    /// The root package's runtime config.
+    pub fn root_runtime_config(&self) -> &'a Arc<DbtRuntimeConfig> {
+        self.root_runtime_config
+    }
+
+    /// Makes the node `node` depend on the node `depends_on`, both by unique id. `location` is
+    /// where the dependency comes from, for an error that names it, such as a cycle.
+    ///
+    /// The dependency is as one that `ref()` gives: `depends_on` is selected by `+node`, runs
+    /// before `node`, and is in `node`'s `depends_on` in the manifest.
+    ///
+    /// Both must be enabled nodes of dbt's own kinds, and not the same node. A dependency that
+    /// isn't is not added: a node that a feature adds is not in the graph that selection and
+    /// `state:` read, so a dependency on one, or of one, would not be either.
+    pub fn add_dependency(&mut self, node: &str, depends_on: &str, location: CodeLocationWithFile) {
+        self.dependencies.push(LinkedDependency {
+            node: node.to_string(),
+            depends_on: depends_on.to_string(),
+            location,
+        });
+    }
 }
 
 /// The kinds of node a project resolves with, in the order they resolve. The items of a

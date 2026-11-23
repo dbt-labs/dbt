@@ -49,7 +49,7 @@ pub use dbt_parser::experimental::{
     ExperimentalPackage,
 };
 pub use dbt_parser::resolve::resolvable_node::{
-    Extension, ExtensionSet, Extensions, IndexCtx, IndexedName, NoExtension, NoExtensions,
+    Extension, ExtensionSet, Extensions, IndexCtx, IndexedName, LinkCtx, NoExtension, NoExtensions,
     ResolvableNode, ResolvableNodes, ResolveCtx,
 };
 

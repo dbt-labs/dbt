@@ -60,7 +60,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::resolve::properties_index::{PropertiesEntry, index_properties};
-use crate::resolve::resolvable_node::{EnabledNodes, ResolvableNodes, ResolveCtx};
+use crate::resolve::resolvable_node::{
+    EnabledNodes, LinkCtx, LinkedDependency, ResolvableNodes, ResolveCtx,
+};
 use crate::resolve::resolve_macros::apply_macro_patches;
 use crate::resolve::resolve_macros::probe_internal_macro_overrides;
 use crate::resolve::resolve_macros::resolve_docs_macros;
@@ -283,6 +285,7 @@ pub async fn resolve(
     let mut semantic_layer_spec_is_legacy = false;
     let mut test_name_truncations: HashMap<String, String> = HashMap::new();
     let all_macro_properties: BTreeMap<String, BTreeMap<String, PropertiesEntry>>;
+    let kinds = Arc::new(resolvable_nodes.enabled(dbt_state.root_project().flags.as_ref()));
 
     let (
         resolved_nodes,
@@ -306,7 +309,7 @@ pub async fn resolve(
         root_runtime_config.clone(),
         token,
         jinja_type_checking_event_listener_factory.clone(),
-        Arc::new(resolvable_nodes.enabled(dbt_state.root_project().flags.as_ref())),
+        Arc::clone(&kinds),
     )
     .await?;
     nodes.extend(resolved_nodes);
@@ -428,6 +431,23 @@ pub async fn resolve(
         &mut operations,
         &node_resolver,
     );
+    // Each kind adds the dependencies between nodes that only it knows of. They are read by
+    // the checks below as the ones above are.
+    for kind in kinds.on() {
+        let mut ctx = LinkCtx {
+            arg: &arg,
+            dbt_state: &dbt_state,
+            jinja_env: &jinja_env,
+            macros: &macros,
+            root_runtime_config: &root_runtime_config,
+            nodes: &nodes,
+            dependencies: Vec::new(),
+        };
+        kind.link(&mut ctx).await?;
+        let dependencies = ctx.dependencies;
+        add_linked_dependencies(&mut nodes, dependencies);
+    }
+
     for warning in microbatch_model_no_event_time_inputs_warnings(&nodes) {
         emit_warn_log_from_fs_error(warning);
     }
@@ -517,6 +537,40 @@ pub async fn resolve(
         },
         jinja_env,
     ))
+}
+
+/// Adds the dependencies that a kind's [`ResolvableNode::link`] gave to `nodes`, as the ones
+/// `ref()` and `source()` give.
+///
+/// A dependency is added if both nodes are enabled nodes of dbt's own kinds and are not the
+/// same node. A node that a feature adds is not in the graph that selection and `state:` read.
+fn add_linked_dependencies(nodes: &mut Nodes, dependencies: Vec<LinkedDependency>) {
+    for LinkedDependency {
+        node,
+        depends_on,
+        location,
+    } in dependencies
+    {
+        if node == depends_on
+            || !nodes.contains(&depends_on)
+            || nodes.injected.contains_key(&depends_on)
+            || nodes.injected.contains_key(&node)
+        {
+            continue;
+        }
+        let Some(node) = nodes.get_value_mut(&node) else {
+            continue;
+        };
+        let node_depends_on = &mut node.base_mut().depends_on;
+        if !node_depends_on.nodes.contains(&depends_on) {
+            node_depends_on.nodes.push(depends_on.clone());
+        }
+        // A node that is not resolved again keeps what an earlier resolve added.
+        let located = (depends_on, location);
+        if !node_depends_on.nodes_with_ref_location.contains(&located) {
+            node_depends_on.nodes_with_ref_location.push(located);
+        }
+    }
 }
 
 // Check that models accessing other models (dependecies) can do so.
@@ -3121,5 +3175,80 @@ catalogs:
             Arc::new(make_seed(AdapterType::Snowflake, None)),
         );
         assert!(check_compute_platform_upstreams(&nodes, None, AdapterType::Snowflake).is_err());
+    }
+
+    mod linked_dependencies {
+        use std::sync::Arc;
+
+        use dbt_common::CodeLocationWithFile;
+        use dbt_schemas::schemas::{CommonAttributes, DbtModel, Nodes};
+
+        use crate::resolve::resolvable_node::LinkedDependency;
+        use crate::resolver::add_linked_dependencies;
+
+        /// Models `model.p.a` and `model.p.b`, which depend on nothing.
+        fn nodes() -> Nodes {
+            let mut nodes = Nodes::default();
+            for unique_id in ["model.p.a", "model.p.b"] {
+                let model = DbtModel {
+                    __common_attr__: CommonAttributes {
+                        unique_id: unique_id.to_string(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                nodes.models.insert(unique_id.to_string(), Arc::new(model));
+            }
+            nodes
+        }
+
+        fn dependency(node: &str, depends_on: &str) -> LinkedDependency {
+            LinkedDependency {
+                node: node.to_string(),
+                depends_on: depends_on.to_string(),
+                location: CodeLocationWithFile::default(),
+            }
+        }
+
+        #[test]
+        fn a_linked_dependency_is_added_once() {
+            let mut nodes = nodes();
+            add_linked_dependencies(
+                &mut nodes,
+                vec![
+                    dependency("model.p.a", "model.p.b"),
+                    dependency("model.p.a", "model.p.b"),
+                ],
+            );
+            // A node that is not resolved again is linked again by the next resolve.
+            add_linked_dependencies(&mut nodes, vec![dependency("model.p.a", "model.p.b")]);
+
+            let depends_on = &nodes.models["model.p.a"].__base_attr__.depends_on;
+            assert_eq!(depends_on.nodes, ["model.p.b"]);
+            assert_eq!(depends_on.nodes_with_ref_location.len(), 1);
+            assert!(
+                nodes.models["model.p.b"]
+                    .__base_attr__
+                    .depends_on
+                    .nodes
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn a_dependency_on_itself_or_on_no_node_is_not_added() {
+            let mut nodes = nodes();
+            add_linked_dependencies(
+                &mut nodes,
+                vec![
+                    dependency("model.p.a", "model.p.a"),
+                    dependency("model.p.a", "model.p.gone"),
+                    dependency("model.p.gone", "model.p.b"),
+                ],
+            );
+            for model in nodes.models.values() {
+                assert!(model.__base_attr__.depends_on.nodes.is_empty());
+            }
+        }
     }
 }
