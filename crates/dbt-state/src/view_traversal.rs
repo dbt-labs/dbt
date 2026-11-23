@@ -317,7 +317,13 @@ fn extract_referenced_tables(
                 format!("failed to extract source tables from view DDL: {e}"),
             )
         })
-        .map(|upstreams| upstreams.into_iter().map(|nr| nr.into_inner()).collect())
+        .map(|upstreams| {
+            upstreams
+                .tables
+                .into_iter()
+                .map(|nr| nr.into_inner())
+                .collect()
+        })
 }
 
 /// Whether `fqn` names a Snowflake stage rather than a table.
@@ -403,6 +409,7 @@ mod tests {
     use dbt_adapter_core::ExecutionPhase;
     use dbt_common::AsyncAdapterResult;
     use dbt_common::cancellation::CancellationToken;
+    use dbt_common::sources_extractor::ExtractedUpstreams;
     use dbt_frontend_common::error::FrontendResult;
     use dbt_frontend_common::named_reference::NamedReference;
     use dbt_schemas::schemas::common::ResolvedQuoting;
@@ -1161,11 +1168,12 @@ mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+        ) -> FrontendResult<ExtractedUpstreams> {
             Ok(vec![NamedReference::new(
                 FullyQualifiedName::new("DB", "S", "@S.STG"),
                 false,
-            )])
+            )]
+            .into())
         }
 
         fn extract_standalone_expression_upstreams(
@@ -1175,7 +1183,7 @@ mod tests {
             default_catalog: &str,
             default_schema: &str,
             quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+        ) -> FrontendResult<ExtractedUpstreams> {
             self.extract_upstreams(
                 adapter_type,
                 sql,

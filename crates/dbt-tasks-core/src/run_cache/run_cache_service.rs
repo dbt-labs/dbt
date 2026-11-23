@@ -5290,7 +5290,7 @@ fn parse_sql_relations_for_adapter(
         default_schema,
         quoted_name_ignore_case,
     ) {
-        Ok(upstreams) => upstreams,
+        Ok(upstreams) => upstreams.tables,
         Err(statement_err) => sources_extractor
             .extract_standalone_expression_upstreams(
                 adapter_type,
@@ -5304,7 +5304,8 @@ fn parse_sql_relations_for_adapter(
                     ErrorCode::Generic,
                     "failed to extract upstreams from SQL as statement or expression: statement parse failed: {statement_err}; expression parse failed: {expression_err}"
                 )
-            })?,
+            })?
+            .tables,
     };
 
     relations_from_upstreams(adapter_type, upstreams, type_ops)
@@ -5332,6 +5333,7 @@ fn extract_standalone_expression_upstreams_for_run_cache(
                 "failed to extract upstreams from SQL: {e}"
             )
         })
+        .map(|extracted| extracted.tables)
 }
 
 fn relations_from_upstreams(
@@ -5708,7 +5710,7 @@ pub(crate) mod tests {
     use dbt_common::cancellation::never_cancels;
     use dbt_common::collections::SccHashMap;
     use dbt_common::io_args::RunCacheMode;
-    use dbt_common::sources_extractor::SourcesExtractor;
+    use dbt_common::sources_extractor::{ExtractedUpstreams, SourcesExtractor};
     use dbt_common::{CompiledSpans, MacroSpan};
     use dbt_dag::schedule::Schedule;
     use dbt_frontend_common::FullyQualifiedName;
@@ -9178,8 +9180,8 @@ pub(crate) mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
-            Ok(Vec::new())
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(ExtractedUpstreams::default())
         }
 
         fn extract_standalone_expression_upstreams(
@@ -9189,8 +9191,8 @@ pub(crate) mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
-            Ok(Vec::new())
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(ExtractedUpstreams::default())
         }
     }
 
@@ -9208,7 +9210,7 @@ pub(crate) mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+        ) -> FrontendResult<ExtractedUpstreams> {
             Err(Box::new(synthetic_frontend_error()))
         }
 
@@ -9219,7 +9221,7 @@ pub(crate) mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+        ) -> FrontendResult<ExtractedUpstreams> {
             Err(Box::new(synthetic_frontend_error()))
         }
     }
@@ -9234,7 +9236,7 @@ pub(crate) mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+        ) -> FrontendResult<ExtractedUpstreams> {
             Err(Box::new(synthetic_frontend_error()))
         }
 
@@ -9245,11 +9247,11 @@ pub(crate) mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+        ) -> FrontendResult<ExtractedUpstreams> {
             if sql == "'alice'" {
-                Ok(Vec::new())
+                Ok(ExtractedUpstreams::default())
             } else if sql == "(select max(id) from raw.users)" {
-                Ok(vec![FullyQualifiedName::new("db", "raw", "users").into()])
+                Ok(vec![FullyQualifiedName::new("db", "raw", "users").into()].into())
             } else {
                 Err(Box::new(synthetic_frontend_error()))
             }
@@ -9276,8 +9278,8 @@ pub(crate) mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
-            Ok(Self::upstreams())
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(Self::upstreams().into())
         }
 
         fn extract_standalone_expression_upstreams(
@@ -9287,8 +9289,8 @@ pub(crate) mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
-            Ok(Self::upstreams())
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(Self::upstreams().into())
         }
     }
 
@@ -9303,8 +9305,8 @@ pub(crate) mod tests {
             _default_catalog: &str,
             _default_schema: &str,
             _quoted_name_ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
-            Ok(vec![FullyQualifiedName::new("db", "s", "@S.STG").into()])
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(vec![FullyQualifiedName::new("db", "s", "@S.STG").into()].into())
         }
 
         fn extract_standalone_expression_upstreams(
@@ -9314,7 +9316,7 @@ pub(crate) mod tests {
             catalog: &str,
             schema: &str,
             ignore_case: bool,
-        ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+        ) -> FrontendResult<ExtractedUpstreams> {
             self.extract_upstreams(adapter_type, sql, catalog, schema, ignore_case)
         }
     }
