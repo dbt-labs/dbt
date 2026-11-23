@@ -12,7 +12,7 @@
 //! Stable service DTO construction lives in `dbt-state::request_builder`.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -751,14 +751,21 @@ async fn check_redshift_case_sensitivity(ctx: &TaskRunnerCtx) -> bool {
 /// Collect every relation and source freshness override needed for the run's
 /// metadata prefetch.
 ///
-/// Returns a map of `semantic_fqn → relation` covering every selected node's
-/// own target relation plus the relations of all their runtime dependencies
-/// (models, snapshots, seeds, sources). Ephemeral and inline models are skipped
-/// because they never submit to the service, as are graph-only nodes with no
-/// warehouse relation (see `has_non_empty_schema`). A second map carries
-/// `FreshnessOverride` entries for sources that declare `loaded_at_query` or
-/// `loaded_at_field`; these are passed through to `freshness_with_overrides`
-/// so the prefetch uses the same freshness strategy as per-node submits.
+/// Returns a map of `semantic_fqn → relation` covering:
+/// - the own target relation of every selected model, snapshot and seed. Other
+///   node types (e.g. data tests, whose audit table only exists with
+///   `store_failures`) are skipped, as are ephemeral and inline models
+/// - the relations of every selected node's runtime dependencies (models,
+///   snapshots, seeds, sources), resolved transitively through ephemeral and
+///   inline models, which have no relation of their own
+/// - for unselected dependencies that static analysis deferred, the deferred
+///   relation in addition to the local one
+///
+/// Graph-only nodes with no warehouse relation are skipped (see
+/// `has_metadata_address`). A second map carries `FreshnessOverride` entries
+/// for sources that declare `loaded_at_query` or `loaded_at_field`; these are
+/// passed through to `freshness_with_overrides` so the prefetch uses the same
+/// freshness strategy as per-node submits.
 ///
 /// Taking the individual components rather than a `&TaskRunnerCtx` keeps this
 /// function unit-testable without a live adapter.
@@ -767,57 +774,88 @@ fn collect_global_prefetch_relations(
     runnable_set: &BTreeSet<String>,
     runtime_deps: &BTreeMap<String, BTreeSet<String>>,
     nodes: &dbt_schemas::schemas::Nodes,
+    defer_nodes: Option<&dbt_schemas::schemas::Nodes>,
+    deferred_fqns: &BTreeSet<String>,
 ) -> (
     BTreeMap<String, Arc<dyn BaseRelation>>,
     BTreeMap<String, FreshnessOverride>,
 ) {
     let mut relations: BTreeMap<String, Arc<dyn BaseRelation>> = BTreeMap::new();
     let mut overrides: BTreeMap<String, FreshnessOverride> = BTreeMap::new();
+    let mut add = |node: &dyn InternalDbtNodeAttributes| -> Option<String> {
+        let relation = create_relation_from_node(adapter_type, node, None).ok()?;
+        if !has_metadata_address(adapter_type, relation.as_ref()) {
+            return None;
+        }
+        let fqn = relation.semantic_fqn();
+        relations
+            .entry(fqn.clone())
+            .or_insert_with(|| relation.into());
+        Some(fqn)
+    };
 
     for node_id in runnable_set {
         let Some(node) = nodes.get_node(node_id) else {
             continue;
         };
-        if let Some(model) = node.as_any().downcast_ref::<DbtModel>() {
-            if is_no_op_model_materialization(model.materialized()) {
+        let node_any = node.as_any();
+
+        let should_prefetch_target = match node_any.downcast_ref::<DbtModel>() {
+            Some(model) => !is_no_op_model_materialization(model.materialized()),
+            None => node_any.is::<DbtSnapshot>() || node_any.is::<DbtSeed>(),
+        };
+        if should_prefetch_target {
+            add(node);
+        }
+
+        let mut stack: Vec<&str> = runtime_deps
+            .get(node_id)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        let mut visited: HashSet<&str> = HashSet::new();
+        while let Some(dep_id) = stack.pop() {
+            if !visited.insert(dep_id) {
                 continue;
             }
-        }
-
-        if let Ok(relation) = create_relation_from_node(adapter_type, node, None)
-            && has_metadata_address(adapter_type, relation.as_ref())
-        {
-            let fqn = relation.semantic_fqn();
-            relations.entry(fqn).or_insert_with(|| relation.into());
-        }
-
-        let Some(dep_ids) = runtime_deps.get(node_id) else {
-            continue;
-        };
-        for dep_id in dep_ids {
             let Some(dep_node) = nodes.get_node(dep_id) else {
                 continue;
             };
-            if !dep_node.as_any().is::<DbtModel>()
-                && !dep_node.as_any().is::<DbtSnapshot>()
-                && !dep_node.as_any().is::<DbtSeed>()
-                && !dep_id.starts_with("source.")
+            let dep_any = dep_node.as_any();
+            if let Some(model) = dep_any.downcast_ref::<DbtModel>()
+                && is_no_op_model_materialization(model.materialized())
+            {
+                stack.extend(
+                    model
+                        .__base_attr__
+                        .depends_on
+                        .nodes
+                        .iter()
+                        .map(String::as_str),
+                );
+                continue;
+            }
+            if !dep_any.is::<DbtModel>()
+                && !dep_any.is::<DbtSnapshot>()
+                && !dep_any.is::<DbtSeed>()
+                && !dep_any.is::<DbtSource>()
             {
                 continue;
             }
-            let Ok(relation) = create_relation_from_node(adapter_type, dep_node, None) else {
-                continue;
-            };
-            if !has_metadata_address(adapter_type, relation.as_ref()) {
-                continue;
-            }
-            let fqn = relation.semantic_fqn();
-            if let Some(source) = dep_node.as_any().downcast_ref::<DbtSource>()
+            if let Some(fqn) = add(dep_node)
+                && let Some(source) = dep_any.downcast_ref::<DbtSource>()
                 && let Some(kind) = source_freshness_override(source)
             {
-                overrides.insert(fqn.clone(), kind);
+                overrides.insert(fqn, kind);
             }
-            relations.entry(fqn).or_insert_with(|| relation.into());
+            if !runnable_set.contains(dep_id)
+                && let Some(deferred_node) = defer_nodes.and_then(|d| d.get_node(dep_id))
+                && let Ok(relation) = create_relation_from_node(adapter_type, deferred_node, None)
+                && deferred_fqns.contains(&relation.semantic_fqn())
+            {
+                add(deferred_node);
+            }
         }
     }
 
@@ -887,6 +925,8 @@ async fn prefetch_global_last_modified_epochs(ctx: &TaskRunnerCtx) -> FsResult<(
         &ctx.inner.runnable_set,
         &ctx.inner.runtime_deps,
         ctx.nodes(),
+        ctx.defer_nodes(),
+        &ctx.inner.run_cache_ctx.run_cache_deferred_fqns,
     );
     if relations.is_empty() {
         return Ok(());
@@ -3962,7 +4002,12 @@ async fn collect_table_modified_infos(
     let mut metadata_complete = true;
 
     let (target_name, target_relation) = relation_for_node(node)?;
-    relations.insert(target_name.clone(), target_relation);
+    // Data tests submit with `target_table=None`, so the freshness of their
+    // audit relation is never used, and it usually doesn't exist (no
+    // `store_failures`). Looking it up would cost a warehouse query per test.
+    if !node.as_any().is::<DbtTest>() {
+        relations.insert(target_name.clone(), target_relation);
+    }
 
     let mut freshness_overrides: BTreeMap<String, FreshnessOverride> = BTreeMap::new();
 
@@ -7450,6 +7495,73 @@ pub(crate) mod tests {
         }));
     }
 
+    #[dbt_runtime::test]
+    async fn data_test_submit_does_not_look_up_its_audit_relation() {
+        let model = make_model(
+            "model.test.orders",
+            "db",
+            "analytics",
+            "orders",
+            DbtMaterialization::Table,
+        );
+        let mut test = DbtTest::default();
+        test.__common_attr__.unique_id = "test.test.not_null_orders_id".to_string();
+        test.__base_attr__.database = "db".to_string();
+        test.__base_attr__.schema = "analytics_dbt_test__audit".to_string();
+        test.__base_attr__.alias = "not_null_orders_id".to_string();
+        test.__base_attr__.materialized = DbtMaterialization::Test;
+        test.__base_attr__.depends_on.nodes = vec!["model.test.orders".to_string()];
+        let test = Arc::new(test);
+        let mut nodes = nodes_from(vec![model], vec![]);
+        nodes
+            .tests
+            .insert("test.test.not_null_orders_id".to_string(), test.clone());
+        let ctx = test_task_runner_ctx_with_nodes(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(EmptySourcesExtractor),
+            nodes,
+            BTreeSet::from(["test.test.not_null_orders_id".to_string()]),
+        );
+        let audit_fqn = fqn_of("db", "analytics_dbt_test__audit", "not_null_orders_id");
+        let upstream_fqn = fqn_of("db", "analytics", "orders");
+        // The global prefetch resolved the upstream but not the audit relation.
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_last_modified_epoch(&upstream_fqn, Some(123));
+
+        let tables = collect_table_modified_infos(
+            &ctx,
+            test.as_ref(),
+            false,
+            &BTreeSet::from([upstream_fqn.clone()]),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            tables.tables,
+            vec![TableModifiedInfo {
+                name: upstream_fqn,
+                last_modified_epoch: Some(123),
+                kind: DependencyKind::Unknown as i32,
+            }]
+        );
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&audit_fqn),
+            None,
+            "the audit relation must not be looked up"
+        );
+    }
+
     // ── speculative submit tests ─────────────────────────────────────────────
 
     /// A model with a single upstream dependency whose last-modified epoch is
@@ -10395,6 +10507,8 @@ pub(crate) mod tests {
             &BTreeSet::from(["model.pkg.orders".to_string()]),
             &BTreeMap::new(),
             &nodes,
+            None,
+            &BTreeSet::new(),
         )
         .0;
 
@@ -10423,6 +10537,8 @@ pub(crate) mod tests {
             &runnable_set,
             &runtime_deps,
             &nodes,
+            None,
+            &BTreeSet::new(),
         );
 
         assert_eq!(relations.len(), 2);
@@ -10455,6 +10571,8 @@ pub(crate) mod tests {
             &runnable_set,
             &runtime_deps,
             &nodes,
+            None,
+            &BTreeSet::new(),
         );
 
         assert!(
@@ -10501,6 +10619,8 @@ pub(crate) mod tests {
             &runnable_set,
             &BTreeMap::new(),
             &nodes,
+            None,
+            &BTreeSet::new(),
         );
 
         assert_eq!(
@@ -10563,9 +10683,187 @@ pub(crate) mod tests {
             &runnable_set,
             &runtime_deps,
             &nodes,
+            None,
+            &BTreeSet::new(),
         );
 
         assert!(relations.is_empty(), "ephemeral nodes should be excluded");
+    }
+
+    #[test]
+    fn prefetch_skips_data_test_own_relation_but_keeps_its_deps() {
+        let model = make_model(
+            "model.pkg.orders",
+            "db",
+            "analytics",
+            "orders",
+            DbtMaterialization::Table,
+        );
+        let mut test = DbtTest::default();
+        test.__common_attr__.unique_id = "test.pkg.not_null_orders_id".to_string();
+        test.__base_attr__.database = "db".to_string();
+        test.__base_attr__.schema = "analytics_dbt_test__audit".to_string();
+        test.__base_attr__.alias = "not_null_orders_id".to_string();
+        test.__base_attr__.materialized = DbtMaterialization::Test;
+        let mut nodes = nodes_from(vec![model], vec![]);
+        nodes
+            .tests
+            .insert("test.pkg.not_null_orders_id".to_string(), Arc::new(test));
+        let runnable_set = BTreeSet::from(["test.pkg.not_null_orders_id".to_string()]);
+        let runtime_deps = BTreeMap::from([(
+            "test.pkg.not_null_orders_id".to_string(),
+            BTreeSet::from(["model.pkg.orders".to_string()]),
+        )]);
+
+        let (relations, _) = collect_global_prefetch_relations(
+            AdapterType::Snowflake,
+            &runnable_set,
+            &runtime_deps,
+            &nodes,
+            None,
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(
+            relations.keys().collect::<Vec<_>>(),
+            vec![&fqn_of("db", "analytics", "orders")],
+        );
+    }
+
+    #[test]
+    fn prefetch_resolves_deps_through_ephemeral_models() {
+        let mut ephemeral = DbtModel::default();
+        ephemeral.__common_attr__.unique_id = "model.pkg.eph".to_string();
+        ephemeral.__base_attr__.database = "db".to_string();
+        ephemeral.__base_attr__.schema = "analytics".to_string();
+        ephemeral.__base_attr__.alias = "eph".to_string();
+        ephemeral.__base_attr__.materialized = DbtMaterialization::Ephemeral;
+        ephemeral.__base_attr__.depends_on.nodes = vec![
+            "source.pkg.raw.events".to_string(),
+            "model.pkg.upstream".to_string(),
+        ];
+        let upstream = make_model(
+            "model.pkg.upstream",
+            "db",
+            "analytics",
+            "upstream",
+            DbtMaterialization::Table,
+        );
+        let orders = make_model(
+            "model.pkg.orders",
+            "db",
+            "analytics",
+            "orders",
+            DbtMaterialization::Table,
+        );
+        let source = make_source("source.pkg.raw.events", "db", "raw", "events");
+        let nodes = nodes_from(vec![Arc::new(ephemeral), upstream, orders], vec![source]);
+        // The ephemeral is both a dep of a selected model and selected itself.
+        let runnable_set =
+            BTreeSet::from(["model.pkg.orders".to_string(), "model.pkg.eph".to_string()]);
+        let runtime_deps = BTreeMap::from([
+            (
+                "model.pkg.orders".to_string(),
+                BTreeSet::from(["model.pkg.eph".to_string()]),
+            ),
+            (
+                "model.pkg.eph".to_string(),
+                BTreeSet::from(["source.pkg.raw.events".to_string()]),
+            ),
+        ]);
+
+        let (relations, _) = collect_global_prefetch_relations(
+            AdapterType::Snowflake,
+            &runnable_set,
+            &runtime_deps,
+            &nodes,
+            None,
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(
+            relations.into_keys().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                fqn_of("db", "analytics", "orders"),
+                fqn_of("db", "analytics", "upstream"),
+                fqn_of("db", "raw", "events"),
+            ]),
+            "the ephemeral's own relation is skipped, its deps are prefetched"
+        );
+    }
+
+    #[test]
+    fn prefetch_includes_deferred_relation_for_unselected_deps() {
+        let orders = make_model(
+            "model.pkg.orders",
+            "db",
+            "dev",
+            "orders",
+            DbtMaterialization::Table,
+        );
+        let deferred_dep = make_model(
+            "model.pkg.customers",
+            "db",
+            "dev",
+            "customers",
+            DbtMaterialization::Table,
+        );
+        let local_dep = make_model(
+            "model.pkg.items",
+            "db",
+            "dev",
+            "items",
+            DbtMaterialization::Table,
+        );
+        let nodes = nodes_from(vec![orders, deferred_dep, local_dep], vec![]);
+        let defer_nodes = nodes_from(
+            vec![
+                make_model(
+                    "model.pkg.customers",
+                    "db",
+                    "prod",
+                    "customers",
+                    DbtMaterialization::Table,
+                ),
+                make_model(
+                    "model.pkg.items",
+                    "db",
+                    "prod",
+                    "items",
+                    DbtMaterialization::Table,
+                ),
+            ],
+            vec![],
+        );
+        let runnable_set = BTreeSet::from(["model.pkg.orders".to_string()]);
+        let runtime_deps = BTreeMap::from([(
+            "model.pkg.orders".to_string(),
+            BTreeSet::from([
+                "model.pkg.customers".to_string(),
+                "model.pkg.items".to_string(),
+            ]),
+        )]);
+        // Only `customers` was deferred by static analysis.
+        let deferred_fqns = BTreeSet::from([fqn_of("db", "prod", "customers")]);
+
+        let (relations, _) = collect_global_prefetch_relations(
+            AdapterType::Snowflake,
+            &runnable_set,
+            &runtime_deps,
+            &nodes,
+            Some(&defer_nodes),
+            &deferred_fqns,
+        );
+
+        assert_eq!(
+            relations.into_keys().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                fqn_of("db", "dev", "orders"),
+                fqn_of("db", "dev", "customers"),
+                fqn_of("db", "prod", "customers"),
+                fqn_of("db", "dev", "items"),
+            ]),
+        );
     }
 
     #[test]
@@ -10600,6 +10898,8 @@ pub(crate) mod tests {
             &runnable_set,
             &runtime_deps,
             &nodes,
+            None,
+            &BTreeSet::new(),
         );
 
         let source_fqn = fqn_of("db", "raw", "users");
@@ -10652,6 +10952,8 @@ pub(crate) mod tests {
             &runnable_set,
             &runtime_deps,
             &nodes,
+            None,
+            &BTreeSet::new(),
         );
 
         let source_fqn = fqn_of("db", "raw", "users");
@@ -10794,6 +11096,8 @@ pub(crate) mod tests {
             &runnable_set,
             &runtime_deps,
             &nodes,
+            None,
+            &BTreeSet::new(),
         );
 
         // 2 selected models + 1 shared source = 3 unique entries
