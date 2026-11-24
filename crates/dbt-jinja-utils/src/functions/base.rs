@@ -88,7 +88,10 @@ pub use dbt_jinja_vars::{LookupFn, SECRET_PLACEHOLDER, Var};
 
 /// Registers all the functions shared across all contexts
 pub fn register_base_functions(env: &mut Environment, warn_error_options: WarnErrorOptions) {
-    env.add_global("dbt_version", Value::from(crate::utils::DBT_VERSION));
+    env.add_global(
+        "dbt_version",
+        Value::from(dbt_common::version::dbt_version()),
+    );
     env.add_global(
         "exceptions".to_owned(),
         Value::from_object(Exceptions { warn_error_options }),

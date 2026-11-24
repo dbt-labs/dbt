@@ -137,7 +137,7 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
         metadata: ManifestMetadata {
             __base__: BaseMetadata {
                 dbt_schema_version: get_dbt_schema_version("manifest", 12),
-                dbt_version: env!("CARGO_PKG_VERSION").to_string(),
+                dbt_version: dbt_common::version::dbt_version().to_string(),
                 generated_at: Utc::now(),
                 invocation_id: Some(invocation_id.to_string()),
                 invocation_started_at: Some(resolver_state.run_started_at.with_timezone(&Utc)),

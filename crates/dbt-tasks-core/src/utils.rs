@@ -45,7 +45,7 @@ pub fn build_run_results_artifact(
 
     let metadata = RunResultsMetadata {
         dbt_schema_version: "https://schemas.getdbt.com/dbt/run-results/v6.json".to_string(),
-        dbt_version: env!("CARGO_PKG_VERSION").to_string(),
+        dbt_version: dbt_common::version::dbt_version().to_string(),
         generated_at,
         invocation_id: arg.io.invocation_id.to_string(),
         invocation_started_at: None,
