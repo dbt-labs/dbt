@@ -581,26 +581,18 @@ impl Relation {
         r
     }
 
-    pub fn new_fabric(
+    /// Fabric and SQL Server are the same T-SQL dialect (`Backend::SQLServer`),
+    /// so one constructor serves both; `adapter_type` is what the relation
+    /// records and what its quoting resolves against.
+    pub fn new_tsql(
+        adapter_type: AdapterType,
         database: Option<String>,
         schema: Option<String>,
         identifier: Option<String>,
         relation_type: Option<RelationType>,
         custom_quoting: ResolvedQuoting,
     ) -> Self {
-        Self::new(AdapterType::Fabric, database, schema, identifier)
-            .with_relation_type(relation_type)
-            .with_quoting(custom_quoting)
-    }
-
-    pub fn new_sqlserver(
-        database: Option<String>,
-        schema: Option<String>,
-        identifier: Option<String>,
-        relation_type: Option<RelationType>,
-        custom_quoting: ResolvedQuoting,
-    ) -> Self {
-        Self::new(AdapterType::SqlServer, database, schema, identifier)
+        Self::new(adapter_type, database, schema, identifier)
             .with_relation_type(relation_type)
             .with_quoting(custom_quoting)
     }

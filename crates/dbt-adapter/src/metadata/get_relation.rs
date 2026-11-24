@@ -1190,7 +1190,8 @@ fn fabric_get_relation(
         _ => None,
     };
 
-    Ok(Some(Box::new(Relation::new_fabric(
+    Ok(Some(Box::new(Relation::new_tsql(
+        AdapterType::Fabric,
         Some(database.to_string()),
         Some(schema.to_string()),
         Some(identifier.to_string()),
@@ -1219,7 +1220,8 @@ fn sqlserver_get_relation(
         ));
     }
 
-    let relation = Relation::new_sqlserver(
+    let relation = Relation::new_tsql(
+        AdapterType::SqlServer,
         Some(database.to_string()),
         Some(schema.to_string()),
         Some(identifier.to_string()),

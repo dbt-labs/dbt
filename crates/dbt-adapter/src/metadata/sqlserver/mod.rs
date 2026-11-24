@@ -237,7 +237,8 @@ pub fn list_relations(
 
     let mut relations = Vec::with_capacity(batch.num_rows());
     for i in 0..batch.num_rows() {
-        let relation = Arc::new(Relation::new_sqlserver(
+        let relation = Arc::new(Relation::new_tsql(
+            AdapterType::SqlServer,
             Some(db_schema.resolved_catalog.clone()),
             Some(schema_name.value(i).to_string()),
             Some(table_name.value(i).to_string()),
