@@ -8735,7 +8735,7 @@ catalogs:
         let with_checksum = |cols| {
             let mut m = enforced(model_with_columns(cols));
             m.__model_attr__.contract.as_mut().unwrap().checksum =
-                Some(YmlValue::string("abc".to_string()));
+                Some(Box::new(YmlValue::string("abc".to_string())));
             m
         };
         let old = with_checksum(vec![col("id", "int", "", vec![])]);

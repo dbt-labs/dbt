@@ -1379,7 +1379,7 @@ mod tests {
             let mut enforced = model_node(&["project", "models", "test_model"]);
             enforced.__model_attr__.contract = Some(DbtContract {
                 enforced: true,
-                checksum: Some(YmlValue::string("abc123".to_string())),
+                checksum: Some(Box::new(YmlValue::string("abc123".to_string()))),
                 ..Default::default()
             });
 
@@ -1409,7 +1409,7 @@ mod tests {
             let mut not_enforced_with_checksum = model_node(&["project", "models", "test_model"]);
             not_enforced_with_checksum.__model_attr__.contract = Some(DbtContract {
                 enforced: false,
-                checksum: Some(YmlValue::string("abc123".to_string())),
+                checksum: Some(Box::new(YmlValue::string("abc123".to_string()))),
                 ..Default::default()
             });
 
@@ -1425,7 +1425,7 @@ mod tests {
             let mut node = model_node(&["project", "models", "test_model"]);
             node.__model_attr__.contract = Some(DbtContract {
                 enforced: true,
-                checksum: Some(YmlValue::string("existing_checksum".to_string())),
+                checksum: Some(Box::new(YmlValue::string("existing_checksum".to_string()))),
                 ..Default::default()
             });
 
@@ -1674,7 +1674,7 @@ mod tests {
         let mut different_contract = base.clone();
         different_contract.__model_attr__.contract = Some(DbtContract {
             enforced: true,
-            checksum: Some(YmlValue::string("abc123".to_string())),
+            checksum: Some(Box::new(YmlValue::string("abc123".to_string()))),
             ..Default::default()
         });
         let different_contract_hash = node_state_hashes(

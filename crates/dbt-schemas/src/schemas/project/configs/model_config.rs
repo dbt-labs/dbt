@@ -2360,8 +2360,10 @@ __additional_properties__: {}
             Some(OnConfigurationChange::Apply)
         );
 
-        let manifest: ManifestModelConfig =
-            dbt_yaml::from_str("__warehouse_specific_config__: {}\n").unwrap();
+        let manifest: ManifestModelConfig = dbt_yaml::from_str(
+            "__rare_freshness__: {}\n__rare_python__: {}\n__warehouse_specific_config__: {}\n",
+        )
+        .unwrap();
         let mut manifest_runtime: ModelConfig = manifest.into();
         assert_eq!(manifest_runtime.on_configuration_change, None);
         manifest_runtime.apply_resolve_defaults((StaticAnalysisKind::default(), None, None));
@@ -2634,6 +2636,8 @@ __warehouse_specific_config__: {}
         let config: ManifestModelConfig = dbt_yaml::from_str(
             r#"
 python_version: 3.10
+__rare_freshness__: {}
+__rare_python__: {}
 __warehouse_specific_config__: {}
 "#,
         )
