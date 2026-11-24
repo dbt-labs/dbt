@@ -152,30 +152,6 @@
   {{ return(load_result('list_relations_without_caching').table) }}
 {% endmacro %}
 
-{% macro sqlserver__get_relation_without_caching(schema_relation) -%}
-  {% call statement('get_relation_without_caching', fetch_result=True) -%}
-    {{ get_use_database_sql(schema_relation.database) }}
-    declare @schema_id int = schema_id('{{ schema_relation.schema }}');
-    select
-      DB_NAME() as [database],
-      t.name as [name],
-      '{{ schema_relation.schema }}' as [schema],
-      'table' as table_type
-    from sys.tables as t {{ information_schema_hints() }}
-    where t.schema_id = @schema_id and t.name = '{{ schema_relation.identifier }}'
-    union all
-    select
-      DB_NAME() as [database],
-      v.name as [name],
-      '{{ schema_relation.schema }}' as [schema],
-      'view' as table_type
-    from sys.views as v {{ information_schema_hints() }}
-    where v.schema_id = @schema_id and v.name = '{{ schema_relation.identifier }}'
-    {{ get_query_options() }}
-  {% endcall %}
-  {{ return(load_result('get_relation_without_caching').table) }}
-{% endmacro %}
-
 {% macro get_view_definition_sql(relation) %}
     {{ return(adapter.dispatch('get_view_definition_sql')(relation)) }}
 {% endmacro %}
