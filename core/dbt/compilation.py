@@ -803,7 +803,10 @@ class Compiler:
 
         if node.compiled_code:
             node.compiled_path = node.get_target_write_path(
-                self.config.target_path, "compiled", split_suffix
+                self.config.target_path,
+                "compiled",
+                split_suffix,
+                project_root=self.config.project_root,
             )
             node.write_node(self.config.project_root, node.compiled_path, node.compiled_code)
         return node

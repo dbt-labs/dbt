@@ -1,4 +1,7 @@
+import os
 import unittest
+
+import pytest
 
 import dbt.exceptions
 import dbt.utils
@@ -61,3 +64,111 @@ class TestHumanizeExecutionTime(unittest.TestCase):
         result = dbt.utils.humanize_execution_time(execution_time=0.3254)
 
         assert result == " in 0 hours 0 minutes and 0.33 seconds"
+
+
+class CustomError(Exception):
+    pass
+
+
+class TestResolvePathWithinBase:
+    def test_relative_path_inside_base(self, tmp_path):
+        base = str(tmp_path)
+        result = dbt.utils.resolve_path_within_base(
+            "sub/dir", base, "some-field", error_cls=CustomError
+        )
+        assert result == os.path.join(base, "sub/dir")
+
+    def test_absolute_path_inside_base_is_fine(self, tmp_path):
+        base = str(tmp_path)
+        inside = os.path.join(base, "sub/dir")
+        result = dbt.utils.resolve_path_within_base(
+            inside, base, "some-field", error_cls=CustomError
+        )
+        assert result == inside
+
+    def test_relative_traversal_is_rejected(self, tmp_path):
+        base = str(tmp_path)
+        with pytest.raises(CustomError, match="must resolve to a path inside"):
+            dbt.utils.resolve_path_within_base(
+                "../escaped", base, "some-field", error_cls=CustomError
+            )
+
+    def test_absolute_path_outside_base_is_rejected(self, tmp_path):
+        base = str(tmp_path / "project")
+        outside = str(tmp_path / "other")
+        with pytest.raises(CustomError, match="must resolve to a path inside"):
+            dbt.utils.resolve_path_within_base(outside, base, "some-field", error_cls=CustomError)
+
+    def test_symlink_escape_is_rejected(self, tmp_path):
+        base = tmp_path / "project"
+        base.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = base / "escape_link"
+        link.symlink_to(outside)
+        with pytest.raises(CustomError, match="must resolve to a path inside"):
+            dbt.utils.resolve_path_within_base(
+                "escape_link/payload", str(base), "some-field", error_cls=CustomError
+            )
+
+    def test_extended_length_prefix_is_ignored(self, tmp_path, monkeypatch):
+        base = str(tmp_path)
+        real = os.path.realpath
+
+        def fake_realpath(p):
+            resolved = real(p)
+            return "\\\\?\\" + resolved if p != base else resolved
+
+        monkeypatch.setattr(os.path, "realpath", fake_realpath)
+        result = dbt.utils.resolve_path_within_base(
+            "sub/file.sql", base, "some-field", error_cls=CustomError
+        )
+        assert result == os.path.join(base, "sub/file.sql")
+
+    def test_relative_path_resolved_against_project_root_not_cwd(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "project"
+        outside = tmp_path / "outside"
+        elsewhere = tmp_path / "elsewhere"
+        for d in (project_root / "target", outside, elsewhere):
+            d.mkdir(parents=True)
+        # the symlink only exists under project_root, not under the cwd
+        (project_root / "target" / "escape_link").symlink_to(outside)
+        monkeypatch.chdir(elsewhere)
+
+        with pytest.raises(CustomError, match="must resolve to a path inside"):
+            dbt.utils.resolve_path_within_base(
+                "escape_link/payload",
+                "target",
+                "some-field",
+                error_cls=CustomError,
+                project_root=str(project_root),
+            )
+
+    def test_relative_path_inside_base_with_project_root_is_unanchored(
+        self, tmp_path, monkeypatch
+    ):
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(tmp_path)
+        result = dbt.utils.resolve_path_within_base(
+            "sub/file.sql",
+            "target",
+            "some-field",
+            error_cls=CustomError,
+            project_root=str(project_root),
+        )
+        assert result == os.path.join("target", "sub/file.sql")
+
+    @pytest.mark.parametrize(
+        "realpath_result, expected",
+        [
+            ("\\\\?\\C:\\proj\\target", "C:\\proj\\target"),
+            ("\\\\?\\UNC\\server\\share\\target", "\\\\server\\share\\target"),
+            ("\\\\?\\unc\\server\\share\\target", "\\\\server\\share\\target"),
+            ("\\\\server\\share\\target", "\\\\server\\share\\target"),
+        ],
+    )
+    def test_resolve_path_strips_extended_prefixes(self, monkeypatch, realpath_result, expected):
+        monkeypatch.setattr(os.path, "realpath", lambda p: realpath_result)
+        monkeypatch.setattr(os.path, "normcase", lambda p: p)
+        assert dbt.utils.utils._resolve_path("ignored") == expected
