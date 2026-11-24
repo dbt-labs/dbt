@@ -21,7 +21,9 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::constants::RUNNING;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_common::status_reporter::report_completed;
-use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_message};
+use dbt_common::tracing::dbt_emit::{
+    emit_error_log_from_fs_error, emit_info_log_message, emit_warn_log_message,
+};
 use dbt_common::tracing::span_info::{find_and_update_span_attrs, update_span_attrs};
 use dbt_common::warn_error_options::WarnErrorOptions;
 use dbt_common::{ErrorCode, FsResult, fs_err};
@@ -57,11 +59,11 @@ use dbt_tasks_core::run_cache::run_cache_service::{
     CachedTestExecutionResult, RunCacheAfterSuccess, RunCacheCloneDecision, RunCacheCloneError,
     RunCacheCloneGrantsOrder, RunCacheReuseHookExecutor, RunCacheReuseHookPhase,
     RunCacheServiceDecision, clear_stale_missing_last_modified_epoch_for_node,
-    confirm_run_cache_service_execution, evict_node_metadata_for_untracked_rebuild,
-    execute_run_cache_service_clone, insert_compiled_view_definition,
-    record_run_cache_clone_decision, record_run_cache_service_execution,
-    refresh_final_last_modified_epoch_for_node, replay_dev_clone_decision,
-    replay_run_cache_clone_decision, run_cache_service_before_execution,
+    clone_source_is_missing, confirm_run_cache_service_execution,
+    evict_node_metadata_for_untracked_rebuild, execute_run_cache_service_clone,
+    insert_compiled_view_definition, record_run_cache_clone_decision,
+    record_run_cache_service_execution, refresh_final_last_modified_epoch_for_node,
+    replay_dev_clone_decision, replay_run_cache_clone_decision, run_cache_service_before_execution,
     should_execute_hooks_for_skip_reuse,
 };
 use dbt_tasks_core::run_cache::state_lock::release_state_lock;
@@ -412,13 +414,25 @@ impl Task for RunTask {
                                         RunCacheAfterSuccess::None
                                     }
                                     Err(RunCacheCloneError::Recoverable(err)) => {
-                                        emit_warn_log_message(
-                                            ErrorCode::StateServiceWarn,
-                                            format!(
-                                                "dbt State service clone failed for node {}: {err}; executing normally",
-                                                self.node.unique_id()
-                                            ),
-                                        );
+                                        if clone_source_is_missing(ctx, self.node.as_ref(), clone)
+                                            .await
+                                        {
+                                            // The model runs and the data is correct, so
+                                            // there is nothing for the user to fix.
+                                            emit_info_log_message(format!(
+                                                "Unable to clone node '{}': clone source '{}' not found, running the model instead: {err}",
+                                                self.node.unique_id(),
+                                                clone.clone_source()
+                                            ));
+                                        } else {
+                                            emit_warn_log_message(
+                                                ErrorCode::StateServiceWarn,
+                                                format!(
+                                                    "dbt State service clone failed for node {}: {err}; executing normally",
+                                                    self.node.unique_id()
+                                                ),
+                                            );
+                                        }
                                         clone
                                             .fallback_confirmation()
                                             .map(RunCacheAfterSuccess::Confirm)

@@ -2589,6 +2589,29 @@ async fn verify_clone_source_freshness(
     }
 }
 
+/// Whether the clone source no longer exists (e.g. dropped outside dbt while the
+/// state DB still lists it as latest). Any lookup failure counts as "not missing".
+pub async fn clone_source_is_missing(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+    clone: &RunCacheCloneDecision,
+) -> bool {
+    if clone.clone_source.is_empty() {
+        return false;
+    }
+    let Ok(source_relation) = relation_from_rendered_name(node, &clone.clone_source) else {
+        return false;
+    };
+    ctx.inner
+        .run_cache_ctx
+        .run_cache_metadata
+        .remove_last_modified_epoch(&clone.clone_source);
+    matches!(
+        refresh_last_modified_epoch_for_relation(ctx, &clone.clone_source, source_relation).await,
+        Ok(None)
+    )
+}
+
 fn relation_from_rendered_name(
     node: &dyn InternalDbtNodeAttributes,
     rendered_name: &str,
