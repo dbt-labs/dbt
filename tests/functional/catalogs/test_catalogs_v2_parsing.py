@@ -6,7 +6,8 @@ import pytest
 
 from dbt.adapters.capability import CapabilityDict, CapabilitySupport, Support
 from dbt.adapters.catalogs import CatalogIntegration, CatalogIntegrationConfig
-from dbt.tests.util import run_dbt, write_config_file
+from dbt.contracts.results import TestStatus
+from dbt.tests.util import run_dbt, write_config_file, write_file
 from dbt_common.exceptions import DbtValidationError
 
 _SENTINEL_CATALOGS_V2 = object()
@@ -70,6 +71,20 @@ def _mock_bridge(catalog_type: str):
     return _bridge
 
 
+@pytest.fixture
+def v2_catalog_adapter(project):
+    adapter_type = type(project.adapter)
+    with (
+        mock.patch("dbt.cli.requires.Capability", _MockCapabilityWithV2),
+        mock.patch.object(adapter_type, "CATALOG_INTEGRATIONS", [StubCatalogIntegration]),
+        mock.patch.object(
+            adapter_type, "capabilities", return_value=_AllSupportedCapabilityDict({})
+        ),
+        mock.patch.object(adapter_type, "bridge_v2_catalog", _mock_bridge("horizon"), create=True),
+    ):
+        yield
+
+
 class TestV2HappyPath:
     @pytest.fixture(scope="class")
     def project_config_update(self):
@@ -84,30 +99,48 @@ class TestV2HappyPath:
             )
         )
 
-    def test_catalog_registered(self, project, catalogs, adapter):
+    def test_catalog_registered(self, project, catalogs, v2_catalog_adapter):
         write_config_file(catalogs, project.project_root, "catalogs.yml")
 
-        with (
-            mock.patch("dbt.cli.requires.Capability", _MockCapabilityWithV2),
-            mock.patch.object(
-                type(project.adapter), "CATALOG_INTEGRATIONS", [StubCatalogIntegration]
-            ),
-            mock.patch.object(
-                type(project.adapter),
-                "capabilities",
-                return_value=_AllSupportedCapabilityDict({}),
-            ),
-            mock.patch.object(
-                type(project.adapter), "bridge_v2_catalog", _mock_bridge("horizon"), create=True
-            ),
-        ):
-            run_dbt(["run"])
-            integration = project.adapter.get_catalog_integration("my_catalog")
-            assert isinstance(integration, StubCatalogIntegration)
-            assert integration.name == "my_catalog"
-            assert integration.table_format == "iceberg"
-            assert integration.external_volume == "s3_vol"
-            assert integration.change_tracking is True
+        run_dbt(["run"])
+        integration = project.adapter.get_catalog_integration("my_catalog")
+        assert isinstance(integration, StubCatalogIntegration)
+        assert integration.name == "my_catalog"
+        assert integration.table_format == "iceberg"
+        assert integration.external_volume == "s3_vol"
+        assert integration.change_tracking is True
+
+
+class TestV2Retry:
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {"flags": {"use_catalogs_v2": True}}
+
+    @pytest.fixture(scope="class")
+    def tests(self):
+        return {"fails.sql": "select 1"}
+
+    def test_retry_registers_catalog_with_resolved_vars(self, project, v2_catalog_adapter):
+        catalogs = _catalogs_file(
+            _catalog_entry(
+                "my_catalog",
+                type_="glue",
+                config={"snowflake": {"external_volume": "{{ var('volume', 'initial_vol') }}"}},
+            )
+        )
+        write_config_file(catalogs, project.project_root, "catalogs.yml")
+
+        build_results = run_dbt(["build"], expect_pass=False)
+        assert [result.status for result in build_results] == [TestStatus.Fail]
+        assert (
+            project.adapter.get_catalog_integration("my_catalog").external_volume == "initial_vol"
+        )
+
+        write_file("select 1 where false", "tests", "fails.sql")
+        retry_results = run_dbt(["retry", "--vars", "{volume: retry_vol}"])
+
+        assert [result.status for result in retry_results] == [TestStatus.Pass]
+        assert project.adapter.get_catalog_integration("my_catalog").external_volume == "retry_vol"
 
 
 class TestV2MultipleCatalogs:
@@ -124,26 +157,12 @@ class TestV2MultipleCatalogs:
             ),
         )
 
-    def test_multiple_catalogs_registered(self, project, catalogs, adapter):
+    def test_multiple_catalogs_registered(self, project, catalogs, v2_catalog_adapter):
         write_config_file(catalogs, project.project_root, "catalogs.yml")
 
-        with (
-            mock.patch("dbt.cli.requires.Capability", _MockCapabilityWithV2),
-            mock.patch.object(
-                type(project.adapter), "CATALOG_INTEGRATIONS", [StubCatalogIntegration]
-            ),
-            mock.patch.object(
-                type(project.adapter),
-                "capabilities",
-                return_value=_AllSupportedCapabilityDict({}),
-            ),
-            mock.patch.object(
-                type(project.adapter), "bridge_v2_catalog", _mock_bridge("horizon"), create=True
-            ),
-        ):
-            run_dbt(["run"])
-            assert project.adapter.get_catalog_integration("cat_a").external_volume == "vol_a"
-            assert project.adapter.get_catalog_integration("cat_b").external_volume == "vol_b"
+        run_dbt(["run"])
+        assert project.adapter.get_catalog_integration("cat_a").external_volume == "vol_a"
+        assert project.adapter.get_catalog_integration("cat_b").external_volume == "vol_b"
 
 
 class TestV2NoCatalogsFile:
