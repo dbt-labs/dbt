@@ -1461,11 +1461,9 @@ class ManifestLoader:
             )
             _process_docs_for_saved_query(ctx, saved_query)
 
-    # Loops through all nodes and exposures, for each element in
-    # 'sources' array finds the source node and updates the
-    # 'depends_on.nodes' array with the unique id
+    # Resolve source references from nodes, functions, and exposures into graph dependencies.
     def process_sources(self, current_project: str):
-        for node in self.manifest.nodes.values():
+        for node in chain(self.manifest.nodes.values(), self.manifest.functions.values()):
             if node.resource_type == NodeType.Source:
                 continue
             assert not isinstance(node, SourceDefinition)
