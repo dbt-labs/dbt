@@ -3,13 +3,14 @@ import os
 import time
 import traceback
 from functools import update_wrapper
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 from click import Context
 
 import dbt.tracking
 from dbt.adapters.capability import Capability
 from dbt.adapters.factory import adapter_management, get_adapter, register_adapter
+from dbt.artifacts.resources import Catalog, CatalogV2, CatalogWriteIntegrationConfig
 from dbt.cli.exceptions import ExceptionExit, ResultExit
 from dbt.cli.flags import Flags
 from dbt.config import RuntimeConfig
@@ -441,6 +442,28 @@ def _bridge_v2_catalogs(runtime_config: "RuntimeConfig", catalogs_v2: list) -> l
     return [adapter.bridge_v2_catalog(c) for c in catalogs_v2]
 
 
+def load_catalogs_for_manifest(
+    runtime_config: RuntimeConfig, flags: Flags, project_name: str
+) -> tuple[Sequence[Catalog | CatalogV2], list[Optional[CatalogWriteIntegrationConfig]]]:
+    if not flags.USE_CATALOGS_V2:
+        catalogs = load_catalogs(flags.PROJECT_DIR, project_name, flags.VARS)
+        return catalogs, [get_active_write_integration(catalog) for catalog in catalogs]
+
+    catalogs_v2 = load_catalogs_v2(flags.PROJECT_DIR, project_name, flags.VARS)
+    if not catalogs_v2:
+        return catalogs_v2, []
+
+    fire_event(
+        Note(
+            msg="catalogs.yml v2 schema validation is experimental, not officially supported yet, "
+            "and its spec is liable to change. "
+            "See https://github.com/dbt-labs/dbt-core/discussions/12723"
+        ),
+        EventLevel.WARN,
+    )
+    return catalogs_v2, _bridge_v2_catalogs(runtime_config, catalogs_v2)
+
+
 def setup_manifest(ctx: Context, write: bool = True, write_perf_info: bool = False):
     """Load the manifest and add it to the context."""
     req_strs = ["flags", "profile", "project", "runtime_config"]
@@ -450,33 +473,10 @@ def setup_manifest(ctx: Context, write: bool = True, write_perf_info: bool = Fal
         raise DbtProjectError("flags, profile, project, and runtime_config required for manifest")
 
     runtime_config = ctx.obj["runtime_config"]
-
     flags = ctx.obj["flags"]
     project_name = ctx.obj["project"].project_name
-    use_v2 = flags.USE_CATALOGS_V2
-
-    if use_v2:
-        catalogs_v2 = load_catalogs_v2(flags.PROJECT_DIR, project_name, flags.VARS)
-        # TODO: ctx.obj["catalogs"] is List[CatalogV2] here but downstream tasks
-        # (base.py, build.py, run.py, etc.) annotate it as Optional[List[Catalog]].
-        # Widen signatures to Sequence[Union[Catalog, CatalogV2]] or add a common base.
-        ctx.obj["catalogs"] = catalogs_v2
-        if catalogs_v2:
-            fire_event(
-                Note(
-                    msg="catalogs.yml v2 schema validation is experimental, not officially supported yet, "
-                    "and its spec is liable to change. "
-                    "See https://github.com/dbt-labs/dbt-core/discussions/12723"
-                ),
-                EventLevel.WARN,
-            )
-            active_integrations = _bridge_v2_catalogs(runtime_config, catalogs_v2)
-        else:
-            active_integrations = []
-    else:
-        catalogs = load_catalogs(flags.PROJECT_DIR, project_name, flags.VARS)
-        active_integrations = [get_active_write_integration(catalog) for catalog in catalogs]
-        ctx.obj["catalogs"] = catalogs
+    catalogs, active_integrations = load_catalogs_for_manifest(runtime_config, flags, project_name)
+    ctx.obj["catalogs"] = catalogs
 
     # if a manifest has already been set on the context, don't overwrite it
     if ctx.obj.get("manifest") is None:
