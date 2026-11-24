@@ -51,6 +51,7 @@ use dbt_telemetry::{
 };
 use futures::future::join_all;
 use itertools::Itertools;
+use minijinja::value::{OverlayMap, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::{
@@ -217,8 +218,8 @@ async fn measure_query_based_freshness(
     if !loaded_at_field.is_empty() {
         let filter = node.get_freshness_filter().unwrap_or("");
         match calculate_freshness(
-            &loaded_at_field.escape_default().to_string(),
-            &filter.escape_default().to_string(),
+            loaded_at_field,
+            filter,
             node,
             adapter_type,
             jinja_env,
@@ -316,13 +317,19 @@ pub async fn calculate_freshness(
         .ok_or_else(|| unexpected_fs_err!("{} needs a relation name", node.kind_label()))?
         .as_str();
     let macro_expr = if filter.is_empty() {
-        format!("collect_freshness('{relation}', '{loaded_at_field}').table")
+        "collect_freshness(__dbt_freshness_relation, __dbt_freshness_loaded_at_field).table"
     } else {
-        format!("collect_freshness('{relation}', '{loaded_at_field}', '{filter}').table")
+        "collect_freshness(__dbt_freshness_relation, __dbt_freshness_loaded_at_field, __dbt_freshness_filter).table"
     };
+    let macro_args = [
+        ("__dbt_freshness_relation", relation),
+        ("__dbt_freshness_loaded_at_field", loaded_at_field),
+        ("__dbt_freshness_filter", filter),
+    ];
 
     calculate_freshness_common(
-        &macro_expr,
+        macro_expr,
+        &macro_args,
         node,
         adapter_type,
         jinja_env,
@@ -434,14 +441,14 @@ pub async fn calculate_freshness_custom_sql(
         })
         .await??
     };
-    // Insert loaded_at_query as an escaped string
-    let macro_expr = format!(
-        "collect_freshness_custom_sql('{relation}', '{}').table",
-        rendered_query.escape_default()
-    );
+    let macro_args = [
+        ("__dbt_freshness_relation", relation),
+        ("__dbt_freshness_loaded_at_query", rendered_query.as_str()),
+    ];
 
     calculate_freshness_common(
-        &macro_expr,
+        "collect_freshness_custom_sql(__dbt_freshness_relation, __dbt_freshness_loaded_at_query).table",
+        &macro_args,
         node,
         adapter_type,
         jinja_env,
@@ -457,7 +464,8 @@ pub async fn calculate_freshness_custom_sql(
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all, level = "trace")]
 async fn calculate_freshness_common(
-    macro_expr: &str,
+    macro_expr: &'static str,
+    macro_args: &[(&str, &str)],
     node: &dyn FreshnessNodeRef,
     adapter_type: AdapterType,
     jinja_env: &Arc<JinjaEnv>,
@@ -479,14 +487,21 @@ async fn calculate_freshness_common(
         dependencies,
     );
 
+    // The user's strings reach the macro as context variables, not as literals
+    // in the expression source, so they never go through Jinja string escaping.
+    let mut context = OverlayMap::extending(&Value::from_serialize(&context));
+    for (name, value) in macro_args {
+        context.insert(*name, Value::from(*value));
+    }
+    let context = Value::from_object(context);
+
     // The `collect_freshness` macros query the warehouse, so the expression has
     // to be evaluated on the blocking pool: every database connection must be
     // created by a `dbt-runtime` worker thread.
     let table = {
         let jinja_env = Arc::clone(jinja_env);
-        let macro_expr = macro_expr.to_owned();
         run_blocking_task_operation(move || {
-            let expr = jinja_env.compile_expression(&macro_expr)?;
+            let expr = jinja_env.compile_expression(macro_expr)?;
             expr.eval(&context, &[])?
                 .downcast_object::<AgateTable>()
                 .ok_or_else(|| unexpected_fs_err!("Agate table expected"))
