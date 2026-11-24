@@ -234,6 +234,10 @@ pub struct AdapterError {
     vendor_code: Option<i32>,
     /// Source of this error
     source: Option<Arc<dyn std::error::Error + Send + Sync>>,
+    /// The SQL statement that was executing when this error was raised, if known.
+    ///
+    /// Not part of the rendered message; see [AdapterError::failed_sql()].
+    failed_sql: Option<Arc<str>>,
 }
 
 impl fmt::Debug for AdapterError {
@@ -245,6 +249,7 @@ impl fmt::Debug for AdapterError {
             .field("sqlstate", &self.sqlstate)
             .field("vendor_code", &self.vendor_code)
             .field("source", &self.source)
+            .field("failed_sql", &self.failed_sql)
             .finish()
     }
 }
@@ -258,6 +263,7 @@ impl AdapterError {
             sqlstate: [b'0'; 5],
             vendor_code: None,
             source: None,
+            failed_sql: None,
         }
     }
 
@@ -265,6 +271,22 @@ impl AdapterError {
     pub fn with_source<E: std::error::Error + Send + Sync + 'static>(mut self, source: E) -> Self {
         self.source = Some(Arc::new(source));
         self
+    }
+
+    /// Records the SQL statement that was executing when this error was raised.
+    ///
+    /// The first statement recorded wins, so an error that passes through several
+    /// execution layers keeps the statement closest to the failure.
+    pub fn with_failed_sql(mut self, sql: &str) -> Self {
+        if self.failed_sql.is_none() {
+            self.failed_sql = Some(Arc::from(sql));
+        }
+        self
+    }
+
+    /// The SQL statement that was executing when this error was raised, if known.
+    pub fn failed_sql(&self) -> Option<&Arc<str>> {
+        self.failed_sql.as_ref()
     }
 
     pub fn new_with_sqlstate_and_vendor_code(
@@ -279,6 +301,7 @@ impl AdapterError {
             sqlstate,
             vendor_code,
             source: None,
+            failed_sql: None,
         }
     }
 
@@ -457,7 +480,9 @@ impl From<AdapterError> for Box<FsError> {
             }
             (None, kind) => map_sqlstate_to_code(err.sqlstate()).unwrap_or_else(|| kind.into()),
         };
-        Box::new(FsError::new(err_code, format!("{err}")))
+        let mut fs_err = FsError::new(err_code, format!("{err}"));
+        fs_err.set_failed_sql(err.failed_sql().cloned());
+        Box::new(fs_err)
     }
 }
 
@@ -704,5 +729,21 @@ Check that your dbt platform token is valid and can access this project."
             code_for(AdapterErrorKind::Driver, "99999"),
             ErrorCode::DbDriverFailed
         );
+    }
+
+    #[test]
+    fn failed_sql_is_kept_but_not_rendered() {
+        let err = AdapterError::new(AdapterErrorKind::Driver, "boom");
+        assert!(err.failed_sql().is_none());
+        let rendered = err.to_string();
+
+        // The first statement recorded wins: it is the one closest to the failure.
+        let err = err.with_failed_sql("select 1").with_failed_sql("select 2");
+        assert_eq!(err.failed_sql().map(|sql| sql.as_ref()), Some("select 1"));
+        assert_eq!(err.to_string(), rendered);
+
+        let fs_err = Box::<FsError>::from(err);
+        assert_eq!(fs_err.failed_sql(), Some("select 1"));
+        assert_eq!(fs_err.to_string(), rendered);
     }
 }

@@ -135,6 +135,10 @@ pub struct FsError {
     // TODO: Should we make these Spans instead to store end locations?
     pub jinja_frames: Vec<super::CodeLocationWithFile>,
 
+    // The SQL statement that was executing when a warehouse error was raised, if known.
+    // Never rendered into the message; callers that want to show it read [Self::failed_sql].
+    failed_sql: Option<Arc<str>>,
+
     // Chain of errors, to allow returning multiple errors in a single
     // [FsResult]:
     next: Option<Box<FsError>>,
@@ -222,6 +226,7 @@ impl FsError {
             cause: None,
             backtrace: Backtrace::capture(),
             jinja_frames: vec![],
+            failed_sql: None,
             next: None,
         }
     }
@@ -234,6 +239,7 @@ impl FsError {
             cause: None,
             backtrace: Backtrace::disabled(),
             jinja_frames: vec![],
+            failed_sql: None,
             next: None,
         }
     }
@@ -261,6 +267,7 @@ impl FsError {
             cause,
             backtrace: Backtrace::disabled(),
             jinja_frames: self.jinja_frames.clone(),
+            failed_sql: self.failed_sql.clone(),
             next: self
                 .next
                 .as_deref()
@@ -276,6 +283,7 @@ impl FsError {
             cause: None,
             backtrace: Backtrace::force_capture(),
             jinja_frames: vec![],
+            failed_sql: None,
             next: None,
         }
     }
@@ -292,6 +300,7 @@ impl FsError {
             cause: None,
             backtrace,
             jinja_frames: vec![],
+            failed_sql: None,
             next: None,
         }
     }
@@ -332,6 +341,7 @@ impl FsError {
                     cause,
                     backtrace: err.backtrace,
                     jinja_frames: vec![],
+                    failed_sql: None,
                     next: None,
                 }
             })
@@ -538,6 +548,19 @@ impl FsError {
             Some(WrappedError::Datafusion(e)) => Ok(e),
             _ => Err(Box::new(self)),
         }
+    }
+
+    /// The SQL statement that was executing when a warehouse error was raised, if known.
+    ///
+    /// This is set for errors converted from an adapter error that recorded its statement.
+    /// It is not part of the rendered message.
+    pub fn failed_sql(&self) -> Option<&str> {
+        self.failed_sql.as_deref()
+    }
+
+    /// Records the SQL statement that was executing when this error was raised.
+    pub(crate) fn set_failed_sql(&mut self, sql: Option<Arc<str>>) {
+        self.failed_sql = sql;
     }
 
     /// Adds a cause to this error, replacing the existing cause if any
@@ -777,6 +800,7 @@ impl FsError {
             cause: Some(WrappedError::ExitCode(status)),
             backtrace: Backtrace::capture(),
             jinja_frames: vec![],
+            failed_sql: None,
             next: None,
         };
         Box::new(err)
@@ -1586,6 +1610,24 @@ mod tests {
     fn future_error_code_has_no_notice_unless_added() {
         let err = FsError::new_no_backtrace(ErrorCode::DepsDuplicatePackage, "Duplicate.");
         assert_eq!(err.to_string(), "Duplicate.");
+    }
+
+    /// A warehouse error raised inside a macro reaches us as the source of a Jinja error. The
+    /// statement it recorded must survive that trip without leaking into the message.
+    #[test]
+    fn from_jinja_err_keeps_the_failed_sql_of_an_adapter_error() {
+        use crate::{AdapterError, AdapterErrorKind};
+
+        let adapter_err = AdapterError::new(AdapterErrorKind::Driver, "boom")
+            .with_failed_sql("select fake_col from t");
+        let err = FsError::from_jinja_err(minijinja::Error::from(adapter_err), "context");
+
+        assert_eq!(err.failed_sql(), Some("select fake_col from t"));
+        assert!(!err.to_string().contains("fake_col"));
+        assert_eq!(
+            err.clone_without_backtrace().failed_sql(),
+            Some("select fake_col from t")
+        );
     }
 
     #[test]
