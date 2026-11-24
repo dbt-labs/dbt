@@ -405,7 +405,7 @@ fn hooks_sql(raw: &str) -> String {
     format!(
         "CASE WHEN {raw} IS NULL THEN NULL ELSE to_json(list_transform(CAST(CASE json_type({raw}) \
          WHEN 'ARRAY' THEN {raw} ELSE json_array({raw}) END AS JSON[]), \
-         e -> CASE json_type(e) WHEN 'VARCHAR' THEN \
+         lambda e: CASE json_type(e) WHEN 'VARCHAR' THEN \
          json_object('sql', json_extract_string(e, '$'), 'transaction', TRUE) ELSE e END)) END"
     )
 }
