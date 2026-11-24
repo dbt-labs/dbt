@@ -1,8 +1,15 @@
--- funcsign: (relation, string) -> string
-{% macro changes(relation, mode) -%}
+-- funcsign: (relation, optional[string]) -> string
+{% macro changes(relation, mode=none) -%}
+    {{ return(adapter.dispatch('changes', 'dbt')(relation, mode)) }}
+{%- endmacro %}
+
+
+-- funcsign: (relation, optional[string]) -> string
+{% macro snowflake__changes(relation, mode) -%}
 {#-
     The change source of a custom incremental dynamic table:
     `select ... from {{ changes(ref('orders'), 'default') }} as o`.
+    https://docs.snowflake.com/en/sql-reference/constructs/changes
 
     Renders `<relation> changes(information => DEFAULT|APPEND_ONLY)` with no time bounds, which a
     CI DT refresh binds to its interval. Under `dbt run --empty` it renders
@@ -18,7 +25,7 @@
     - relation: the change source, usually `ref(...)` or `source(...)`
     - mode: 'default' (inserts, updates and deletes) or 'append_only' (inserts only), any case
 -#}
-    {%- if mode is undefined or mode is none -%}
+    {%- if mode is none -%}
         {% do exceptions.raise_compiler_error(
             "changes(): `mode` is required: changes(<relation>, 'default') or changes(<relation>, 'append_only')."
         ) %}

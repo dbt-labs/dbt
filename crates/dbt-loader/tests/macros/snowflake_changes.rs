@@ -18,7 +18,9 @@ const CHANGES_SQL: &str =
 
 fn harness() -> MacroTestHarness {
     MacroTestHarness::for_adapter(AdapterType::Snowflake)
-        .with_macro_at_path("dbt_snowflake", "changes", CHANGES_SQL, CHANGES_PATH)
+        // `changes()` dispatches to `snowflake__changes` in the `dbt` namespace.
+        .with_macro_at_path("dbt", "changes", CHANGES_SQL, CHANGES_PATH)
+        .with_macro_at_path("dbt", "snowflake__changes", CHANGES_SQL, CHANGES_PATH)
         .build()
         .expect("harness should build")
 }
