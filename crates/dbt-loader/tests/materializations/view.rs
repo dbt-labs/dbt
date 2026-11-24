@@ -22,6 +22,7 @@ fn view_macro_name(adapter_type: AdapterType) -> &'static str {
         AdapterType::Bigquery => "materialization_view_bigquery",
         AdapterType::Redshift => "materialization_view_redshift",
         AdapterType::Postgres => "materialization_view_default",
+        AdapterType::SqlServer => "materialization_view_sqlserver",
         other => panic!("unsupported adapter for view materialization test: {other:?}"),
     }
 }
@@ -43,6 +44,13 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
         Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
     });
     mock.on("get_column_tags_from_model", |_| Ok(Value::UNDEFINED));
+    mock.on("quote", |args| {
+        let id = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+        Ok(Value::from(format!("\"{}\"", id.replace('"', "\"\""))))
+    });
+    mock.on("standardize_grants_dict", |_| {
+        Ok(Value::from_serialize(BTreeMap::<String, Value>::new()))
+    });
     mock.on("get_view_options", |_| {
         Ok(Value::from(BTreeMap::<String, Value>::new()))
     });
@@ -646,6 +654,36 @@ mod redshift {
         let h = run_existing_table(ADAPTER);
         h.mock().observed_calls().assert_called("rename_relation");
         assert_executed_contains(h.mock(), "create");
+    }
+}
+
+mod sqlserver {
+    use super::*;
+    const ADAPTER: AdapterType = AdapterType::SqlServer;
+
+    #[test]
+    fn no_existing_relation() {
+        let h = run_no_existing(ADAPTER);
+        h.mock()
+            .observed_calls()
+            .assert_not_called("rename_relation");
+        assert_executed_contains(h.mock(), "create or alter view");
+    }
+
+    #[test]
+    fn existing_view_altered_in_place() {
+        let h = run_existing_view(ADAPTER);
+        h.mock()
+            .observed_calls()
+            .assert_not_called("rename_relation");
+        assert_executed_contains(h.mock(), "create or alter view");
+    }
+
+    #[test]
+    fn existing_table_swapped_via_rename() {
+        let h = run_existing_table(ADAPTER);
+        h.mock().observed_calls().assert_called("rename_relation");
+        assert_executed_contains(h.mock(), "create or alter view");
     }
 }
 
