@@ -34,6 +34,7 @@ mod vec_of_rows;
 pub use column::Column;
 pub use columns::Columns;
 pub use data_type::DataType;
+pub use decimal::register_decimal_int_filter;
 pub use row::Row;
 pub use rows::Rows;
 pub use table::AgateTable;
