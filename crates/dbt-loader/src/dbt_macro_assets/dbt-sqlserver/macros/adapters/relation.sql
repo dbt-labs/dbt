@@ -8,14 +8,9 @@
 
 {% macro sqlserver__get_drop_sql(relation) -%}
   {% if relation.type == 'view' -%}
-      {#- auto_begin=false, matching dbt-adapters' own relations/drop.sql: a
-          read-only lookup must not open the ambient transaction. This is the
-          first statement of the temp-relation build (create.sql ->
-          adapter.drop_relation), so with the default auto_begin=True it held
-          that build's sys.sysschobjs X locks until the materialization
-          committed, deadlocking a concurrent worker (error 1205). -#}
-      {% call statement('find_references', fetch_result=true, auto_begin=false) %}
-        {{ get_use_database_sql(relation.database) }}
+      {#- Run through sp_executesql, so the statement text is the same for every
+          relation and SQL Server caches one plan for all of them. -#}
+      {%- set find_references_sql -%}
         select
             sch.name as schema_name,
             obj.name as view_name
@@ -24,11 +19,25 @@
         on refs.referencing_id = obj.object_id
         inner join sys.schemas sch {{ information_schema_hints() }}
         on obj.schema_id = sch.schema_id
-        where refs.referenced_database_name = '{{ relation.database }}'
-        and refs.referenced_schema_name = '{{ relation.schema }}'
-        and refs.referenced_entity_name = '{{ relation.identifier }}'
+        where refs.referenced_database_name = @database
+        and refs.referenced_schema_name = @schema
+        and refs.referenced_entity_name = @identifier
         and obj.type = 'V'
         {{ get_query_options() }}
+      {%- endset %}
+      {#- auto_begin=false, matching dbt-adapters' own relations/drop.sql: a
+          read-only lookup must not open the ambient transaction. This is the
+          first statement of the temp-relation build (create.sql ->
+          adapter.drop_relation), so with the default auto_begin=True it held
+          that build's sys.sysschobjs X locks until the materialization
+          committed, deadlocking a concurrent worker (error 1205). -#}
+      {% call statement('find_references', fetch_result=true, auto_begin=false) %}
+        {{ get_use_database_sql(relation.database) }}
+        exec sp_executesql N'{{ escape_single_quotes(find_references_sql) }}',
+            N'@database sysname, @schema sysname, @identifier sysname',
+            @database = N'{{ escape_single_quotes(relation.database) }}',
+            @schema = N'{{ escape_single_quotes(relation.schema) }}',
+            @identifier = N'{{ escape_single_quotes(relation.identifier) }}';
       {% endcall %}
       {% set references = load_result('find_references')['data'] %}
       {% for reference in references -%}

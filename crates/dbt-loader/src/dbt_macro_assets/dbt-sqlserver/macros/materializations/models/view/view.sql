@@ -121,7 +121,11 @@
 
   {{ adapter.commit() }}
 
-  {{ drop_relation_if_exists(backup_relation) }}
+  {#- Only the table branch above makes a backup. A view is altered in place, and a
+      drop would still query the missing backup's dependents. -#}
+  {% if existing_relation is not none and existing_relation.type != 'view' %}
+    {{ drop_relation_if_exists(backup_relation) }}
+  {% endif %}
 
   {{ run_hooks(post_hooks, inside_transaction=False) }}
 

@@ -197,11 +197,13 @@
     - dm_exec_describe_first_result_set is referenced once: each reference compiles the body.
     - Its error row is kept, so a body it cannot describe is refreshed.
     - COLLATE DATABASE_DEFAULT, or the join fails where catalog and database collations differ.
-    - The body is inlined as an N'' literal: the function needs nvarchar. -#}
+    - Run through sp_executesql, so the statement text is the same for every view and SQL
+      Server caches one plan for all of them.
+    - The values are passed as declared parameters rather than literals: the function
+      needs nvarchar and a literal would be varchar. -#}
 {% macro sqlserver__get_view_skip_check_sql(relation, compiled_sql) -%}
-  {%- set object_name = "quotename('" ~ relation.schema ~ "') + '.' + quotename('" ~ relation.identifier ~ "')" -%}
-  {{ get_use_database_sql(relation.database) }}
-  declare @dbt_sqlserver_skip_check_body nvarchar(max) = N'{{ escape_single_quotes(compiled_sql) }}';
+  {%- set object_name = "quotename(@schema) + '.' + quotename(@identifier)" -%}
+  {%- set check_sql -%}
   select
       object_definition(object_id({{ object_name }}, 'V')) as definition,
       case when exists (
@@ -234,6 +236,13 @@
                     <> isnull(cached.collation_name, '') collate database_default
       ) then 1 else 0 end as needs_refresh
   where object_id({{ object_name }}, 'V') is not null
+  {%- endset -%}
+  {{ get_use_database_sql(relation.database) }}
+  exec sp_executesql N'{{ escape_single_quotes(check_sql) }}',
+      N'@schema sysname, @identifier sysname, @dbt_sqlserver_skip_check_body nvarchar(max)',
+      @schema = N'{{ escape_single_quotes(relation.schema) }}',
+      @identifier = N'{{ escape_single_quotes(relation.identifier) }}',
+      @dbt_sqlserver_skip_check_body = N'{{ escape_single_quotes(compiled_sql) }}';
 {% endmacro %}
 
 {% macro sqlserver__get_relation_last_modified(information_schema, relations) -%}
