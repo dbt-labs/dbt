@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write as _};
 use std::path::{Component, Path};
 
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
@@ -11,7 +13,7 @@ use dbt_yaml::Verbatim;
 use crate::context::DepsOperationContext;
 use crate::package_installer::StagedPackage;
 use crate::package_listing::{PackageListing, UnpinnedPackage};
-use crate::utils::{max_resolve_concurrency, scrub_secret_env_vars};
+use crate::utils::{make_tempdir, max_resolve_concurrency, scrub_secret_env_vars};
 
 fn package_lock_needs_scrub(package: &DbtPackageLock) -> bool {
     match package {
@@ -46,7 +48,7 @@ fn scrub_package_lock_for_file(dbt_packages_lock: &mut DbtPackagesLock) {
 
 /// Installs each locked package into its own scratch dir under `packages_install_path`,
 /// then moves each package out of its scratch dir to `<packages_install_path>/<name>`.
-/// A failed download leaves the previous packages and `package-lock.yml` unchanged.
+/// Keep the previous packages until their replacements and the new lockfile are published.
 pub async fn install_packages(
     ctx: &DepsOperationContext<'_>,
     dbt_packages_lock: &DbtPackagesLock,
@@ -107,23 +109,15 @@ pub async fn install_packages(
         check_package_dir_name(&package.name)?;
     }
 
-    let mut installed = HashSet::new();
-    for package in staged {
-        let target = packages_install_path.join(&package.name);
-        remove_entry(&target)?;
-        stdfs::rename(&package.path, &target)?;
-        installed.insert(package.name);
-    }
-
-    // The new packages are in place, so the lock now describes them.
     let packages_lock_path = ctx.io.in_dir.join(DBT_PACKAGES_LOCK_FILE);
-    std::fs::write(&packages_lock_path, &package_lock_str).map_err(|e| {
-        fs_err!(
-            ErrorCode::IoError,
-            "Failed to write package-lock.yml file: {}",
-            e,
-        )
-    })?;
+    publish_packages(
+        &staged,
+        packages_install_path,
+        &packages_lock_path,
+        &package_lock_str,
+    )?;
+
+    let installed: HashSet<_> = staged.into_iter().map(|package| package.name).collect();
 
     // Remove packages the lock no longer lists, and scratch dirs left by a killed install.
     for entry in stdfs::read_dir(packages_install_path)? {
@@ -139,6 +133,105 @@ pub async fn install_packages(
         }
     }
     Ok(())
+}
+
+fn publish_packages(
+    staged: &[StagedPackage],
+    packages_install_path: &Path,
+    lock_path: &Path,
+    lock_contents: &str,
+) -> FsResult<()> {
+    let backups = make_tempdir(Some(packages_install_path))?;
+    let mut replacements = Vec::with_capacity(staged.len());
+    let result = (|| {
+        for (index, package) in staged.iter().enumerate() {
+            let target = packages_install_path.join(&package.name);
+            let backup = backups.path().join(index.to_string());
+            let previous = match fs::rename(&target, &backup) {
+                Ok(()) => Some(backup),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(fs_err!(
+                        ErrorCode::IoError,
+                        "Failed to back up package '{}': {error}",
+                        target.display()
+                    ));
+                }
+            };
+            let replacement = stdfs::rename(&package.path, &target);
+            replacements.push((target, previous));
+            replacement?;
+        }
+
+        write_package_lock(lock_path, lock_contents).map_err(|error| {
+            fs_err!(
+                ErrorCode::IoError,
+                "Failed to write package-lock.yml file: {error}"
+            )
+        })
+    })();
+
+    if let Err(error) = result {
+        let mut rollback_error = None;
+        for (target, previous) in replacements.into_iter().rev() {
+            let restored = remove_entry(&target).and_then(|()| match previous {
+                Some(backup) => stdfs::rename(backup, target),
+                None => Ok(()),
+            });
+            if let Err(restore_error) = restored {
+                rollback_error.get_or_insert(restore_error);
+            }
+        }
+        if let Some(restore_error) = rollback_error {
+            let backup_path = backups.keep();
+            return Err(Box::new(error.with_chained_errors(fs_err!(
+                ErrorCode::IoError,
+                "Failed to restore installed packages. Remaining backups are at '{}': {restore_error}",
+                backup_path.display()
+            ))));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn write_package_lock(path: &Path, contents: &str) -> io::Result<()> {
+    let destination = match path.symlink_metadata() {
+        Ok(metadata) if metadata.file_type().is_symlink() => path.canonicalize()?,
+        Ok(_) => path.to_owned(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => path.to_owned(),
+        Err(error) => return Err(error),
+    };
+    // Replacing by rename could bypass a read-only lockfile. Check for write
+    // access without truncating it and preserve the existing permissions.
+    let permissions = match OpenOptions::new().write(true).open(&destination) {
+        Ok(file) => {
+            let permissions = file.metadata()?.permissions();
+            if permissions.readonly() {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            Some(permissions)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    let mut temporary = builder.tempfile_in(parent)?;
+    temporary.write_all(contents.as_bytes())?;
+    if let Some(permissions) = permissions {
+        temporary.as_file().set_permissions(permissions)?;
+    }
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(destination)
+        .map(|_| ())
+        .map_err(|error| error.error)
 }
 
 /// A package is installed to `<packages_install_path>/<name>`, and `name` comes from the
@@ -161,7 +254,7 @@ fn remove_entry(path: &Path) -> FsResult<()> {
     match path.symlink_metadata() {
         Ok(metadata) if metadata.is_file() => stdfs::remove_file(path),
         Ok(_) => stdfs::remove_dir_all(path),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(fs_err!(
             ErrorCode::IoError,
             "Failed to read {}: {}",

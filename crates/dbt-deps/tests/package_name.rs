@@ -1,4 +1,4 @@
-//! End-to-end `dbt deps` tests for package names that are not a plain dir name.
+//! End-to-end `dbt deps` tests for package installation failures.
 //!
 //! A package is installed to `dbt_packages/<name>`, and `<name>` comes from the
 //! package's own `dbt_project.yml`. These drive the real
@@ -58,27 +58,13 @@ impl TestProject {
         let repo = self.root.parent().unwrap().join(dir);
         fs::create_dir_all(&repo).unwrap();
         fs::write(repo.join("dbt_project.yml"), project_yml).unwrap();
-        for args in [
-            &["init", "-q", "-b", "main"][..],
-            &["add", "."],
-            &[
-                "-c",
-                "user.name=test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "-q",
-                "-m",
-                "init",
-            ],
-        ] {
-            let status = Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap();
-            assert!(status.success());
-        }
+        let status = Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        self.commit_git_package(dir);
 
         // A file URL has no backslashes, which a Windows path would put into the quoted YAML.
         let repo_url = Url::from_file_path(&repo).unwrap();
@@ -92,7 +78,33 @@ impl TestProject {
         .unwrap();
     }
 
-    async fn try_deps(&self) -> Result<(), Box<dbt_common::FsError>> {
+    fn commit_git_package(&self, dir: &str) {
+        let repo = self.root.parent().unwrap().join(dir);
+        for args in [
+            &["add", "."][..],
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "fixture revision",
+            ],
+        ] {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
+    async fn try_deps(&self, upgrade: bool) -> Result<(), Box<dbt_common::FsError>> {
         let io = IoArgs {
             in_dir: self.root.clone(),
             out_dir: self.root.join("target"),
@@ -105,9 +117,9 @@ impl TestProject {
             FsCommand::Deps,
             &env,
             &self.root.join("dbt_packages"),
-            true,  // install_deps
-            None,  // add_package
-            false, // upgrade
+            true, // install_deps
+            None, // add_package
+            upgrade,
             false, // lock
             Default::default(),
             false, // version_check
@@ -130,7 +142,10 @@ impl TestProject {
 async fn assert_name_is_rejected(bad_name: &str) {
     let project = TestProject::new();
     project.with_local_package("good_pkg", "name: good_pkg\nprofile: default\n");
-    project.try_deps().await.expect("dbt deps should succeed");
+    project
+        .try_deps(false)
+        .await
+        .expect("dbt deps should succeed");
     let good_pkg = project.root.join("dbt_packages/good_pkg/dbt_project.yml");
     assert!(good_pkg.is_file());
 
@@ -139,7 +154,7 @@ async fn assert_name_is_rejected(bad_name: &str) {
         &format!("name: \"{bad_name}\"\nprofile: default\n"),
     );
     let err = project
-        .try_deps()
+        .try_deps(false)
         .await
         .expect_err("dbt deps should reject the package name");
 
@@ -169,4 +184,42 @@ async fn a_current_dir_package_name_fails_deps_and_deletes_nothing() {
 #[tokio::test]
 async fn a_nested_package_name_fails_deps_and_deletes_nothing() {
     assert_name_is_rejected("nested/pkg").await;
+}
+
+#[tokio::test]
+async fn a_read_only_lockfile_preserves_the_installed_revision() {
+    let project = TestProject::new();
+    let first_revision = "name: git_pkg\nversion: '1.0'\n";
+    let second_revision = "name: git_pkg\nversion: '2.0'\n";
+    project.with_git_package("git_pkg", first_revision);
+    project.try_deps(false).await.unwrap();
+
+    let lock = project.root.join("package-lock.yml");
+    let old_lock = fs::read(&lock).unwrap();
+    let installed = project.root.join("dbt_packages/git_pkg/dbt_project.yml");
+    assert_eq!(fs::read_to_string(&installed).unwrap(), first_revision);
+
+    let upstream = project.root.join("../git_pkg/dbt_project.yml");
+    fs::write(upstream, second_revision).unwrap();
+    project.commit_git_package("git_pkg");
+
+    let original_permissions = fs::metadata(&lock).unwrap().permissions();
+    let mut read_only = original_permissions.clone();
+    read_only.set_readonly(true);
+    fs::set_permissions(&lock, read_only).unwrap();
+    let result = project.try_deps(true).await;
+    fs::set_permissions(&lock, original_permissions).unwrap();
+
+    let error = result.expect_err("the lockfile write should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("Failed to write package-lock.yml")
+    );
+    assert_eq!(fs::read(&lock).unwrap(), old_lock);
+    assert_eq!(fs::read_to_string(&installed).unwrap(), first_revision);
+
+    project.try_deps(true).await.unwrap();
+    assert_ne!(fs::read(&lock).unwrap(), old_lock);
+    assert_eq!(fs::read_to_string(&installed).unwrap(), second_revision);
 }

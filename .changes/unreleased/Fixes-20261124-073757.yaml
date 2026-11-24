@@ -1,0 +1,7 @@
+kind: Fixes
+body: Restore the previous package installation when dbt deps cannot publish package-lock.yml.
+time: 2026-11-24T07:37:57.369012+05:30
+custom:
+    author: GokulArumugam
+    issue: ""
+    project: dbt-core
