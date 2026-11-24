@@ -1,0 +1,6 @@
+kind: Fixes
+body: Resolve source references inside UDF bodies into manifest node dependencies.
+time: 2026-11-21T23:03:02.895964+05:00
+custom:
+    Author: ViktorBystrov72
+    Issue: "12850"

@@ -451,7 +451,11 @@ class TestCanUseSourceInUDF:
             "numbers_seed.csv": numbers_seed_csv,
         }
 
-    def test_can_use_ref_in_udf(self, project):
+    def test_can_use_source_in_udf(self, project):
+        manifest = run_dbt(["parse"])
+        function = manifest.functions["function.test.sum_numbers_function"]
+        assert "source.test.test_source.numbers_seed" in function.depends_on.nodes
+
         run_dbt(["seed"])
         run_dbt(["build"])
 
