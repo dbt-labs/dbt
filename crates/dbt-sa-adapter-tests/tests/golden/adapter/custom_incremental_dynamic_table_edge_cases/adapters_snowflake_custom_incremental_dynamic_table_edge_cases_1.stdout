@@ -30,6 +30,6 @@
    Running models/duplicate_keys.sql
  Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys (dynamic_table) [7 of 7 in duration]
 ==================== Execution Summary =====================
-Finished 'run' with 1 warning and 2 errors for target 'snowflake' [duration]
+Finished 'run' with 2 errors for target 'snowflake' [duration]
 Processed: 7 models
 Summary: 7 total | 5 success | 2 error

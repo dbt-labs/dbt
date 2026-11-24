@@ -9,4 +9,4 @@
    Parsing models/widened_column.sql
    Parsing models/wrong_materialization.sql
 ==================== Execution Summary =====================
-Finished 'run-operation' with 1 warning for target 'snowflake' [duration]
+Finished 'run-operation' successfully for target 'snowflake' [duration]

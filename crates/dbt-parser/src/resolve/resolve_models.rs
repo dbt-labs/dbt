@@ -759,14 +759,6 @@ async fn build_model_nodes(
             selected_adapter,
             &dbt_asset.path,
         )?;
-        if let Some(warning) = custom_incremental_outside_dynamic_table(
-            &model_config,
-            status,
-            selected_adapter,
-            &dbt_asset.path,
-        ) {
-            emit_warn_log_from_fs_error(*warning);
-        }
 
         // catalog check: a catalog_name with no match would otherwise silently materialize to the default catalog
         if model_config.enabled
@@ -1568,37 +1560,6 @@ pub fn validate_interactive_table_config(
     validate_interactive_table_transient(model_config, path)?;
     validate_interactive_table_target_lag_warehouse(model_config, path)?;
     Ok(())
-}
-
-/// `refresh_mode='CUSTOM_INCREMENTAL'` builds a custom incremental dynamic table, which only the
-/// `dynamic_table` materialization does; any other materialization ignores it. A warning, not an
-/// error: the config is often inherited from a folder-level `+refresh_mode` by models that are
-/// meant to be something else (an ephemeral helper joined into the CI DTs), where it is harmless.
-/// Only for models that will actually be built, on Snowflake, as for `interactive_table`.
-pub fn custom_incremental_outside_dynamic_table(
-    model_config: &ResolvedModelConfig,
-    status: ModelStatus,
-    adapter_type: AdapterType,
-    path: &Path,
-) -> Option<Box<dbt_common::FsError>> {
-    if status != ModelStatus::Enabled || !matches!(adapter_type, AdapterType::Snowflake) {
-        return None;
-    }
-    let custom_incremental = model_config
-        .__warehouse_specific_config__
-        .refresh_mode
-        .as_deref()
-        .is_some_and(|mode| mode.trim().eq_ignore_ascii_case("CUSTOM_INCREMENTAL"));
-    if custom_incremental && !matches!(model_config.materialized, DbtMaterialization::DynamicTable)
-    {
-        return Some(fs_err!(
-            code => ErrorCode::CustomIncrementalOutsideDynamicTable,
-            loc => path.to_path_buf(),
-            "refresh_mode='CUSTOM_INCREMENTAL' is ignored: this model is materialized as '{}', and only dynamic_table models build custom incremental dynamic tables. Set materialized='dynamic_table', or, if refresh_mode is inherited from a folder-level config, scope it to the dynamic tables.",
-            model_config.materialized,
-        ));
-    }
-    None
 }
 
 /// Process Python model files through AST analysis
@@ -2987,66 +2948,6 @@ mod interactive_table_validation_tests {
         assert_rejects_with(
             validate_interactive_table_transient(&resolved, &test_path()),
             "Set `transient: false` on this model",
-        );
-    }
-}
-
-/// `refresh_mode='CUSTOM_INCREMENTAL'` warns on any materialization but `dynamic_table`, for models
-/// that will be built on Snowflake.
-#[cfg(test)]
-mod custom_incremental_outside_dynamic_table_tests {
-    use super::{
-        AdapterType, DbtMaterialization, ErrorCode, ModelConfig, ModelStatus, Spanned,
-        StaticAnalysisKind, custom_incremental_outside_dynamic_table,
-    };
-    use dbt_schemas::schemas::common::DbtQuoting;
-    use dbt_schemas::schemas::project::{ResolvableConfig, WarehouseSpecificNodeConfig};
-    use std::path::PathBuf;
-
-    /// The warning for an enabled Snowflake model, if any.
-    fn warning(materialized: DbtMaterialization, refresh_mode: Option<&str>) -> Option<String> {
-        let resolved = ModelConfig {
-            quoting: Some(DbtQuoting::default()),
-            static_analysis: Some(Spanned::new(StaticAnalysisKind::Off)),
-            materialized: Some(materialized),
-            __warehouse_specific_config__: WarehouseSpecificNodeConfig {
-                refresh_mode: refresh_mode.map(str::to_string),
-                ..Default::default()
-            }
-            .into(),
-            ..Default::default()
-        }
-        .finalize();
-        custom_incremental_outside_dynamic_table(
-            &resolved,
-            ModelStatus::Enabled,
-            AdapterType::Snowflake,
-            &PathBuf::from("models/my_model.sql"),
-        )
-        .map(|warning| {
-            assert_eq!(
-                warning.code,
-                ErrorCode::CustomIncrementalOutsideDynamicTable
-            );
-            warning.to_string()
-        })
-    }
-
-    #[test]
-    fn warns_outside_dynamic_table() {
-        let message = warning(DbtMaterialization::Table, Some("custom_incremental"))
-            .expect("expected a warning");
-        assert!(
-            message.contains("is ignored") && message.contains("materialized as 'table'"),
-            "got: {message}"
-        );
-    }
-
-    #[test]
-    fn silent_on_dynamic_table() {
-        assert_eq!(
-            warning(DbtMaterialization::DynamicTable, Some("CUSTOM_INCREMENTAL")),
-            None
         );
     }
 }

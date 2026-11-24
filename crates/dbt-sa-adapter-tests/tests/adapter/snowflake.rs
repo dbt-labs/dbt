@@ -522,7 +522,8 @@ async fn adapters_snowflake_custom_incremental_dynamic_table_create_or_alter() -
 
 /// Snowflake behaviors a CI DT runs into, one model each (see the project's README): no change
 /// tracking, `{{ this }}`, changes not deduplicated per key, a widened source column, an upstream
-/// `table` model dbt replaces, and the dbt1111 warning. The goldies pin the errors.
+/// `table` model dbt replaces, and `refresh_mode='CUSTOM_INCREMENTAL'` on a `table`. The goldies
+/// pin the errors.
 #[dbt_runtime::test]
 async fn adapters_snowflake_custom_incremental_dynamic_table_edge_cases() -> FsResult<()> {
     run_fs_record_replay_task_seq(

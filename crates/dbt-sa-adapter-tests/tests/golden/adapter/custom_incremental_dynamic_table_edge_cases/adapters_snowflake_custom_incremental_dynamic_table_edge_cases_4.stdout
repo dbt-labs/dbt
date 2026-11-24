@@ -12,4 +12,4 @@
 [PASS] widened_column: the failed refresh left its rows
 [PASS] over_replaced_table: update and insert arrive, the deleted order 2 stays
 ==================== Execution Summary =====================
-Finished 'run-operation' with 1 warning for target 'snowflake' [duration]
+Finished 'run-operation' successfully for target 'snowflake' [duration]

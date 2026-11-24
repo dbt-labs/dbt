@@ -10,4 +10,4 @@ and `verify` (`[PASS]`/`[FAIL]` in stdout):
 | `duplicate_keys` | second `run` | no per-key dedup: the refresh fails, 002742 "Duplicate row detected"; rows kept |
 | `widened_column` | second `run` | source column widened (flag off): the refresh fails, 002742, value too long; rows kept |
 | `over_replaced_table` | second `run` | reads `stg_orders`, a `table` model dbt replaces: an upstream delete is missed |
-| `wrong_materialization` | every command | `refresh_mode='CUSTOM_INCREMENTAL'` on a `table`: dbt1111 warning |
+| `wrong_materialization` | each `run` | `refresh_mode='CUSTOM_INCREMENTAL'` on a `table`: ignored, a table is built |
