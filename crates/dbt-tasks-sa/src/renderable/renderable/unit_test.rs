@@ -3448,9 +3448,14 @@ fn create_select_with_union_all(
                 }
             })
             .collect::<FsResult<Vec<_>>>()?;
-        // Use WHERE FALSE to ensure 0 rows are returned while preserving the schema
+        // `WHERE FALSE` is a syntax error in T-SQL, which has no boolean literal;
+        // `1 = 0` is a boolean expression in every dialect and returns no rows.
+        let empty_predicate = match adapter_type {
+            AdapterType::Fabric | AdapterType::SqlServer => "1 = 0",
+            _ => "FALSE",
+        };
         return Ok(format!(
-            "SELECT {}{} WHERE FALSE",
+            "SELECT {}{} WHERE {empty_predicate}",
             null_casts.join(", "),
             constant_column
         ));
@@ -6321,6 +6326,20 @@ mod tests {
         assert_contains!(result, "WHERE FALSE"); // Empty case returns 0 rows
         assert!(!result.contains("UNION ALL")); // Empty case shouldn't have UNION ALL
         assert!(!result.contains("VALUES")); // No VALUES clause
+
+        // T-SQL has no boolean literal, so the same shape has to use a predicate
+        // SQL Server can parse.
+        let tsql = create_select_with_union_all(
+            AdapterType::SqlServer,
+            &DefaultTypeOps::new(AdapterType::SqlServer),
+            vec![],
+            &schema,
+            &columns,
+            "",
+        )
+        .unwrap();
+        assert_contains!(tsql, "WHERE 1 = 0");
+        assert!(!tsql.contains("WHERE FALSE"));
     }
 
     #[test]
