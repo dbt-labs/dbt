@@ -26,11 +26,7 @@
         {{ get_query_options() }}
       {%- endset %}
       {#- auto_begin=false, matching dbt-adapters' own relations/drop.sql: a
-          read-only lookup must not open the ambient transaction. This is the
-          first statement of the temp-relation build (create.sql ->
-          adapter.drop_relation), so with the default auto_begin=True it held
-          that build's sys.sysschobjs X locks until the materialization
-          committed, deadlocking a concurrent worker (error 1205). -#}
+          read-only lookup has no business opening a transaction. -#}
       {% call statement('find_references', fetch_result=true, auto_begin=false) %}
         {{ get_use_database_sql(relation.database) }}
         exec sp_executesql N'{{ escape_single_quotes(find_references_sql) }}',
