@@ -1,0 +1,6 @@
+kind: Fixes
+body: Preserve multi-dependency test ordering for models downstream of a source when fast test edges are enabled.
+time: 2026-11-21T22:34:50.461194+05:00
+custom:
+    Author: ViktorBystrov72
+    Issue: "17100"
