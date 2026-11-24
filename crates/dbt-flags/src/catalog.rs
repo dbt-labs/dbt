@@ -8,7 +8,7 @@ pub static GIT_DEPS_FAST_PATH: FlagDef = FlagDef {
     name: "git_deps_fast_path",
     description: "Use host-specific fast paths (GitHub archive download and GraphQL ref \
                   resolution) for git packages, falling back to git clone.",
-    stage: Stage::Internal,
+    stage: Stage::Experimental,
     default: false,
     remote: Remote::Default,
     aliases: &[],
@@ -55,7 +55,7 @@ pub static FRONTEND_PROTOCOL: FlagDef = FlagDef {
     name: "frontend_protocol",
     description: "Call the SQL frontend through its protocol (serialized requests to a \
                   frontend session) instead of calling it directly.",
-    stage: Stage::Internal,
+    stage: Stage::Experimental,
     default: false,
     remote: Remote::Never,
     aliases: &[],
@@ -71,7 +71,7 @@ pub static LOCK_WITH_STATE: FlagDef = FlagDef {
     name: "lock_with_state",
     description: "Take the per-model task-cache lock before asking dbt State whether to \
                   build a node, so concurrent runs do not build it twice.",
-    stage: Stage::Internal,
+    stage: Stage::Experimental,
     default: false,
     remote: Remote::Force,
     aliases: &[],
@@ -86,7 +86,7 @@ pub static LOCK_WITH_STATE: FlagDef = FlagDef {
 pub static LAKECOMPUTE_PROFILE_SETUP: FlagDef = FlagDef {
     name: "lakecompute_profile_setup",
     description: "In dbt init, offer a lakecompute output beside a Snowflake profile's output.",
-    stage: Stage::Internal,
+    stage: Stage::Experimental,
     default: false,
     remote: Remote::Default,
     aliases: &[],
@@ -117,7 +117,7 @@ pub static USE_V2_EMPTY_SQL_REWRITE: FlagDef = FlagDef {
 pub static METRICFLOW_V2: FlagDef = FlagDef {
     name: "metricflow_v2",
     description: "MetricFlow SQL: models written in MetricFlow's semantic SQL.",
-    stage: Stage::Preview,
+    stage: Stage::Beta,
     default: false,
     remote: Remote::Never,
     aliases: &[],
@@ -160,12 +160,28 @@ mod tests {
             if let Some(remove_by) = def.remove_by {
                 assert!(
                     current < parse_version(remove_by),
-                    "flag '{}' was due to be removed or graduated by {remove_by} \
+                    "flag '{}' was due to be graduated, abandoned, or removed by {remove_by} \
                      (current version {})",
                     def.name,
                     env!("CARGO_PKG_VERSION")
                 );
             }
+        }
+    }
+
+    #[test]
+    fn defaults_match_stages() {
+        for def in ALL {
+            let expected = match def.stage {
+                Stage::Experimental | Stage::Beta | Stage::Abandoned => false,
+                Stage::Graduated => true,
+                Stage::Behavior => continue,
+            };
+            assert_eq!(
+                def.default, expected,
+                "flag '{}' is {:?}, so its default must be {expected}",
+                def.name, def.stage
+            );
         }
     }
 

@@ -123,6 +123,7 @@ const KNOWN_UNUSED_ENGINE_ENV_VARS: &[&str] = &[
 const USED_ENGINE_ENV_VARS: &[&str] = &[
     "DBT_ENGINE_AI_PROVIDER",
     BATCH_TESTS_ENV,
+    dbt_flags::BETA_FEATURES_ENV,
     "DBT_ENGINE_BETA_PACKAGE_PARSING",
     "DBT_ENGINE_BETA_PARSING",
     "DBT_ENGINE_DEFAULT_STATIC_ANALYSIS",
@@ -130,7 +131,6 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
     LOCAL_UNIT_TESTS_ENV,
     MULTI_ADAPTER_ENV,
     "DBT_ENGINE_EXPERIMENTAL_SNAPSHOT_COLUMNS",
-    dbt_flags::FEATURES_ENV,
     "DBT_ENGINE_GENERATE_INFO_SCHEMA",
     "DBT_ENGINE_INFO_SCHEMA_DIR",
     "DBT_ENGINE_MANAGE_STATE",
@@ -155,7 +155,7 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
 // 1. USED_ENGINE_ENV_VARS - engine-specific vars used by fusion
 // 2. KNOWN_UNUSED_ENGINE_ENV_VARS - dbt-core vars not supported by fusion
 // 3. Aliases derived from ALIASABLE_ENV_VARS (DBT_* -> DBT_ENGINE_*)
-// 4. Legacy env vars of registered feature flags
+// 4. The env vars of registered feature flags: each flag's own, and its legacy ones
 static KNOWN_ENGINE_ENV_VARS: std::sync::LazyLock<std::collections::HashSet<String>> =
     std::sync::LazyLock::new(|| {
         let mut set = std::collections::HashSet::new();
@@ -178,13 +178,18 @@ static KNOWN_ENGINE_ENV_VARS: std::sync::LazyLock<std::collections::HashSet<Stri
         }
 
         for def in dbt_flags::ALL {
-            for var in def.legacy_env {
-                set.insert((*var).to_string());
-            }
+            set.extend(flag_env_vars(def));
         }
 
         set
     });
+
+/// The environment variables that set `def`: its own, under its name and its aliases, and its
+/// legacy ones.
+fn flag_env_vars(def: &dbt_flags::FlagDef) -> impl Iterator<Item = String> {
+    def.env_vars()
+        .chain(def.legacy_env.iter().map(|var| (*var).to_string()))
+}
 
 /// Applies DBT_ENGINE_* environment variable aliases.
 ///
@@ -304,10 +309,19 @@ pub fn warn_if_legacy_run_cache_mode_flag_used() {
 /// The `DBT_ENGINE_` prefix is reserved for dbt engine use. User-authored environment
 /// variables must not use this prefix to avoid conflicts with current or future
 /// engine-defined variables.
-pub fn validate_engine_env_vars() -> FsResult<()> {
+///
+/// `known_flags` are the feature flags this binary knows. A variable that sets one of them is
+/// the engine's own, also when the flag is not in `dbt_flags::ALL`.
+pub fn validate_engine_env_vars(known_flags: &[&'static dbt_flags::FlagDef]) -> FsResult<()> {
     let unknown: Vec<String> = std::env::vars()
         .map(|(k, _)| k)
-        .filter(|k| k.starts_with(ENGINE_ENV_PREFIX) && !KNOWN_ENGINE_ENV_VARS.contains(k))
+        .filter(|k| {
+            k.starts_with(ENGINE_ENV_PREFIX)
+                && !KNOWN_ENGINE_ENV_VARS.contains(k)
+                && !known_flags
+                    .iter()
+                    .any(|flag| flag_env_vars(flag).any(|var| var == *k))
+        })
         .collect();
 
     if unknown.is_empty() {
@@ -338,7 +352,7 @@ mod tests {
             #[allow(clippy::disallowed_methods)]
             std::env::set_var("DBT_ENGINE_MY_CUSTOM_VAR", "1");
         }
-        let result = validate_engine_env_vars();
+        let result = validate_engine_env_vars(&[]);
         unsafe {
             #[allow(clippy::disallowed_methods)]
             std::env::remove_var("DBT_ENGINE_MY_CUSTOM_VAR");
@@ -358,12 +372,63 @@ mod tests {
             #[allow(clippy::disallowed_methods)]
             std::env::set_var("DBT_ENGINE_BETA_PARSING", "1");
         }
-        let result = validate_engine_env_vars();
+        let result = validate_engine_env_vars(&[]);
         unsafe {
             #[allow(clippy::disallowed_methods)]
             std::env::remove_var("DBT_ENGINE_BETA_PARSING");
         }
         assert!(result.is_ok(), "known engine env var should not error");
+    }
+
+    #[test]
+    fn validate_engine_env_vars_allows_the_variables_of_flags() {
+        // A flag of a feature that the binary adds, which is not in `dbt_flags::ALL`.
+        static ADDED: dbt_flags::FlagDef = dbt_flags::FlagDef {
+            name: "added_feature",
+            description: "A feature that the binary adds.",
+            stage: dbt_flags::Stage::Experimental,
+            default: false,
+            remote: dbt_flags::Remote::Never,
+            aliases: &[],
+            legacy_env: &[],
+            tracking: None,
+            remove_by: None,
+            docs_url: None,
+        };
+        let catalog_var = dbt_flags::METRICFLOW_V2.env_var();
+        assert_eq!(catalog_var, "DBT_ENGINE_EXPERIMENTAL_METRICFLOW_V2");
+        let _lock = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            #[allow(clippy::disallowed_methods)]
+            std::env::set_var(&catalog_var, "1");
+        }
+        let catalog = validate_engine_env_vars(&[]);
+        unsafe {
+            #[allow(clippy::disallowed_methods)]
+            std::env::remove_var(&catalog_var);
+            #[allow(clippy::disallowed_methods)]
+            std::env::set_var("DBT_ENGINE_EXPERIMENTAL_ADDED_FEATURE", "1");
+        }
+        let known = validate_engine_env_vars(&[&ADDED]);
+        let unknown = validate_engine_env_vars(&[]);
+        unsafe {
+            #[allow(clippy::disallowed_methods)]
+            std::env::remove_var("DBT_ENGINE_EXPERIMENTAL_ADDED_FEATURE");
+        }
+        assert!(
+            catalog.is_ok(),
+            "the variable of a catalog flag should not error"
+        );
+        assert!(
+            known.is_ok(),
+            "the variable of a known flag should not error"
+        );
+        assert!(
+            unknown
+                .unwrap_err()
+                .to_string()
+                .contains("DBT_ENGINE_EXPERIMENTAL_ADDED_FEATURE")
+        );
     }
 
     #[test]
@@ -382,7 +447,7 @@ mod tests {
                 std::env::set_var(key, value);
             }
         }
-        let result = validate_engine_env_vars();
+        let result = validate_engine_env_vars(&[]);
         for (key, _) in vars {
             unsafe {
                 #[allow(clippy::disallowed_methods)]
@@ -406,7 +471,7 @@ mod tests {
             #[allow(clippy::disallowed_methods)]
             std::env::set_var("DBT_ENGINE_STATE_HOME", "state-home");
         }
-        let result = validate_engine_env_vars();
+        let result = validate_engine_env_vars(&[]);
         unsafe {
             #[allow(clippy::disallowed_methods)]
             std::env::remove_var("DBT_ENGINE_MANAGE_STATE");
@@ -427,7 +492,7 @@ mod tests {
             #[allow(clippy::disallowed_methods)]
             std::env::set_var(BATCH_TESTS_ENV, "1");
         }
-        let result = validate_engine_env_vars();
+        let result = validate_engine_env_vars(&[]);
         unsafe {
             #[allow(clippy::disallowed_methods)]
             std::env::remove_var(SKIP_REDUNDANT_TESTS_ENV);
@@ -447,7 +512,7 @@ mod tests {
             #[allow(clippy::disallowed_methods)]
             std::env::set_var(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, "1");
         }
-        let result = validate_engine_env_vars();
+        let result = validate_engine_env_vars(&[]);
         unsafe {
             #[allow(clippy::disallowed_methods)]
             std::env::remove_var(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV);
@@ -571,7 +636,7 @@ mod tests {
         }
 
         // It must be recognized (not rejected as an unknown reserved-prefix var)...
-        let validate = validate_engine_env_vars();
+        let validate = validate_engine_env_vars(&[]);
         // ...and reported as unused (it is a no-op in fusion).
         let unused = warn_unused_engine_env_vars();
 

@@ -414,7 +414,7 @@ async fn do_execute_fs(
 
     warn_unused_engine_env_vars();
     warn_if_legacy_run_cache_mode_flag_used();
-    install_feature_flags(&cli.common_args().features, &feature_stack);
+    install_feature_flags(&cli.common_args().beta_features, &feature_stack);
 
     // Current versions of rustls require us to explicitly install a default provider.
     // The default provider can only be installed once per process, so
@@ -681,7 +681,8 @@ pub async fn execute_setup_and_all_phases(
     emit_version_info(eval_arg, feature_stack.cli.command_name)?;
 
     check_options(cli);
-    if let Err(e) = validate_engine_env_vars() {
+    let known_flags = feature_stack.experimentals.experimentals.known_flags();
+    if let Err(e) = validate_engine_env_vars(&known_flags) {
         emit_error_log_from_fs_error(*e);
         return Err(FsError::exit_with_status(1));
     }
@@ -726,8 +727,10 @@ pub async fn execute_setup_and_all_phases(
 
 /// Resolves this invocation's feature flags and makes them current. The flags that turn on the
 /// binary's experimentals are known flags too, though they aren't in `dbt_flags::ALL`.
-fn install_feature_flags(cli_features: &[String], feature_stack: &FeatureStack) {
-    let snapshot = dbt_flags::FlagSnapshot::builder().cli(cli_features).build();
+fn install_feature_flags(cli_beta_features: &[String], feature_stack: &FeatureStack) {
+    let snapshot = dbt_flags::FlagSnapshot::builder()
+        .cli(cli_beta_features)
+        .build();
     let known = feature_stack.experimentals.experimentals.known_flags();
     for warning in snapshot.warnings(&known) {
         emit_warn_log_message(ErrorCode::InvalidConfig, warning);

@@ -21,7 +21,7 @@
 //! A field with the same name anywhere else in the entry is not the extension's.
 
 use dbt_common::FsResult;
-use dbt_common::io_args::project_flag_bool;
+use dbt_common::io_args::project_flag_lookup;
 use dbt_flags::FlagDef;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
@@ -231,7 +231,7 @@ pub struct ExtensionReader {
 impl ExtensionReader {
     /// The extensions of the set `S` that are on, reading the root project's `flags:`.
     pub(crate) fn of<S: ExtensionSet>(ctx: &ResolveCtx<'_>) -> Self {
-        let project_flags = project_flag_bool(ctx.dbt_state.root_project().flags.as_ref());
+        let project_flags = project_flag_lookup(ctx.dbt_state.root_project().flags.as_ref());
         Self::new::<S>(|flag| flag.resolve_with_project(&project_flags).value)
     }
 
@@ -395,7 +395,7 @@ mod tests {
     static SIZES: FlagDef = FlagDef {
         name: "test_sizes",
         description: "Sizes, for the tests of extensions.",
-        stage: Stage::Preview,
+        stage: Stage::Beta,
         default: false,
         remote: Remote::Never,
         aliases: &[],
