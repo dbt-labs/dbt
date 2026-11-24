@@ -562,6 +562,28 @@ def _style_severity(msg: str, level: EventLevel) -> str:
     return ui.warning_tag(msg) if level == EventLevel.WARN else ui.error_tag(msg)
 
 
+def _start_v2_subprocess(argv: List[str]) -> subprocess.Popen[str]:
+    """Start the parser with captured output and no console window on Windows."""
+    try:
+        return subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
+            env=_v2_subprocess_env(),
+        )
+    except FileNotFoundError as e:
+        raise V2ParserError(
+            f"v2 parser command not found: {argv[0]!r}. "
+            f"Reinstall dbt-core-experimental-parser, or set --v2-parser to "
+            f"point to an alternate engine binary."
+        ) from e
+
+
 def _run_v2(argv: List[str]) -> None:
     """Run the v2 parser subprocess, capturing stdout/stderr and re-emitting
     each line live through dbt-core's event system as it arrives.
@@ -601,23 +623,7 @@ def _run_v2(argv: List[str]) -> None:
     into properly leveled/structured dbt events, rather than re-rendering
     text into a flat Note here.
     """
-    try:
-        proc = subprocess.Popen(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            env=_v2_subprocess_env(),
-        )
-    except FileNotFoundError as e:
-        raise V2ParserError(
-            f"v2 parser command not found: {argv[0]!r}. "
-            f"Reinstall dbt-core-experimental-parser, or set --v2-parser to "
-            f"point to an alternate engine binary."
-        ) from e
+    proc = _start_v2_subprocess(argv)
 
     assert (
         proc.stdout is not None and proc.stderr is not None
