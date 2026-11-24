@@ -40,7 +40,7 @@ jobs:
     steps:
       - name: Find closing PR via timeline
         id: find_pr
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const result = await github.graphql(`
@@ -84,7 +84,7 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           PR_TITLE: ${{ needs.get_pr_info.outputs.pr_title }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const issueTitle = process.env.ISSUE_TITLE;

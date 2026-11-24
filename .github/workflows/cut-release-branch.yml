@@ -77,7 +77,7 @@ jobs:
           echo "BRANCH_NAME=cutting_release_branch/main_cleanup_$GITHUB_RUN_ID" >> $GITHUB_OUTPUT
 
       - name: "Checkout ${{ github.repository }}"
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           ref: "main"
           token: ${{ secrets.FISHTOWN_BOT_PAT }}
@@ -105,7 +105,7 @@ jobs:
 
     steps:
       - name: "Checkout ${{ github.repository }}"
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           ref: ${{ needs.create_temp_branch.outputs.temp_branch_name }}
           token: ${{ secrets.FISHTOWN_BOT_PAT }}
@@ -182,13 +182,13 @@ jobs:
 
     steps:
       - name: "Checkout ${{ github.repository }}"
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           ref: ${{ needs.create_temp_branch.outputs.temp_branch_name }}
           token: ${{ secrets.FISHTOWN_BOT_PAT }}
 
       - name: "Set up Python - ${{ env.PYTHON_TARGET_VERSION }}"
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v7.1.0
         with:
           python-version: "${{ env.PYTHON_TARGET_VERSION }}"
 
@@ -233,7 +233,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Checkout ${{ github.repository }}"
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           ref: ${{ needs.create_temp_branch.outputs.temp_branch_name }}
           token: ${{ secrets.FISHTOWN_BOT_PAT }}
@@ -278,7 +278,7 @@ jobs:
 
     steps:
       - name: "Checkout ${{ github.repository }}"
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           ref: ${{ needs.create_temp_branch.outputs.temp_branch_name }}
           token: ${{ secrets.FISHTOWN_BOT_PAT }}
@@ -329,7 +329,7 @@ jobs:
 
     steps:
       - name: "Checkout ${{ github.repository }}"
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           token: ${{ secrets.FISHTOWN_BOT_PAT }}
           fetch-depth: 0
