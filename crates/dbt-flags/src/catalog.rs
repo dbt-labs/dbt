@@ -49,10 +49,12 @@ pub static LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT: FlagDef = FlagDef {
     docs_url: None,
 };
 
-/// Load the SQL frontend from a dynamic library instead of the built-in one.
-pub static FRONTEND_LIBRARY: FlagDef = FlagDef {
-    name: "frontend_library",
-    description: "Load the SQL frontend from a dynamic library instead of the built-in one.",
+/// Call the SQL frontend through its protocol (serialized requests to a
+/// frontend session) instead of calling it directly.
+pub static FRONTEND_PROTOCOL: FlagDef = FlagDef {
+    name: "frontend_protocol",
+    description: "Call the SQL frontend through its protocol (serialized requests to a \
+                  frontend session) instead of calling it directly.",
     stage: Stage::Internal,
     default: false,
     remote: Remote::Never,
@@ -130,7 +132,7 @@ pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
     &REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT,
     &LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT,
-    &FRONTEND_LIBRARY,
+    &FRONTEND_PROTOCOL,
     &LOCK_WITH_STATE,
     &LAKECOMPUTE_PROFILE_SETUP,
     &USE_V2_EMPTY_SQL_REWRITE,
