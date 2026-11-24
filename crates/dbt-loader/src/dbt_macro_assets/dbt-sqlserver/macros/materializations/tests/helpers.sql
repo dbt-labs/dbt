@@ -2,7 +2,7 @@
 
   -- Create target schema if it does not exist
   {{ get_use_database_sql(target.database) }}
-  {{ create_schema_if_not_exists(target.schema) }}
+  {{ create_schema_if_not_exists(target.schema, target.schema_authorization) }}
 
   {% set testview_name = "testview_" ~ local_md5(main_sql) ~ "_" ~ (range(1300, 19000) | random) %}
   {% set testview %}

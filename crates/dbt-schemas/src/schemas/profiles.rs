@@ -2192,6 +2192,7 @@ pub struct SqlServerTargetEnv {
     pub port: Option<StringOrInteger>,
     pub user: Option<String>,
     pub authentication: String,
+    pub schema_authorization: Option<String>,
     pub __common__: CommonTargetContext,
 }
 
@@ -2669,6 +2670,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     port: config.port,
                     user: config.user,
                     authentication: config.authentication.unwrap_or_else(|| "sql".to_string()),
+                    schema_authorization: config.schema_authorization,
                     __common__: CommonTargetContext {
                         database: config.database.ok_or_else(|| missing("database"))?,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,

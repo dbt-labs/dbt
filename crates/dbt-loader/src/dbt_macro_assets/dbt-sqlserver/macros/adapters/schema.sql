@@ -32,7 +32,7 @@
 {% macro sqlserver__create_schema(relation) -%}
   {% call statement('create_schema') -%}
     {{ get_use_database_sql(relation.database) }}
-    {{ create_schema_if_not_exists(relation.schema) }}
+    {{ create_schema_if_not_exists(relation.schema, target.schema_authorization) }}
   {% endcall %}
 {% endmacro %}
 
