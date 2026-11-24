@@ -1269,16 +1269,6 @@ impl BaseRelation for Relation {
         }
     }
 
-    fn quoted(&self, s: &str) -> String {
-        let q = self.quote_character();
-        match self.adapter_type {
-            // A delimited SQL Server identifier escapes an embedded delimiter by
-            // doubling it: https://learn.microsoft.com/sql/relational-databases/databases/database-identifiers
-            AdapterType::SqlServer => format!("{q}{}{q}", s.replace(q, &format!("{q}{q}"))),
-            _ => format!("{q}{s}{q}"),
-        }
-    }
-
     fn render_self_as_str(&self) -> String {
         match self.adapter_type {
             AdapterType::DuckDB | AdapterType::MotherDuck => {

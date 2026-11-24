@@ -601,6 +601,7 @@ mod quote_ident_tests {
         AdapterType::Datafusion,
         AdapterType::LakeCompute,
         AdapterType::MotherDuck,
+        AdapterType::SqlServer,
     ];
 
     #[test]
