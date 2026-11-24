@@ -28,3 +28,7 @@
 /crates/adbc-record-replay/             @dbt-labs/dbt-v2-adapters
 /crates/dbt-sa-adapter-tests/           @dbt-labs/dbt-v2-adapters
 /crates/dbt-loader/src/dbt_macro_assets/ @dbt-labs/dbt-v2-adapters
+
+### README
+
+/README.md                              @dbt-labs/v2-readme-owners
