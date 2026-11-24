@@ -411,7 +411,9 @@ def try_get_max_rss_kb() -> Optional[int]:
 def _resolve_path(path: str) -> str:
     resolved = os.path.realpath(path)
     # Windows may return the extended-length prefix for some paths but not others
-    if resolved.startswith("\\\\?\\") and not resolved.startswith("\\\\?\\UNC\\"):
+    if resolved[:8].upper() == "\\\\?\\UNC\\":
+        resolved = "\\\\" + resolved[8:]
+    elif resolved.startswith("\\\\?\\"):
         resolved = resolved[4:]
     return os.path.normcase(resolved)
 

@@ -158,3 +158,17 @@ class TestResolvePathWithinBase:
             project_root=str(project_root),
         )
         assert result == os.path.join("target", "sub/file.sql")
+
+    @pytest.mark.parametrize(
+        "realpath_result, expected",
+        [
+            ("\\\\?\\C:\\proj\\target", "C:\\proj\\target"),
+            ("\\\\?\\UNC\\server\\share\\target", "\\\\server\\share\\target"),
+            ("\\\\?\\unc\\server\\share\\target", "\\\\server\\share\\target"),
+            ("\\\\server\\share\\target", "\\\\server\\share\\target"),
+        ],
+    )
+    def test_resolve_path_strips_extended_prefixes(self, monkeypatch, realpath_result, expected):
+        monkeypatch.setattr(os.path, "realpath", lambda p: realpath_result)
+        monkeypatch.setattr(os.path, "normcase", lambda p: p)
+        assert dbt.utils.utils._resolve_path("ignored") == expected
