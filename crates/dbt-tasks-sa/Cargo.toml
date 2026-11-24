@@ -30,7 +30,6 @@ dbt-index-core = { workspace = true }
 dbt-jinja-utils = { workspace = true }
 dbt-loader = { workspace = true }
 dbt-parser = { workspace = true }
-dbt-path = { workspace = true }
 dbt-pretty-table = { workspace = true }
 dbt-runtime = { workspace = true }
 dbt-scheduler = { workspace = true }
