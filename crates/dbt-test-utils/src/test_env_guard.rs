@@ -68,8 +68,8 @@ impl TestEnvGuard {
         // debugging / comparing runs (see CompareThreadConcurrencySummary).
         "DBT_TEST_OTEL_CAPTURE_DIR",
         "DBT_TEST_OTEL_LABEL",
-        // Feature flags under test, and the frontend library one of them loads.
-        "DBT_ENGINE_FEATURES",
+        // The flag that runs the tests through the frontend protocol, and the library it loads.
+        "DBT_ENGINE_EXPERIMENTAL_FRONTEND_PROTOCOL",
         "DBT_FRONTEND_LIBRARY_PATH",
     ];
 

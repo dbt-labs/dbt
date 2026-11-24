@@ -762,6 +762,15 @@ impl Experimentals {
         known
     }
 
+    /// The name and description of every beta feature this binary knows, for `--help`.
+    pub fn beta_features(&self) -> Vec<(&'static str, &'static str)> {
+        self.known_flags()
+            .into_iter()
+            .filter(|flag| flag.stage == Stage::Beta)
+            .map(|flag| (flag.name, flag.description))
+            .collect()
+    }
+
     /// The experimental that owns `command`, if one does.
     pub fn command_owner(&self, command: FsCommand) -> Option<&Arc<dyn Experimental>> {
         let FsCommand::Extension(name) = command else {
@@ -798,8 +807,8 @@ fn check_flag(experimental_type: &str, flag: Option<&FlagDef>) {
         panic!("experimental `{experimental_type}` must have a feature flag");
     };
     assert!(
-        matches!(flag.stage, Stage::Internal | Stage::Preview),
-        "experimental `{experimental_type}`'s flag `{}` must be an internal or preview flag",
+        matches!(flag.stage, Stage::Experimental | Stage::Beta),
+        "experimental `{experimental_type}`'s flag `{}` must be an experimental or beta flag",
         flag.name
     );
     assert!(
@@ -950,8 +959,8 @@ mod tests {
     use dbt_schemas::schemas::{CommonAttributes, InjectedNodeType, NodeBaseAttributes};
     use std::sync::atomic::AtomicUsize;
 
-    static TEST_FLAG: FlagDef = flag(false, Stage::Preview);
-    static ON_BY_DEFAULT: FlagDef = flag(true, Stage::Preview);
+    static TEST_FLAG: FlagDef = flag(false, Stage::Beta);
+    static ON_BY_DEFAULT: FlagDef = flag(true, Stage::Beta);
     static BEHAVIOR: FlagDef = flag(false, Stage::Behavior);
 
     const fn flag(default: bool, stage: Stage) -> FlagDef {
@@ -1425,8 +1434,8 @@ mod tests {
         ))]);
     }
 
-    /// An experimental's flag is a known feature flag, so `--feature` turns it on without an
-    /// "Unknown feature flag" warning.
+    /// An experimental's flag is a known feature flag, so `--beta-features` turns it on without
+    /// an "Unknown beta feature" warning.
     #[test]
     fn experimental_flags_are_known() {
         let snapshot = dbt_flags::FlagSnapshot::builder()
@@ -1435,14 +1444,14 @@ mod tests {
         let without = Experimentals::new(vec![]);
         assert_eq!(
             snapshot.warnings(&without.known_flags()),
-            ["Unknown feature flag 'test_experimentals' in --feature; it has no effect"]
+            ["Unknown beta feature 'test_experimentals' in --beta-features; it has no effect"]
         );
         let with = experimentals(&[WIDGET]);
         assert!(snapshot.warnings(&with.known_flags()).is_empty());
     }
 
     #[test]
-    #[should_panic(expected = "must be an internal or preview flag")]
+    #[should_panic(expected = "must be an experimental or beta flag")]
     fn a_experimentals_flag_is_not_a_behavior_flag() {
         Experimentals::new(vec![Arc::new(TestExperimental(WIDGET, Some(&BEHAVIOR)))]);
     }

@@ -19,6 +19,7 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_yaml::Value::Mapping;
 use dbt_yaml::{Error, Value as YmlValue};
+use minijinja::value::Object;
 use minijinja::{State, Value};
 use uuid::Uuid;
 
@@ -150,8 +151,21 @@ pub fn submit_python_job(
     )
     .ok_or_else(|| AdapterError::new(AdapterErrorKind::Internal, "Invalid submission method"))?;
 
-    let job_execution_timeout = adapter
+    let enforce_job_config = adapter
+        .behavior_object()
+        .get_value(&Value::from("bigquery_enforce_job_config"))
+        .is_some_and(|flag| flag.is_true());
+    let timeout_key = if adapter
         .get_db_config("job_execution_timeout_seconds")
+        .is_none()
+        && enforce_job_config
+    {
+        "timeout_seconds"
+    } else {
+        "job_execution_timeout_seconds"
+    };
+    let job_execution_timeout = adapter
+        .get_db_config(timeout_key)
         .map(|v| v.to_string())
         .map(|v| {
             v.parse::<i64>()

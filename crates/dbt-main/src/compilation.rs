@@ -68,7 +68,7 @@ use dbt_common::{
     fs_err,
     io_args::{
         EvalArgs, EvalArgsBuilder, ListOutputFormat, Phases, ShowOptions,
-        optimize_test_defaults_from_project_flags, project_flag_bool,
+        optimize_test_defaults_from_project_flags, project_flag_lookup,
         resolve_effective_optimize_tests,
     },
     io_utils::{checkpoint_error_count_maybe_exit, checkpoint_maybe_exit},
@@ -1511,6 +1511,14 @@ impl DbtProjectCompilation {
             )
             .await?;
 
+        // The root project's `flags:` is loaded: report what it sets that has no effect.
+        for warning in dbt_flags::FlagSnapshot::project_warnings(
+            &feature_stack.experimentals.experimentals.known_flags(),
+            &project_flag_lookup(loaded_project.dbt_state().root_project().flags.as_ref()),
+        ) {
+            emit_warn_log_message(ErrorCode::InvalidConfig, warning);
+        }
+
         // PHASE 2: Use Pipeline for Resolve
         // ========================================================================
 
@@ -1522,7 +1530,7 @@ impl DbtProjectCompilation {
         // Where the SQL rewriter applies `--empty`, relations render after a
         // marker instead of as zero-row subqueries.
         let empty_by_sql_rewrite = dbt_flags::USE_V2_EMPTY_SQL_REWRITE
-            .resolve_with_project(&project_flag_bool(
+            .resolve_with_project(&project_flag_lookup(
                 loaded_project.dbt_state().root_project().flags.as_ref(),
             ))
             .value

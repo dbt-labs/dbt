@@ -244,6 +244,7 @@ pub enum ErrorCode {
     BridgeConfig = 1318,
     /// The Bridge service failed internally (SQLSTATE `XXR*`).
     BridgeInternal = 1319,
+    BigqueryTimeoutSecondsNotEnforced = 1320,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,

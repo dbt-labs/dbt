@@ -134,6 +134,8 @@ pub struct CliParser {
     command_name: &'static str,
     version: &'static str,
     command_parser: CommandParser,
+    /// The name and description of each beta feature, for the help of `--beta-features`.
+    beta_features: Vec<(&'static str, &'static str)>,
 }
 
 impl CliParser {
@@ -147,7 +149,14 @@ impl CliParser {
             command_name,
             version,
             command_parser,
+            beta_features: Vec::new(),
         }
+    }
+
+    /// Lists `beta_features`, each a name and a description, in the help of `--beta-features`.
+    pub fn with_beta_features(mut self, beta_features: Vec<(&'static str, &'static str)>) -> Self {
+        self.beta_features = beta_features;
+        self
     }
 
     /// User-facing CLI brand name. Surfaced in clap help/version output,
@@ -186,6 +195,11 @@ impl CliParser {
             .subcommand_required(true)
             .arg_required_else_help(true);
         let app = <CommonArgs as clap::Args>::augment_args(app);
+        let app = if self.beta_features.is_empty() {
+            app
+        } else {
+            list_beta_features(app, &self.beta_features)
+        };
 
         // -- Augment metadata
         app.author("dbt Labs <info@getdbt.com>")
@@ -330,6 +344,37 @@ impl CliParser {
         Some(cli.common_args.get_cli_warn_error_options())
     }
 }
+
+/// Lists `beta_features` in the long help of `--beta-features`, after the option's own help.
+/// Every command has the option as its own argument, so this visits `cmd` and its subcommands.
+fn list_beta_features(
+    cmd: clap::Command,
+    beta_features: &[(&'static str, &'static str)],
+) -> clap::Command {
+    let has_option = cmd
+        .get_arguments()
+        .any(|arg| arg.get_id() == BETA_FEATURES_ARG);
+    let cmd = if has_option {
+        cmd.mut_arg(BETA_FEATURES_ARG, |arg| {
+            let mut help = arg
+                .get_long_help()
+                .or_else(|| arg.get_help())
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            help.push_str("\n\nBeta features:");
+            for (name, description) in beta_features {
+                help.push_str(&format!("\n- {name}: {description}"));
+            }
+            arg.long_help(help)
+        })
+    } else {
+        cmd
+    };
+    cmd.mut_subcommands(|subcommand| list_beta_features(subcommand, beta_features))
+}
+
+/// The id of `--beta-features`: the name of its field in [`CommonArgs`].
+const BETA_FEATURES_ARG: &str = "beta_features";
 
 #[derive(Debug, Clone)]
 pub struct Cli {
@@ -2407,18 +2452,19 @@ pub struct CommonArgs {
     #[arg(global = true, long, short = 'r', hide = true)]
     pub record_timing_info: Option<PathBuf>,
 
-    /// Turn on a feature flag (`NAME`) or set it (`NAME=true|false`). Repeatable; also read
-    /// from DBT_ENGINE_FEATURES as a comma-separated list. Unstable: features may change or be
-    /// removed between releases.
+    /// Turn on beta features, by name. Takes a comma-separated list and is repeatable; also
+    /// read from DBT_ENGINE_BETA_FEATURES. A beta feature is ready for testing, but it may
+    /// change or be removed between releases.
     #[arg(
         global = true,
-        long = "feature",
-        value_name = "NAME[=VALUE]",
+        long = "beta-features",
+        value_name = "LIST",
+        value_delimiter = ',',
         action = ArgAction::Append,
         help_heading = help_headings::UNSTABLE,
         hide_short_help = true
     )]
-    pub features: Vec<String>,
+    pub beta_features: Vec<String>,
 
     // Send anonymous usage stats to dbt Labs.
     #[arg(global = true, long, default_value_t=true, action = ArgAction::SetTrue, env = "DBT_SEND_ANONYMOUS_USAGE_STATS", value_parser = BoolishValueParser::new(), help_heading = help_headings::ADVANCED, hide_short_help = true)]

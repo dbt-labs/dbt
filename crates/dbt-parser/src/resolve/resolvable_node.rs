@@ -25,7 +25,7 @@ use crate::resolve::resolve_tests::resolve_unit_tests::UnitTests;
 use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
-use dbt_common::io_args::project_flag_bool;
+use dbt_common::io_args::project_flag_lookup;
 use dbt_common::{CodeLocationWithFile, FsResult};
 use dbt_flags::FlagDef;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -247,7 +247,7 @@ impl ResolvableNodes {
             match node.flag() {
                 Some(flag)
                     if !flag
-                        .resolve_with_project(&project_flag_bool(project_flags))
+                        .resolve_with_project(&project_flag_lookup(project_flags))
                         .value =>
                 {
                     for key in node.properties_keys() {
