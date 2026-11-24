@@ -8,7 +8,7 @@ use dbt_common::tracing::dbt_emit::{
 use dbt_schemas::schemas::packages::{DbtPackageEntry, DbtPackages, DbtPackagesLock};
 
 use crate::types::HubPinnedPackage;
-use crate::utils::scrub_package_name_secret_env_vars;
+use crate::utils::scrub_secret_env_vars;
 
 const NEXTEST_ENV: &str = "NEXTEST";
 const TEST_DEPS_LATEST_VERSION_ENV: &str = "TEST_DEPS_LATEST_VERSION";
@@ -257,7 +257,7 @@ impl NoticeSource for DbtPackages {
                 _ => None,
             };
             if let Some(url) = url
-                && let Some(scrubbed) = scrub_package_name_secret_env_vars(url)
+                && let Some(scrubbed) = scrub_secret_env_vars(url)
             {
                 buffer.record(PackageNotice {
                     key: scrubbed.into_owned(),

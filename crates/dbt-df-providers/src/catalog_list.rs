@@ -14,14 +14,55 @@ use std::any::Any;
 use std::sync::Arc;
 
 use crate::delayed_table::DelayedDataTableProvider;
+use crate::schema_only_table::SchemaOnlyTableProvider;
 
 /// Catalog list that lazily provisions entries using the schema store.
+/// Makes the [`TableProvider`] for a table in the schema store. A function,
+/// not a branch, so a caller that never builds the data-reading provider does
+/// not link it.
+type MakeTable =
+    dyn Fn(CanonicalFqn, Arc<dyn SchemaStoreTrait>) -> Arc<dyn TableProvider> + Send + Sync;
+
+#[derive(Clone)]
+struct TableFactory(Arc<MakeTable>);
+
+impl TableFactory {
+    fn new(
+        make: impl Fn(CanonicalFqn, Arc<dyn SchemaStoreTrait>) -> Arc<dyn TableProvider>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self(Arc::new(make))
+    }
+
+    fn make(&self, fqn: CanonicalFqn, store: Arc<dyn SchemaStoreTrait>) -> Arc<dyn TableProvider> {
+        (self.0)(fqn, store)
+    }
+}
+
+impl std::fmt::Debug for TableFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TableFactory")
+    }
+}
+
+fn delayed_table_factory(data_store: Arc<dyn DataStoreTrait>) -> TableFactory {
+    TableFactory::new(move |fqn, store| {
+        Arc::new(DelayedDataTableProvider::new(
+            fqn,
+            store,
+            data_store.clone(),
+        ))
+    })
+}
+
 #[derive(Debug)]
 pub struct SchemaStoreCatalogProviderList {
     /// Collection of catalogs containing schemas and ultimately TableProviders
     catalog_cache: SccHashMap<Identifier, Arc<dyn CatalogProvider>>,
     store: Arc<dyn SchemaStoreTrait>,
-    data_store: Arc<dyn DataStoreTrait>,
+    make_table: TableFactory,
 }
 
 impl SchemaStoreCatalogProviderList {
@@ -30,7 +71,20 @@ impl SchemaStoreCatalogProviderList {
         Self {
             catalog_cache: SccHashMap::new(),
             store,
-            data_store,
+            make_table: delayed_table_factory(data_store),
+        }
+    }
+
+    /// Creates a catalog list whose tables carry only their schema: scanning
+    /// one fails. For callers that bind SQL but never execute it, this keeps
+    /// the data-reading code (listing tables, parquet) out of the binary.
+    pub fn schema_only(store: Arc<dyn SchemaStoreTrait>) -> Self {
+        Self {
+            catalog_cache: SccHashMap::new(),
+            store,
+            make_table: TableFactory::new(|fqn, store| {
+                Arc::new(SchemaOnlyTableProvider::new(fqn, store))
+            }),
         }
     }
 
@@ -39,10 +93,10 @@ impl SchemaStoreCatalogProviderList {
         match self.catalog_cache.read_sync(id, |_, c| Arc::clone(c)) {
             Some(catalog) => Ok(catalog),
             None => {
-                let catalog = Arc::new(SchemaStoreCatalogProvider::new(
+                let catalog = Arc::new(SchemaStoreCatalogProvider::with_table_factory(
                     id.clone(),
                     self.store.clone(),
-                    self.data_store.clone(),
+                    self.make_table.clone(),
                 ));
                 let _ = self.catalog_cache.upsert_sync(id.clone(), catalog.clone());
                 Ok(catalog)
@@ -84,7 +138,7 @@ pub struct SchemaStoreCatalogProvider {
     catalog: Identifier,
     schema_cache: SccHashMap<Identifier, Arc<dyn SchemaProvider>>,
     store: Arc<dyn SchemaStoreTrait>,
-    data_store: Arc<dyn DataStoreTrait>,
+    make_table: TableFactory,
 }
 
 impl SchemaStoreCatalogProvider {
@@ -94,11 +148,19 @@ impl SchemaStoreCatalogProvider {
         cache: Arc<dyn SchemaStoreTrait>,
         data_store: Arc<dyn DataStoreTrait>,
     ) -> Self {
+        Self::with_table_factory(catalog, cache, delayed_table_factory(data_store))
+    }
+
+    fn with_table_factory(
+        catalog: Identifier,
+        store: Arc<dyn SchemaStoreTrait>,
+        make_table: TableFactory,
+    ) -> Self {
         Self {
             catalog,
             schema_cache: SccHashMap::new(),
-            store: cache,
-            data_store,
+            store,
+            make_table,
         }
     }
 }
@@ -123,11 +185,11 @@ impl CatalogProvider for SchemaStoreCatalogProvider {
         {
             Some(schema) => Some(schema),
             None => {
-                let schema = Arc::new(SchemaStoreSchemaProvider::new(
+                let schema = Arc::new(SchemaStoreSchemaProvider::with_table_factory(
                     self.catalog.clone(),
                     Identifier::new(name),
                     self.store.clone(),
-                    self.data_store.clone(),
+                    self.make_table.clone(),
                 ));
                 let _ = self
                     .schema_cache
@@ -145,7 +207,7 @@ pub struct SchemaStoreSchemaProvider {
     catalog: Identifier,
     schema: Identifier,
     store: Arc<dyn SchemaStoreTrait>,
-    data_store: Arc<dyn DataStoreTrait>,
+    make_table: TableFactory,
 }
 
 impl SchemaStoreSchemaProvider {
@@ -156,11 +218,20 @@ impl SchemaStoreSchemaProvider {
         store: Arc<dyn SchemaStoreTrait>,
         data_store: Arc<dyn DataStoreTrait>,
     ) -> Self {
+        Self::with_table_factory(catalog, schema, store, delayed_table_factory(data_store))
+    }
+
+    fn with_table_factory(
+        catalog: Identifier,
+        schema: Identifier,
+        store: Arc<dyn SchemaStoreTrait>,
+        make_table: TableFactory,
+    ) -> Self {
         Self {
             catalog,
             schema,
             store,
-            data_store,
+            make_table,
         }
     }
 }
@@ -183,11 +254,7 @@ impl SchemaProvider for SchemaStoreSchemaProvider {
         let canonical_fqn = CanonicalFqn::new(&self.catalog, &self.schema, &Identifier::new(name));
         if self.store.exists(&canonical_fqn) {
             // Materialize a table provider that will consult the schema store when scanned.
-            let table_provider = Arc::new(DelayedDataTableProvider::new(
-                canonical_fqn,
-                self.store.clone(),
-                self.data_store.clone(),
-            ));
+            let table_provider = self.make_table.make(canonical_fqn, self.store.clone());
             Ok(Some(table_provider))
         } else {
             Ok(None)

@@ -74,6 +74,10 @@ impl AnyTelemetryEvent for FutureIncompatibilityLog {
         self.log_message.with_context(context);
     }
 
+    fn rewrite_strings(&mut self, rewrite: &dyn Fn(&str) -> Option<String>) -> bool {
+        self.log_message.rewrite_strings(rewrite)
+    }
+
     fn has_sensitive_data(&self) -> bool {
         self.log_message.has_sensitive_data()
     }

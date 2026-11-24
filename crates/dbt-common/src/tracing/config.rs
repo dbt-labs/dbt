@@ -30,6 +30,7 @@ use crate::{
     io_args::{FsCommand, IoArgs, LogFormat, ShowOptions},
     io_utils::determine_project_dir,
     tracing::middlewares::parse_error_filter::TelemetryParsingErrorFilter,
+    tracing::middlewares::secret_scrubber::TelemetrySecretScrubber,
     warn_error_options::WarnErrorOptions,
 };
 use dbt_error::{ErrorCode, FsError, FsResult};
@@ -426,6 +427,7 @@ pub fn build_shared_middleware_layers(
         TelemetryWarnErrorOptionsMiddleware::new(config_provider, skip_fusion_only_upgrades);
 
     vec![
+        Box::new(TelemetrySecretScrubber::from_env()),
         Box::new(TelemetryMarkdownLogFilter),
         Box::new(TelemetryParsingErrorFilter::new(show_all_deprecations)),
         Box::new(warn_error_options_middleware),

@@ -138,6 +138,7 @@ impl DefaultTo for Option<ModelState> {
             execute_hooks_on_any_reuse,
             compare_unrendered_code,
             ignore_external_modifications,
+            compare_selected_columns,
         } = state;
         *lag_tolerance = lag_tolerance
             .take()
@@ -152,6 +153,8 @@ impl DefaultTo for Option<ModelState> {
         *compare_unrendered_code = compare_unrendered_code.or(parent_state.compare_unrendered_code);
         *ignore_external_modifications =
             ignore_external_modifications.or(parent_state.ignore_external_modifications);
+        *compare_selected_columns =
+            compare_selected_columns.or(parent_state.compare_selected_columns);
     }
 }
 
@@ -170,12 +173,15 @@ impl DefaultTo for Option<DataTestState> {
             require_fresh_data_from,
             evaluate_volatile_sql,
             compare_unrendered_code,
+            compare_selected_columns,
         } = state;
         *require_fresh_data_from = require_fresh_data_from
             .take()
             .or_else(|| parent_state.require_fresh_data_from.clone());
         *evaluate_volatile_sql = evaluate_volatile_sql.or(parent_state.evaluate_volatile_sql);
         *compare_unrendered_code = compare_unrendered_code.or(parent_state.compare_unrendered_code);
+        *compare_selected_columns =
+            compare_selected_columns.or(parent_state.compare_selected_columns);
     }
 }
 

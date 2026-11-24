@@ -1,3 +1,7 @@
+// Lets the derives of `dbt-proc-macros` name this crate by the same path here and in the crates
+// that depend on it.
+extern crate self as dbt_schemas;
+
 // `DbtProfile::adapters` is a public `IndexMap`, so downstream crates need to be
 // able to name it to construct a profile without taking an `indexmap` dependency
 // of their own.
@@ -53,13 +57,12 @@ pub mod schemas {
     pub mod nodes;
     pub use nodes::{
         AbsorbedOverload, AdapterAttr, CommonAttributes, DbtAnalysis, DbtAnalysisAttr, DbtCheck,
-        DbtCheckAttr, DbtExperimentalNode, DbtExperimentalNodeAttr, DbtExposure, DbtExposureAttr,
-        DbtFunction, DbtFunctionAttr, DbtModel, DbtModelAttr, DbtSeed, DbtSeedAttr, DbtSnapshot,
-        DbtSnapshotAttr, DbtSource, DbtSourceAttr, DbtTest, DbtTestAttr, DbtUnitTest,
-        DbtUnitTestAttr, ExperimentalData, ExposureType, InternalDbtNode,
-        InternalDbtNodeAttributes, InternalDbtNodeWrapper, IntrospectionKind, NodeBaseAttributes,
-        NodePathKind, Nodes, TestMetadata, TimeSpine, TimeSpinePrimaryColumn,
-        deserialize_empty_string_as_none, serialize_none_as_empty_string,
+        DbtCheckAttr, DbtExposure, DbtExposureAttr, DbtFunction, DbtFunctionAttr, DbtModel,
+        DbtModelAttr, DbtSeed, DbtSeedAttr, DbtSnapshot, DbtSnapshotAttr, DbtSource, DbtSourceAttr,
+        DbtTest, DbtTestAttr, DbtUnitTest, DbtUnitTestAttr, ExposureType, InjectedNode,
+        InjectedNodeType, InternalDbtNode, InternalDbtNodeAttributes, InternalDbtNodeWrapper,
+        IntrospectionKind, NodeBaseAttributes, NodePathKind, Nodes, TestMetadata, TimeSpine,
+        TimeSpinePrimaryColumn, deserialize_empty_string_as_none, serialize_none_as_empty_string,
     };
 
     pub use sources::{FreshnessResultsArtifact, FreshnessResultsMetadata, FreshnessResultsNode};
@@ -263,10 +266,7 @@ pub mod schemas {
         pub use properties::GroupConfig;
         pub use properties::GroupProperties;
         pub use properties::MacrosProperties;
-        pub use properties::{
-            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalExperimentalEntryValue,
-            MinimalSchemaValue, MinimalTableValue, MinimalUnitTestValue,
-        };
+        pub use properties::{DbtPropertiesFile, GetConfig, MinimalSchemaValue, MinimalTableValue};
         pub use saved_queries_properties::SavedQueriesProperties;
         pub use seed_properties::SeedProperties;
         pub use snapshot_properties::SnapshotProperties;

@@ -1,3 +1,5 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -23,7 +25,7 @@ use dbt_schemas::{
     state::{DbtPackage, DbtRuntimeConfig},
 };
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
@@ -34,6 +36,41 @@ use crate::{
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
 
+/// How a package's checks resolve.
+pub(crate) struct Checks;
+
+#[async_trait]
+impl ResolvableNode for Checks {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["checks"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // Resolve checks
+        let (checks, disabled_checks) = resolve_checks(
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &mut ctx.properties.take_entries("checks"),
+            ctx.database,
+            ctx.schema,
+            ctx.adapter_type,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            ctx.token,
+        )
+        .await?;
+        ctx.nodes.checks.extend(checks);
+        ctx.disabled_nodes.checks.extend(disabled_checks);
+        Ok(())
+    }
+}
+
 /// Resolve check resources for a package into [`DbtCheck`] nodes and rendered SQL.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_checks(
@@ -42,7 +79,7 @@ pub async fn resolve_checks(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    check_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    check_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     adapter_type: AdapterType,

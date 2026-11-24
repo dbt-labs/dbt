@@ -170,7 +170,7 @@ fn node_results(cases: &mut Vec<Case>) {
                     ),
                 );
 
-                // The adapter is only reported when nodes of one invocation can run on different ones.
+                // The adapter is only named when nodes of one invocation can run on different ones.
                 let mut warned = model("live_orders", NodeMaterialization::StreamingTable);
                 warned.adapter = Some("bigquery".to_string());
                 warned.duration_ms = Some(3_725_000);
@@ -181,19 +181,19 @@ fn node_results(cases: &mut Vec<Case>) {
                 ));
                 cases.push(
                     node_case(
-                        "streaming table on another adapter, with warnings",
+                        "streaming table with warnings, adapter not named",
                         warned,
                     )
                     .expect(
                         DBT_LOG,
                         indoc! {"
                             03:04:05.678901 [info ]: Started model analytics.live_orders
-                            04:06:10.678901 [info ]:     Warned model analytics.live_orders (streaming, bigquery) [3 of 12 in 1h 2m]
+                            04:06:10.678901 [info ]:     Warned model analytics.live_orders (streaming) [3 of 12 in 1h 2m]
                         "},
                     )
                     .expect(
                         TERMINAL,
-                        "<yellow+bold>    Warned</> model <cyan+bold>analytics.</><blue+bold>live_orders</> (streaming, bigquery) [3 of 12 in 1h 2m]\n",
+                        "<yellow+bold>    Warned</> model <cyan+bold>analytics.</><blue+bold>live_orders</> (streaming) [3 of 12 in 1h 2m]\n",
                     ),
                 );
             }
@@ -512,19 +512,19 @@ fn reused_nodes(cases: &mut Vec<Case>) {
                 let mut cloned = model("orders", NodeMaterialization::View);
                 cloned.adapter = Some("snowflake".to_string());
                 node_case(
-                    "view cloned from another environment, on another adapter",
+                    "view cloned from another environment, adapter not named",
                     reused(cloned, cache_detail(reason)),
                 )
                 .expect(
                     DBT_LOG,
                     indoc! {"
                         03:04:05.678901 [info ]: Started model analytics.orders
-                        03:04:05.928901 [info ]:     Reused model analytics.orders (view, snowflake - Cloned from other environment) [3 of 12]
+                        03:04:05.928901 [info ]:     Reused model analytics.orders (view - Cloned from other environment) [3 of 12]
                     "},
                 )
                 .expect(
                     TERMINAL,
-                    "<green+bold>    Reused</> model <cyan+bold>analytics.</><blue+bold>orders</> (view, snowflake - Cloned from other environment) [3 of 12]\n",
+                    "<green+bold>    Reused</> model <cyan+bold>analytics.</><blue+bold>orders</> (view - Cloned from other environment) [3 of 12]\n",
                 )
             }
             NodeCacheReason::ClonedExistingStillFresh => node_case(
@@ -938,6 +938,52 @@ fn skipped_tests(cases: &mut Vec<Case>) {
             .expect_no_output(TERMINAL_QUIET),
     );
 
+    // Tests skipped by `--fail-fast` collapse the same way.
+    cases.push(
+        Case::new("failed model under --fail-fast skips a test, then a running model finishes")
+            .run(|clock| {
+                node_group(|| {
+                    processed(clock, failed_customers(3));
+                    let mut test =
+                        skipped_test(NodeType::Test, "not_null_customers_customer_id", 2, 3);
+                    test.set_node_skip_reason(NodeSkipReason::FailFast);
+                    processed(clock, test);
+                    processed(
+                        clock,
+                        numbered(model("orders", NodeMaterialization::Table), 3, 3),
+                    );
+                })
+            })
+            .expect(
+                DBT_LOG,
+                indoc! {"
+                    03:04:05.678901 [info ]: Started model analytics.customers
+                    03:04:05.928901 [info ]:     Failed model analytics.customers (table) [1 of 3 in 0.25s]
+                    03:04:05.928901 [info ]: Started test analytics_dbt_test__audit.not_null_customers_customer_id
+                    03:04:06.178901 [info ]:    Skipped test  not_null_customers_customer_id (models/schema.yml:12:15) [2 of 3]
+                    03:04:06.178901 [info ]: Started model analytics.orders
+                    03:04:06.428901 [info ]:  Succeeded model analytics.orders (table) [3 of 3 in 0.25s]
+                "},
+            )
+            .expect(
+                TERMINAL,
+                indoc! {"
+                    <red+bold>    Failed</> model <cyan+bold>analytics.</><blue+bold>customers</> (table) [1 of 3 in 0.25s]
+                    <yellow+bold>   Skipped</> test  '<yellow+bold>not_null_customers_customer_id</>'
+                    <green+bold> Succeeded</> model <cyan+bold>analytics.</><blue+bold>orders</> (table) [3 of 3 in 0.25s]
+                "},
+            )
+            .expect(
+                TEXT,
+                indoc! {"
+                    <red+bold>    Failed</> model <cyan+bold>analytics.</><blue+bold>customers</> (table) [1 of 3 in 0.25s]
+                    <yellow+bold>   Skipped</> test  <cyan+bold></><blue+bold>not_null_customers_customer_id</> (models/schema.yml:12:15) [2 of 3]
+                    <green+bold> Succeeded</> model <cyan+bold>analytics.</><blue+bold>orders</> (table) [3 of 3 in 0.25s]
+                "},
+            )
+            .expect_no_output(TERMINAL_QUIET),
+    );
+
     // More than three names are summarized.
     cases.push(
         Case::new("failed model skips its tests and unit tests, last in the run")
@@ -1149,7 +1195,7 @@ fn aggregated_tests(cases: &mut Vec<Case>) {
     );
 
     cases.push(
-        Case::new("batched tests of a versioned model on another adapter")
+        Case::new("batched tests of a versioned model, adapter not named")
             .run(|clock| {
                 node_group(|| {
                     aggregated_test_group("unique", "model.jaffle_shop.customers.v2", || {
@@ -1165,9 +1211,9 @@ fn aggregated_tests(cases: &mut Vec<Case>) {
             .expect(
                 TERMINAL,
                 indoc! {"
-                    <green+bold>    Passed</> test  <cyan+bold></><blue+bold>unique on customers.v2</> (snowflake - 2 batched) [0.06s]
-                        ├─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>unique_customers_id</> (snowflake)
-                        └─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>unique_customers_email</> (snowflake)
+                    <green+bold>    Passed</> test  <cyan+bold></><blue+bold>unique on customers.v2</> (2 batched) [0.06s]
+                        ├─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>unique_customers_id</>
+                        └─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>unique_customers_email</>
                 "},
             ),
     );

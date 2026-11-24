@@ -2,7 +2,7 @@
 use crate::args::ResolveArgs;
 use crate::dbt_namespace::DbtNamespace;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver};
-use crate::resolve::resolve_properties::MinimalPropertiesEntry;
+use crate::resolve::properties_index::PropertiesEntry;
 use crate::sql_file_info::SqlFileInfo;
 use crate::utils::{
     extract_unrendered_config_from_ast, get_node_fqn, get_snapshot_fqn, parse_unrendered_config,
@@ -128,7 +128,7 @@ fn command_defers_render_errors(command: FsCommand) -> bool {
 /// `config:` is already merged into `mpe.schema_value` (see
 /// `merge_version_config_into_schema_value`), so typing it again here would apply it twice.
 fn extract_model_config<T: ResolvableConfig<T>, S: GetConfig<T> + Debug>(
-    mpe: &mut MinimalPropertiesEntry,
+    mpe: &mut PropertiesEntry,
     jinja_env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
     dependency_package_name: Option<&str>,
@@ -184,7 +184,7 @@ pub(crate) fn strip_warehouse_keys_in_config_block(
 
 /// Applies warehouse-key validation before properties are typed.
 pub(crate) fn strip_deprecated_warehouse_keys_from_properties(
-    node_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    node_properties: &mut BTreeMap<String, PropertiesEntry>,
     resource: NodeType,
     dependency_package_name: Option<&str>,
 ) {
@@ -346,7 +346,7 @@ fn preview_node_relation<T: ResolvableConfig<T> + 'static>(
 async fn render_sql_file<T, S>(
     render_ctx: &RenderCtx<T>,
     dbt_asset: &DbtAsset,
-    node_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    node_properties: &mut BTreeMap<String, PropertiesEntry>,
     duplicate_errors: &mut Vec<FsError>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
@@ -417,7 +417,7 @@ where
 async fn render_sql_file_inner<T, S>(
     render_ctx: &RenderCtx<T>,
     dbt_asset: &DbtAsset,
-    node_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    node_properties: &mut BTreeMap<String, PropertiesEntry>,
     duplicate_errors: &mut Vec<FsError>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
@@ -996,7 +996,7 @@ pub async fn render_unresolved_sql_files<
 >(
     render_ctx: &RenderCtx<T>,
     model_sql_files: &[DbtAsset],
-    node_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    node_properties: &mut BTreeMap<String, PropertiesEntry>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
 ) -> FsResult<Vec<SqlFileRenderResult<T, S>>>
@@ -1033,7 +1033,7 @@ where
         },
     );
 
-    let chunks: Vec<(Vec<DbtAsset>, BTreeMap<String, MinimalPropertiesEntry>)> = files
+    let chunks: Vec<(Vec<DbtAsset>, BTreeMap<String, PropertiesEntry>)> = files
         .chunks(chunk_size)
         .map(|chunk| {
             let mut chunk_assets = Vec::with_capacity(chunk.len());
@@ -1551,8 +1551,8 @@ mod tests {
         );
     }
 
-    fn mpe_with_config(yaml: &str) -> MinimalPropertiesEntry {
-        MinimalPropertiesEntry {
+    fn mpe_with_config(yaml: &str) -> PropertiesEntry {
+        PropertiesEntry {
             name: "my_node".to_string(),
             name_span: dbt_yaml::Span::zero(),
             relative_path: PathBuf::new(),
@@ -1640,7 +1640,7 @@ mod tests {
         node_properties.insert("no_config".to_string(), mpe_with_config("name: no_config"));
         node_properties.insert(
             "no_properties".to_string(),
-            MinimalPropertiesEntry {
+            PropertiesEntry {
                 name: "no_properties".to_string(),
                 name_span: dbt_yaml::Span::zero(),
                 relative_path: PathBuf::new(),

@@ -52,10 +52,10 @@ export default defineConfig(({ mode }) => ({
         manualChunks: {
           react: ['react', 'react-dom', 'react-router-dom'],
           query: ['@tanstack/react-query', '@tanstack/react-table'],
-          // The pure-JS parquet reader and its decompressors. Needed on the
+          // The pure-JS parquet reader and its ZSTD decoder. Needed on the
           // critical path, but separate so a change to app code does not
           // invalidate them.
-          parquet: ['hyparquet', 'hyparquet-compressors'],
+          parquet: ['hyparquet', 'fzstd'],
         },
       },
     },

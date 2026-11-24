@@ -81,6 +81,7 @@ mod tests {
             num_threads: Some(1), // Connection-pool size; parser parallelism is unaffected.
             no_parallel: true,
             command: FsCommand::Test,
+            command_entrypoint: FsCommand::Test,
             vars: BTreeMap::new(),
             from_main: false,
             selector: None,
@@ -266,6 +267,7 @@ mod tests {
             num_threads: Some(1),
             no_parallel: true,
             command: FsCommand::Test,
+            command_entrypoint: FsCommand::Test,
             vars: BTreeMap::new(),
             from_main: false,
             selector: None,

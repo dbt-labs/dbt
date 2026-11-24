@@ -7,7 +7,10 @@ use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
-use crate::resolve::resolve_properties::MinimalPropertiesEntry;
+use crate::resolve::primary_key_inference::infer_and_apply_primary_keys;
+use crate::resolve::properties_index::PropertiesEntry;
+use crate::resolve::properties_index::{IndexCtx, IndexedName, validate_resource_name};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_tests::persist_generic_data_tests::format_node_unique_id;
 use crate::resolve::resolve_utils::{
     RawProjectConfigsByAdapter, err_resource_name_has_spaces, resolve_node_quoting,
@@ -19,11 +22,13 @@ use crate::utils::get_original_file_contents;
 use crate::utils::get_original_file_path;
 use crate::utils::{node_starting_database_and_schema, update_node_relation_components};
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
 use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_GENERIC_TESTS_DIR_NAME;
+use dbt_common::create_debug_span;
 use dbt_common::error::AbstractLocation;
 use dbt_common::fs_err;
 use dbt_common::io_args::StaticAnalysisKind;
@@ -32,6 +37,7 @@ use dbt_common::io_utils::try_read_yml_to_str;
 use dbt_common::path::{DbtPath, node_name_from_path};
 use dbt_common::stdfs;
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
+use dbt_common::tracing::span_info::SpanStatusRecorder as _;
 use dbt_jinja_utils::jinja_arg_format::format_value_for_jinja;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
@@ -58,6 +64,7 @@ use dbt_schemas::schemas::project::DataTestConfig;
 use dbt_schemas::schemas::project::ResolvableConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
 use dbt_schemas::schemas::properties::DataTestProperties;
+use dbt_schemas::schemas::properties::MinimalSchemaValue;
 use dbt_schemas::schemas::properties::ModelProperties;
 use dbt_schemas::schemas::ref_and_source::DbtRef;
 use dbt_schemas::schemas::ref_and_source::DbtSourceWrapper;
@@ -70,6 +77,7 @@ use dbt_schemas::state::DbtRuntimeConfig;
 use dbt_schemas::state::GenericTestAsset;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::state::{DbtAsset, DbtPackage};
+use dbt_telemetry::GenericOpExecuted;
 use dbt_yaml::Spanned;
 use dbt_yaml::Value as YmlValue;
 use indexmap::IndexMap;
@@ -82,6 +90,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::Arc;
+use tracing::Instrument as _;
 
 /// Computes the unique_id for a generic test node.
 ///
@@ -175,7 +184,11 @@ fn build_test_metadata_repr(asset: &GenericTestAsset) -> String {
 fn test_metadata_from_asset(asset: &GenericTestAsset) -> Option<TestMetadata> {
     if let Some(name) = &asset.test_metadata_name {
         let kwargs = if !asset.test_metadata_kwargs.is_empty() {
-            asset.test_metadata_kwargs.clone()
+            asset
+                .test_metadata_kwargs
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
         } else {
             // Fallback for assets constructed without test_metadata_kwargs (e.g. unit tests).
             let mut kwargs = BTreeMap::new();
@@ -196,7 +209,7 @@ fn test_metadata_from_asset(asset: &GenericTestAsset) -> Option<TestMetadata> {
             if let Some(model) = &asset.test_metadata_model {
                 kwargs.insert("model".to_string(), YmlValue::string(model.clone()));
             }
-            kwargs
+            kwargs.into_iter().collect()
         };
         return Some(TestMetadata {
             name: name.clone(),
@@ -364,6 +377,72 @@ fn build_data_test_raw_code_config(config: &BTreeMap<String, YmlValue>) -> Strin
     }
 }
 
+/// How a package's data tests resolve.
+pub(crate) struct DataTests;
+
+#[async_trait]
+impl ResolvableNode for DataTests {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["tests", "data_tests"]
+    }
+
+    /// The items under `tests` and `data_tests` are one set of entries, found under `tests`.
+    async fn index_item(
+        &self,
+        _key: &'static str,
+        item: &dbt_yaml::Value,
+        ctx: &IndexCtx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        ctx.named("tests", item)
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // Scoped so the span handle drops on both exits: SpanEnd fires on last-handle-drop.
+        // operation_id has the package name: resolve_inner runs concurrently across packages.
+        let (data_tests, disabled_tests) = {
+            let span = create_debug_span(GenericOpExecuted::new(
+                format!("resolve.resolve_data_tests.{}", ctx.package_name),
+                "resolving data tests".to_string(),
+                None,
+            ));
+            resolve_data_tests(
+                ctx.arg,
+                ctx.package,
+                ctx.package_quoting,
+                ctx.dbt_state.root_package(),
+                ctx.root_project_configs,
+                &mut ctx.properties.take_entries("tests"),
+                ctx.database,
+                ctx.schema,
+                &ctx.parse_adapter_scopes,
+                ctx.adapter_type,
+                ctx.jinja_env.clone(),
+                &ctx.base_ctx,
+                ctx.runtime_config.clone(),
+                ctx.root_runtime_config.clone(),
+                &ctx.collected_generic_tests,
+                &ctx.node_resolver,
+                ctx.token,
+                ctx.jinja_type_checking_event_listener_factory.clone(),
+                &ctx.root_project_configs.adapter_quoting,
+                &ctx.nodes.models,
+                &ctx.disabled_nodes.models,
+                &ctx.nodes.seeds,
+                &ctx.nodes.snapshots,
+            )
+            .instrument(span.clone())
+            .await
+            .record_status(&span)?
+        };
+        ctx.nodes.tests.extend(data_tests);
+        ctx.disabled_nodes.tests.extend(disabled_tests);
+
+        // The primary keys of models are inferred from their constraints and these tests.
+        infer_and_apply_primary_keys(&mut ctx.nodes, &ctx.disabled_nodes);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_data_tests(
     arg: &ResolveArgs,
@@ -371,7 +450,7 @@ pub async fn resolve_data_tests(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    test_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    test_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     parse_adapter_scopes: &Arc<AdapterScopes>,

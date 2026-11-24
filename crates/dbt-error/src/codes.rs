@@ -244,6 +244,7 @@ pub enum ErrorCode {
     BridgeConfig = 1318,
     /// The Bridge service failed internally (SQLSTATE `XXR*`).
     BridgeInternal = 1319,
+    BigqueryTimeoutSecondsNotEnforced = 1320,
 
     // Execution/runtime [1400–1449]
     PlannerFailed = 1400,
@@ -311,6 +312,8 @@ pub enum ErrorCode {
     SelectionOverrideSkipped = 1604,
     /// The nodes actually reported by the run differ from the externally supplied node set.
     SelectionOverrideDivergence = 1605,
+    /// `--empty` could not make a model's SQL read zero rows, so the model was not run.
+    EmptyRewriteFailed = 1606,
 
     // --------------------------------------------------------------------------------------------
     // Checks
@@ -458,15 +461,9 @@ pub enum ErrorCode {
     ExperimentalError = 1900,
     /// A warning an experimental reported. Experimentals never report under any other code.
     ExperimentalWarning = 1901,
-    /// A project gives entries or paths to a reserved experimental type whose experimental is off,
-    /// or that this dbt doesn't have. dbt ignores them.
+    /// A properties file has a top-level key of a kind of node whose feature flag is off. dbt
+    /// ignores what is under it.
     ExperimentalNotEnabled = 1902,
-    /// A project gives entries or paths to an experimental type no one reserved. dbt ignores them.
-    UnknownExperimental = 1903,
-    /// An `experimental-paths` entry overlaps a directory dbt reads, or another experimental's.
-    ExperimentalPathOverlap = 1904,
-    /// An `experimental-paths` entry resolves outside the project that declared it. dbt skips it.
-    ExperimentalPathEscapesProject = 1905,
 
     // --------------------------------------------------------------------------------------------
     // Local execution
@@ -562,6 +559,14 @@ impl ErrorCode {
 
     pub fn is_bug(&self) -> bool {
         (*self as u16) >= (Self::NotSupported as u16)
+    }
+
+    /// Whether this code is a cancelled operation or task rather than a failure.
+    pub fn is_cancellation(&self) -> bool {
+        matches!(
+            self,
+            ErrorCode::OperationCanceled | ErrorCode::TaskCancelled
+        )
     }
 
     pub fn is_frontend(&self) -> bool {

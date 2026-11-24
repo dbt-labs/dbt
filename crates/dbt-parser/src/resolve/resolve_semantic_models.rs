@@ -2,15 +2,18 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::resolve::properties_index::{IndexCtx, IndexedName, PackageProperties};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::utils::{
     extract_resource_config_from_raw_project, get_node_fqn, get_original_file_path, get_unique_id,
 };
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
 use dbt_common::path::DbtPath;
-use dbt_common::tracing::dbt_emit::emit_error_log_message;
+use dbt_common::tracing::dbt_emit::{emit_error_log_message, emit_warn_log_message};
 use dbt_common::{ErrorCode, FsResult};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
@@ -37,7 +40,7 @@ use minijinja::value::Value as MinijinjaValue;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 
 /// Convert `ModelPropertiesSemanticModelConfig` to `SemanticModelConfig` for use with
 /// `resolve_with_properties`. The original type stores `meta` nested inside `config` and
@@ -54,6 +57,100 @@ fn semantic_model_properties_config(model_props: &ModelProperties) -> Option<Sem
         })
 }
 
+/// Whether `package` defines its semantic layer with the legacy YAML: one of its properties files
+/// has `semantic_models:` at the top level, and the root project doesn't disable the package's
+/// semantic models. Warns if it does.
+pub(crate) fn uses_legacy_semantic_layer_spec(
+    properties: &PackageProperties,
+    package: &DbtPackage,
+    root_package: &DbtPackage,
+    root_project_configs: &RootProjectConfigs,
+    adapter_type: AdapterType,
+) -> FsResult<bool> {
+    let is_dependency = package.dbt_project.name != root_package.dbt_project.name;
+    let semantic_model_config_resolver = ProjectConfigResolver::build(
+        root_project_configs.semantic_models.clone(),
+        is_dependency,
+        || {
+            init_project_config(
+                &package.dbt_project.semantic_models,
+                (),
+                Some(package.dbt_project.name.as_str()),
+                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                adapter_type,
+            )
+        },
+        adapter_type,
+    )?;
+    if !properties.has_key("semantic_models") {
+        return Ok(false);
+    }
+    // Check whether the root project has explicitly disabled this package's
+    // semantic models. If so, suppress the legacy warning and skip them.
+    let has_enabled_package_semantic_models = !semantic_model_config_resolver
+        .is_disabled_by_root_overlay(std::slice::from_ref(&package.dbt_project.name));
+    if has_enabled_package_semantic_models {
+        // Top level semantic models are not allowed anymore
+        // TODO: edit copy to encourage user to use auto-fix.
+        emit_warn_log_message(
+            ErrorCode::SemanticModelDeprecated,
+            format!(
+                "The package '{}' defines semantic models and metrics using the legacy YAML. Please migrate to the new YAML to use the semantic layer with dbt.",
+                &package.dbt_project.name,
+            ),
+        );
+    }
+    Ok(has_enabled_package_semantic_models)
+}
+
+/// How a package's semantic models resolve.
+pub(crate) struct SemanticModels;
+
+#[async_trait]
+impl ResolvableNode for SemanticModels {
+    /// The top-level key of the legacy semantic layer YAML.
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["semantic_models"]
+    }
+
+    /// The items of the legacy YAML define no names: only that a file has the key is read. See
+    /// [`uses_legacy_semantic_layer_spec`].
+    async fn index_item(
+        &self,
+        _key: &'static str,
+        _item: &dbt_yaml::Value,
+        _ctx: &IndexCtx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        Ok(Vec::new())
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // A package on the legacy semantic layer YAML resolves none.
+        if ctx.semantic_layer_spec_is_legacy {
+            return Ok(());
+        }
+        let (semantic_models, disabled_semantic_models) = resolve_semantic_models(
+            ctx.adapter_type,
+            ctx.arg,
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &ctx.model_properties,
+            &ctx.typed_models_properties,
+            &ctx.nodes.models,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+        )
+        .await?;
+        ctx.nodes.semantic_models.extend(semantic_models);
+        ctx.disabled_nodes
+            .semantic_models
+            .extend(disabled_semantic_models);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::expect_fun_call)]
 pub async fn resolve_semantic_models(
     adapter_type: AdapterType,
@@ -61,7 +158,7 @@ pub async fn resolve_semantic_models(
     package: &DbtPackage,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    minimal_model_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    minimal_model_properties: &BTreeMap<String, PropertiesEntry>,
     typed_models_properties: &BTreeMap<String, ModelProperties>,
     resolved_models: &BTreeMap<String, Arc<DbtModel>>,
     package_name: &str,
@@ -133,7 +230,7 @@ pub async fn resolve_semantic_models(
             continue;
         }
 
-        // TODO: These are reused from resolve_models, can probably refactor to implement methods in MinimalPropertiesEntry
+        // TODO: These are reused from resolve_models, can probably refactor to implement methods in PropertiesEntry
         let model_maybe_version = mpe.version_info.as_ref().map(|v| v.version.clone());
         let model_unique_id = get_unique_id(&mpe.name, package_name, model_maybe_version, "model");
 

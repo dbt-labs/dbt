@@ -415,10 +415,14 @@ async fn debug_adapter_connection(
         db_config.clone()
     };
     let mut config_as_mapping = connection_test_config.to_mapping().unwrap();
-    // set a short timeout for the connection test to fail fast if there are issues
-    config_as_mapping
-        .entry("connect_timeout".into())
-        .or_insert("1s".into());
+    match adapter_type {
+        AdapterType::MotherDuck => {}
+        _ => {
+            config_as_mapping
+                .entry("connect_timeout".into())
+                .or_insert("1s".into());
+        }
+    }
 
     // Attempt connection using 'select 1 as id'
     let base_adapter = loaded_project.init_base_adapter(

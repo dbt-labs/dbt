@@ -1405,6 +1405,7 @@ __warehouse_specific_config__: {}
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
                 ignore_external_modifications: None,
+                compare_selected_columns: None,
             }),
             ..Default::default()
         };
@@ -1434,6 +1435,7 @@ __warehouse_specific_config__: {}
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
                 ignore_external_modifications: None,
+                compare_selected_columns: Some(true),
             }),
             ..Default::default()
         };
@@ -1446,6 +1448,7 @@ __warehouse_specific_config__: {}
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
                 ignore_external_modifications: None,
+                compare_selected_columns: None,
             }),
             ..Default::default()
         };
@@ -1455,6 +1458,25 @@ __warehouse_specific_config__: {}
         assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
         assert_eq!(state.evaluate_volatile_sql, Some(true));
         assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
+        assert_eq!(state.compare_selected_columns, Some(true));
+
+        // A child's explicit `false` overrides the parent's `true`.
+        let mut child = SnapshotConfig {
+            state: Some(ModelState {
+                lag_tolerance: None,
+                require_fresh_data_from: None,
+                evaluate_volatile_sql: None,
+                pre_clone: None,
+                execute_hooks_on_any_reuse: None,
+                compare_unrendered_code: None,
+                ignore_external_modifications: None,
+                compare_selected_columns: Some(false),
+            }),
+            ..Default::default()
+        };
+        child.default_to(&parent);
+        let state = child.state.expect("state should survive the merge");
+        assert_eq!(state.compare_selected_columns, Some(false));
     }
 
     /// `+adapter` names an adapter *type*, so the value is typed rather than a

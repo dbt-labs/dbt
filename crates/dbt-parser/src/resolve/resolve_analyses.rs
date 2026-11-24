@@ -1,3 +1,5 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -27,7 +29,7 @@ use dbt_schemas::{
     state::{DbtPackage, DbtRuntimeConfig},
 };
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
@@ -41,6 +43,42 @@ use crate::{
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
 
+/// How a package's analyses resolve.
+pub(crate) struct Analyses;
+
+#[async_trait]
+impl ResolvableNode for Analyses {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["analyses"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // TODO: resolve_analyses still creates its own local JinjaTypeCheckingEventListenerFactory
+        // instead of receiving the top-level one — same issue as resolve_snapshots. Out of scope for now.
+        let analyses = resolve_analyses(
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &mut ctx.properties.take_entries("analyses"),
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            ctx.token,
+        )
+        .await?;
+        ctx.nodes.analyses.extend(analyses);
+        Ok(())
+    }
+}
+
 /// Resolve analysis resources for a package into models and rendered SQL, updating refs/sources.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_analyses(
@@ -49,7 +87,7 @@ pub async fn resolve_analyses(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    analysis_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    analysis_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     parse_adapter_scopes: &Arc<AdapterScopes>,

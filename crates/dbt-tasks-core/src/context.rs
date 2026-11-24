@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -35,6 +35,7 @@ use dbt_schemas::schemas::{BatchResults, InternalDbtNode, InternalDbtNodeAttribu
 use dbt_schemas::state::{DbtProfile, DbtRuntimeConfig, NodeResolverTracker, ResolverState};
 use dbt_state::explain::StateExplainDevClone;
 use dbt_state::metadata_cache::RunCacheMetadataCache;
+use dbt_state::proto::query_cache::table_modified_info::DependencyKind;
 use dbt_state::service_client::SharedRunCacheServiceClient;
 use dbt_state::service_config::RunCacheServiceConfig;
 use dbt_state::telemetry::SharedEventOrder;
@@ -45,6 +46,7 @@ use minijinja::value::OverlayMap;
 
 use crate::RunTasksArgs;
 use crate::span_manager::SpanManager;
+use crate::sql_rewriter::SqlRewriter;
 use crate::task::Task;
 use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
 use crate::unit_test_schema::UnitTestSchemaState;
@@ -72,6 +74,13 @@ pub struct RunCacheCtx {
     /// Tracks the background dependency last-modified prefetch so per-node
     /// submits can observe its progress and await it on demand.
     pub prefetch: RunCachePrefetchState,
+    /// Background schema prefetch for column-aware reuse. Separate from
+    /// `prefetch` so it never delays speculative submits.
+    pub schema_prefetch: RunCachePrefetchState,
+    /// Dependency kind by `semantic_fqn`, built once (see `dependency_kinds_by_fqn`).
+    pub dependency_kinds: std::sync::OnceLock<HashMap<String, DependencyKind>>,
+    /// Targets of the selected models and snapshots, built once.
+    pub selected_target_fqns: std::sync::OnceLock<BTreeSet<String>>,
     /// Shared telemetry event order counter for monotonic ordering across
     /// state selector (compilation phase) and task execution (run phase).
     ///
@@ -193,6 +202,7 @@ pub struct TaskRunnerCtxInner {
     /// The run's adapter store and the adapter globals each node render takes from it.
     pub(crate) adapter_globals: NodeAdapterGlobals,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
+    pub sql_rewriter: Arc<dyn SqlRewriter>,
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
     pub generic_test_relationships: GenericTestRelationships,
@@ -228,6 +238,7 @@ impl TaskRunnerCtxInner {
         execute: dbt_schemas::schemas::profiles::Execute,
         adapter_globals: NodeAdapterGlobals,
         sources_extractor: Arc<dyn SourcesExtractor>,
+        sql_rewriter: Arc<dyn SqlRewriter>,
         run_cache_ctx: RunCacheCtx,
     ) -> Self {
         let runnable_set = schedule
@@ -283,6 +294,7 @@ impl TaskRunnerCtxInner {
             root_project_name: resolver_state.root_project_name.clone(),
             adapter_globals,
             sources_extractor,
+            sql_rewriter,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
             generic_test_relationships,
@@ -495,6 +507,19 @@ impl TaskRunnerCtx {
             node.node_adapter(),
             self.adapter_store().run_adapter_type(),
         )
+    }
+
+    /// Whether the invocation was cancelled (Ctrl+C or `--fail-fast`), read from the token of
+    /// [`Self::adapter_for`]`(node)`. A failed lookup returns false, so the task records a normal
+    /// error.
+    pub fn is_cancelled(&self, node: &dyn InternalDbtNodeAttributes) -> bool {
+        self.adapter_for(node)
+            .is_ok_and(|adapter| adapter.cancellation_token().is_cancelled())
+    }
+
+    /// Whether a failed node stopped the run under `--fail-fast`.
+    pub fn stopped_by_fail_fast(&self) -> bool {
+        self.inner.arg.fail_fast_flag && self.inner.arg.fail_fast.has_triggered()
     }
 
     /// One node's run-phase base context: the node's task keys and its adapter overlay

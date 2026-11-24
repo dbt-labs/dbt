@@ -5582,13 +5582,48 @@ impl AdapterImpl {
                     OptionValue::String("true".to_string()),
                 )];
 
-                let timeout = bigquery_job_timeout_from_state(state).or_else(|| {
-                    self.get_db_config("job_execution_timeout_seconds")
-                        .and_then(|v| v.parse::<i64>().ok())
-                });
+                let enforce_job_config = self
+                    .behavior_object()
+                    .get_value(&Value::from("bigquery_enforce_job_config"))
+                    .is_some_and(|flag| flag.is_true());
+
+                let job_execution_timeout = self
+                    .get_db_config("job_execution_timeout_seconds")
+                    .and_then(|v| v.parse::<i64>().ok());
+                // v1 reads the legacy profile key `timeout_seconds` as
+                // `job_execution_timeout_seconds`.
+                let legacy_timeout = self
+                    .get_db_config("timeout_seconds")
+                    .and_then(|v| v.parse::<i64>().ok());
+
+                let timeout = bigquery_job_timeout_from_state(state)
+                    .or(job_execution_timeout)
+                    .or_else(|| legacy_timeout.filter(|_| enforce_job_config));
 
                 if let Some(t) = timeout {
                     options.push((QUERY_JOB_TIMEOUT.to_string(), OptionValue::Int(t * 1000)));
+                }
+
+                if !enforce_job_config
+                    && job_execution_timeout.is_none()
+                    && legacy_timeout.is_some()
+                    && !self
+                        .engine()
+                        .behavior_flag_overrides()
+                        .contains_key("bigquery_enforce_job_config")
+                {
+                    static WARN_TIMEOUT_NOT_ENFORCED: Once = Once::new();
+                    WARN_TIMEOUT_NOT_ENFORCED.call_once(|| {
+                        emit_warn_log_message(
+                            ErrorCode::BigqueryTimeoutSecondsNotEnforced,
+                            "`timeout_seconds` is set in your profile, but it is not \
+                             respected without the `bigquery_enforce_job_config` behavior \
+                             flag. To enforce it, set \
+                             `flags: {bigquery_enforce_job_config: true}` in \
+                             dbt_project.yml, or rename it to \
+                             `job_execution_timeout_seconds`.",
+                        )
+                    });
                 }
 
                 if let Some(priority) = self.get_db_config_value("priority")
@@ -8186,6 +8221,47 @@ mod tests {
         let state = State::new_for_env(&env);
         let options = adapter.get_adbc_execute_options(&state);
         assert!(!options.iter().any(|(k, _)| k == QUERY_MAX_BYTES_BILLED));
+    }
+
+    fn bigquery_job_timeout_with_job_config_flag(config: Mapping, flag: bool) -> Option<i64> {
+        let project_flags = BTreeMap::from([("bigquery_enforce_job_config".to_string(), flag)]);
+        let adapter = AdapterImpl::new(
+            build_engine_with_behavior(Bigquery, config, project_flags),
+            None,
+        );
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        find_job_timeout(&adapter.get_adbc_execute_options(&state))
+    }
+
+    #[test]
+    fn test_bigquery_timeout_seconds_is_applied_when_flag_enabled() {
+        let config = Mapping::from_iter([("timeout_seconds".into(), 7_i64.into())]);
+        assert_eq!(
+            bigquery_job_timeout_with_job_config_flag(config, true),
+            Some(7 * 1000)
+        );
+    }
+
+    #[test]
+    fn test_bigquery_timeout_seconds_is_not_applied_by_default() {
+        let config = Mapping::from_iter([("timeout_seconds".into(), 7_i64.into())]);
+        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        assert!(find_job_timeout(&adapter.get_adbc_execute_options(&state)).is_none());
+    }
+
+    #[test]
+    fn test_bigquery_job_execution_timeout_seconds_wins_over_timeout_seconds() {
+        let config = Mapping::from_iter([
+            ("timeout_seconds".into(), 7_i64.into()),
+            ("job_execution_timeout_seconds".into(), 300_i64.into()),
+        ]);
+        assert_eq!(
+            bigquery_job_timeout_with_job_config_flag(config, true),
+            Some(300 * 1000)
+        );
     }
 
     #[test]

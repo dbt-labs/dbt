@@ -343,6 +343,7 @@ impl MicrobatchRefContext {
     pub fn to_run_filter(&self) -> RunFilter {
         RunFilter {
             empty: false,
+            empty_marker: false,
             sample: Some(Sample {
                 start: Some(self.event_time_start),
                 end: Some(self.event_time_end),

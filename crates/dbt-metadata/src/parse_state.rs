@@ -1840,7 +1840,7 @@ mod tests {
         test.__test_attr__.file_key_name = Some("sources.raw".to_string());
         test.__test_attr__.test_metadata = Some(TestMetadata {
             name: "not_null".to_string(),
-            kwargs: BTreeMap::new(),
+            kwargs: Default::default(),
             namespace: None,
         });
         nodes

@@ -958,6 +958,15 @@ pub struct ManifestModelConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub use_anonymous_sproc: Option<bool>,
+    /// Whether the model is written in MetricFlow SQL. It is in the manifest so that a change of
+    /// it is a change of the model's config for `state:modified`.
+    #[serde(
+        default,
+        deserialize_with = "bool_or_string_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(skip)]
+    pub metricflow: Option<bool>,
     #[serde(
         default,
         serialize_with = "crate::schemas::serde::serialize_option_docs_with_nulls"
@@ -1227,6 +1236,7 @@ impl From<ModelConfig> for ManifestModelConfig {
             secrets: config.secrets,
             external_access_integrations: config.external_access_integrations,
             use_anonymous_sproc: config.use_anonymous_sproc,
+            metricflow: config.metricflow,
             docs: config.docs,
             contract: config.contract,
             event_time: config.event_time,
@@ -1311,6 +1321,7 @@ impl From<ManifestModelConfig> for ModelConfig {
             secrets: config.secrets,
             external_access_integrations: config.external_access_integrations,
             use_anonymous_sproc: config.use_anonymous_sproc,
+            metricflow: config.metricflow,
             docs: config.docs,
             contract: config.contract,
             event_time: config.event_time,

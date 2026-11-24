@@ -1,4 +1,4 @@
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, strip_resource_paths_from_ref_path,
@@ -7,6 +7,10 @@ use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
     render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
 };
+use crate::resolve::properties_extensions::{
+    self, ExtensionReader, Extensions, NoExtensions, ReadExtensions,
+};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
@@ -22,6 +26,7 @@ use crate::utils::{
     update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
@@ -59,8 +64,64 @@ use minijinja::Value as MinijinjaValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// How a package's snapshots resolve. `E` names the extensions read beside a snapshot's
+/// properties.
+pub(crate) struct Snapshots<E = NoExtensions>(PhantomData<E>);
+
+impl<E> Default for Snapshots<E> {
+    fn default() -> Self {
+        Snapshots(PhantomData)
+    }
+}
+
+#[async_trait]
+impl<E: Extensions> ResolvableNode for Snapshots<E> {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["snapshots"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // TODO: resolve_snapshots still creates its own local JinjaTypeCheckingEventListenerFactory
+        // instead of receiving the top-level one, so snapshot macro dependencies are populated
+        // locally rather than via update_manifest_with_macro_depends_on. Out of scope for now.
+        // Resolve snapshots based on the dbt_state, database, schema, and project name
+        let extensions = ExtensionReader::of::<E::Snapshot>(ctx);
+        let (snapshots, disabled_snapshots, extensions) = resolve_snapshots(
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.properties.take_entries("snapshots"),
+            &ctx.macros.macros,
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            &mut ctx.node_resolver,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            ctx.token,
+            &extensions,
+        )
+        .await?;
+        ctx.nodes.snapshots.extend(snapshots);
+        ctx.disabled_nodes.snapshots.extend(disabled_snapshots);
+        properties_extensions::give_back(ctx, extensions, |ctx, unique_id| {
+            ctx.nodes.snapshots.get(unique_id).cloned()
+        })
+    }
+}
 
 #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
 pub async fn resolve_snapshots(
@@ -69,7 +130,7 @@ pub async fn resolve_snapshots(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    mut snapshot_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    mut snapshot_properties: BTreeMap<String, PropertiesEntry>,
     macros: &BTreeMap<String, DbtMacro>,
     database: &str,
     schema: &str,
@@ -85,10 +146,14 @@ pub async fn resolve_snapshots(
     test_name_truncations: &mut HashMap<String, String>,
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     token: &CancellationToken,
+    extensions: &ExtensionReader,
 ) -> FsResult<(
     HashMap<String, Arc<DbtSnapshot>>,
     HashMap<String, Arc<DbtSnapshot>>,
+    Vec<(String, ReadExtensions)>,
 )> {
+    // The extensions of each snapshot whose entry has some, by the snapshot's unique id.
+    let mut read_extensions: Vec<(String, ReadExtensions)> = Vec::new();
     let mut snapshots: HashMap<String, Arc<DbtSnapshot>> = HashMap::new();
     let mut disabled_snapshots: HashMap<String, Arc<DbtSnapshot>> = HashMap::new();
     let jinja_type_checking_event_listener_factory =
@@ -224,6 +289,15 @@ pub async fn resolve_snapshots(
             // still go through Jinja as before.
             let raw_description =
                 yaml_field_utils::detach_field_from_mapping(&mut schema_value, "description");
+            // Read before the entry is typed as a snapshot's.
+            if let Some(read) = extensions.read(
+                &mut schema_value,
+                &jinja_env,
+                base_ctx.as_ref(),
+                dependency_package_name,
+            )? {
+                read_extensions.push((format!("snapshot.{package_name}.{snapshot_name}"), read));
+            }
             let mut snapshot: SnapshotProperties = into_typed_with_jinja(
                 schema_value,
                 false,
@@ -783,7 +857,7 @@ pub async fn resolve_snapshots(
             .map(|(k, _)| (k.__common_attr__.unique_id.clone(), Arc::new(k))),
     );
 
-    Ok((snapshots, disabled_snapshots))
+    Ok((snapshots, disabled_snapshots, read_extensions))
 }
 
 /// Extract the verbatim body between `{% snapshot ... %}` and `{% endsnapshot %}`

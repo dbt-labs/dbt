@@ -9,9 +9,7 @@ use std::{any::Any, collections::BTreeMap, fmt::Display, path::PathBuf, sync::Ar
 use chrono::Utc;
 use dbt_adapter_core::{AdapterType, MICROBATCH_SUPPORTED_ADAPTERS};
 use dbt_common::constants::{DBT_COMPILED_DIR_NAME, DBT_RUN_DIR_NAME};
-use dbt_common::io_args::{
-    ComputeArg, StaticAnalysisKind, StaticAnalysisOffReason, multi_adapter_enabled,
-};
+use dbt_common::io_args::{ComputeArg, StaticAnalysisKind, StaticAnalysisOffReason};
 use dbt_common::path::{DbtPath, get_snapshot_write_path, get_target_write_path};
 use dbt_common::tracing::dbt_emit::{emit_error_log_message, emit_warn_log_message};
 use dbt_common::{ErrorCode, FsResult, Span, err};
@@ -26,6 +24,7 @@ use crate::schemas::common::{
     Constraint, ConstraintSupport, ConstraintType, ExternalTable, PersistDocsConfig,
     RowFilterConfig, constraint_support, hooks_equal, normalize_sql,
 };
+use crate::schemas::dbt_catalogs::TableFormat;
 use crate::schemas::dbt_column::{DbtColumnRef, deserialize_dbt_columns, serialize_dbt_columns};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::log_state_mod_diff;
@@ -263,8 +262,9 @@ pub trait InternalDbtNode:
         None
     }
     fn resource_type(&self) -> NodeType;
-    /// For a node of type [`NodeType::Experimental`], the kind of node the experimental added.
-    fn experimental_type(&self) -> Option<&str> {
+    /// For a node of a kind that a feature adds, the kind ([`InjectedNodeType::kind`]). Its
+    /// [`resource_type`](Self::resource_type) is [`NodeType::Experimental`], whatever its kind.
+    fn injected_kind(&self) -> Option<&str> {
         None
     }
     fn as_any(&self) -> &dyn Any;
@@ -630,11 +630,8 @@ pub trait InternalDbtNode:
             in_selection,
             self.get_group(),
         );
-        // Only worth reporting when nodes can run on different adapters.
-        if multi_adapter_enabled() {
-            event.adapter = Some(base.adapter.as_ref().to_string());
-        }
-        event.experimental_type = self.experimental_type().map(str::to_string);
+        event.adapter = Some(base.adapter.as_ref().to_string());
+        event.experimental_type = self.injected_kind().map(str::to_string);
         if let Some(language) = &common.language {
             event.set_language(node_language(language));
         }
@@ -3571,7 +3568,7 @@ impl InternalDbtNodeAttributes for DbtCheck {
     }
 }
 
-impl InternalDbtNode for DbtExperimentalNode {
+impl<T: InjectedNodeType> InternalDbtNode for T {
     fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
         self
     }
@@ -3579,22 +3576,22 @@ impl InternalDbtNode for DbtExperimentalNode {
         Box::new(Clone::clone(self))
     }
     fn common(&self) -> &CommonAttributes {
-        &self.__common_attr__
+        self.common_attributes()
     }
     fn base(&self) -> &NodeBaseAttributes {
-        &self.__base_attr__
+        self.base_attributes()
     }
     fn base_mut(&mut self) -> &mut NodeBaseAttributes {
-        &mut self.__base_attr__
+        self.base_attributes_mut()
     }
     fn common_mut(&mut self) -> &mut CommonAttributes {
-        &mut self.__common_attr__
+        self.common_attributes_mut()
     }
     fn resource_type(&self) -> NodeType {
         NodeType::Experimental
     }
-    fn experimental_type(&self) -> Option<&str> {
-        Some(&self.__experimental_attr__.experimental_type)
+    fn injected_kind(&self) -> Option<&str> {
+        Some(self.kind())
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -3606,43 +3603,41 @@ impl InternalDbtNode for DbtExperimentalNode {
         crate::schemas::serialization_utils::serialize_with_mode(self, mode)
     }
     fn has_same_config(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<DbtExperimentalNode>()
-            .is_some_and(|other| {
-                self.__base_attr__.enabled == other.__base_attr__.enabled
-                    && tags_eq_vec(&self.__common_attr__.tags, &other.__common_attr__.tags)
-                    && self.__common_attr__.meta == other.__common_attr__.meta
-            })
+        other.as_any().downcast_ref::<T>().is_some_and(|other| {
+            self.base_attributes().enabled == other.base_attributes().enabled
+                && tags_eq_vec(
+                    &self.common_attributes().tags,
+                    &other.common_attributes().tags,
+                )
+                && self.common_attributes().meta == other.common_attributes().meta
+        })
     }
-    /// The checksum covers the node's whole properties entry.
+    /// The checksum covers the file that defines the node.
     fn has_same_content(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<DbtExperimentalNode>()
-            .is_some_and(|other| {
-                self.__experimental_attr__.experimental_type
-                    == other.__experimental_attr__.experimental_type
-                    && self.__common_attr__.checksum == other.__common_attr__.checksum
-            })
+        other.as_any().downcast_ref::<T>().is_some_and(|other| {
+            self.common_attributes().checksum == other.common_attributes().checksum
+        })
     }
     fn set_detected_introspection(&mut self, _introspection: IntrospectionKind) {
-        panic!("DbtExperimentalNode does not support setting detected_unsafe");
+        panic!(
+            "a node of the kind `{}` does not support setting detected_unsafe",
+            self.kind()
+        );
     }
 }
 
-impl InternalDbtNodeAttributes for DbtExperimentalNode {
+impl<T: InjectedNodeType> InternalDbtNodeAttributes for T {
     fn materialized(&self) -> DbtMaterialization {
-        self.__base_attr__.materialized.clone()
+        self.base_attributes().materialized.clone()
     }
     fn quoting(&self) -> ResolvedQuoting {
-        self.__base_attr__.quoting
+        self.base_attributes().quoting
     }
     fn tags(&self) -> &[String] {
-        &self.__common_attr__.tags
+        &self.common_attributes().tags
     }
     fn meta(&self) -> &IndexMap<String, YmlValue> {
-        &self.__common_attr__.meta
+        &self.common_attributes().meta
     }
     fn serialized_config(&self) -> YmlValue {
         #[derive(Serialize)]
@@ -3652,17 +3647,23 @@ impl InternalDbtNodeAttributes for DbtExperimentalNode {
             meta: &'a IndexMap<String, YmlValue>,
         }
         dbt_yaml::to_value(Config {
-            enabled: self.__base_attr__.enabled,
-            tags: &self.__common_attr__.tags,
-            meta: &self.__common_attr__.meta,
+            enabled: self.base_attributes().enabled,
+            tags: &self.common_attributes().tags,
+            meta: &self.common_attributes().meta,
         })
         .expect("Failed to serialize to YAML")
     }
     fn search_name(&self) -> String {
-        self.__common_attr__.name.clone()
+        self.common_attributes().name.clone()
     }
     fn selector_string(&self) -> String {
-        self.__common_attr__.fqn.join(".")
+        self.common_attributes().fqn.join(".")
+    }
+}
+
+impl<T: InjectedNodeType> InjectedNode for T {
+    fn clone_arc(&self) -> Arc<dyn InjectedNode> {
+        Arc::new(Clone::clone(self))
     }
 }
 
@@ -4519,7 +4520,7 @@ impl InternalDbtNode for DbtMacro {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub struct Nodes {
     pub models: BTreeMap<String, Arc<DbtModel>>,
     pub seeds: BTreeMap<String, Arc<DbtSeed>>,
@@ -4536,11 +4537,9 @@ pub struct Nodes {
     pub functions: BTreeMap<String, Arc<DbtFunction>>,
     pub checks: BTreeMap<String, Arc<DbtCheck>>,
     pub macros: BTreeMap<String, Arc<DbtMacro>>,
-    /// Nodes added by experimentals, of any experimental type. Not in
-    /// [`Nodes::materializable_keys`]: an experimental node runs only when it is selected directly.
-    /// Never serialized: experimental data is opaque.
-    #[serde(skip)]
-    pub experimentals: BTreeMap<String, Arc<DbtExperimentalNode>>,
+    /// The nodes of the kinds that features add, of any type. Not in
+    /// [`Nodes::materializable_keys`]: such a node runs only when it is selected directly.
+    pub injected: BTreeMap<String, Arc<dyn InjectedNode>>,
     /// The root project name. Used to resolve the `package:this` selector.
     pub project_name: Option<String>,
 }
@@ -4628,10 +4627,10 @@ impl Nodes {
             .iter()
             .map(|(id, node)| (id.clone(), Arc::new((**node).clone())))
             .collect();
-        let experimentals = self
-            .experimentals
+        let injected = self
+            .injected
             .iter()
-            .map(|(id, node)| (id.clone(), Arc::new((**node).clone())))
+            .map(|(id, node)| (id.clone(), node.clone_arc()))
             .collect();
         Nodes {
             models,
@@ -4649,7 +4648,7 @@ impl Nodes {
             functions,
             checks,
             macros,
-            experimentals,
+            injected,
             project_name: self.project_name.clone(),
         }
     }
@@ -4742,7 +4741,7 @@ impl Nodes {
                     .map(|n| Arc::as_ref(n) as &dyn InternalDbtNodeAttributes)
             })
             .or_else(|| {
-                self.experimentals
+                self.injected
                     .get(unique_id)
                     .map(|n| Arc::as_ref(n) as &dyn InternalDbtNodeAttributes)
             })
@@ -4813,7 +4812,7 @@ impl Nodes {
                     .map(|n| n.clone() as Arc<dyn InternalDbtNodeAttributes>)
             })
             .or_else(|| {
-                self.experimentals
+                self.injected
                     .get(unique_id)
                     .map(|n| n.clone() as Arc<dyn InternalDbtNodeAttributes>)
             })
@@ -4836,7 +4835,7 @@ impl Nodes {
             || self.functions.contains_key(unique_id)
             || self.checks.contains_key(unique_id)
             || self.saved_queries.contains_key(unique_id)
-            || self.experimentals.contains_key(unique_id)
+            || self.injected.contains_key(unique_id)
     }
 
     /// Number of nodes yielded by [`Self::iter`].
@@ -4854,7 +4853,7 @@ impl Nodes {
             + self.semantic_models.len()
             + self.metrics.len()
             + self.saved_queries.len()
-            + self.experimentals.len()
+            + self.injected.len()
     }
 
     /// Every node with its unique id.
@@ -4926,7 +4925,7 @@ impl Nodes {
                     .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes)),
             )
             .chain(
-                self.experimentals
+                self.injected
                     .iter()
                     .map(|(id, node)| (id, Arc::as_ref(node) as &dyn InternalDbtNodeAttributes)),
             );
@@ -4959,7 +4958,10 @@ impl IntoIterator for Nodes {
         let semantic_models = self.semantic_models.into_iter().map(f);
         let metrics = self.metrics.into_iter().map(f);
         let saved_queries = self.saved_queries.into_iter().map(f);
-        let experimentals = self.experimentals.into_iter().map(f);
+        let injected = self
+            .injected
+            .into_iter()
+            .map(|(id, node)| (id, node as Arc<dyn InternalDbtNodeAttributes>));
 
         let iter = models
             .chain(seeds)
@@ -4974,7 +4976,7 @@ impl IntoIterator for Nodes {
             .chain(semantic_models)
             .chain(metrics)
             .chain(saved_queries)
-            .chain(experimentals);
+            .chain(injected);
         Box::new(iter)
     }
 }
@@ -5036,10 +5038,10 @@ impl Nodes {
             .saved_queries
             .values_mut()
             .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes);
-        let map_experimentals = self
-            .experimentals
+        let map_injected = self
+            .injected
             .values_mut()
-            .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes);
+            .map(|arc| make_injected_mut(arc) as &mut dyn InternalDbtNodeAttributes);
 
         let iter = map_models
             .chain(map_seeds)
@@ -5054,7 +5056,7 @@ impl Nodes {
             .chain(map_semantic_models)
             .chain(map_metrics)
             .chain(map_saved_queries)
-            .chain(map_experimentals);
+            .chain(map_injected);
         Box::new(iter)
     }
 
@@ -5123,9 +5125,9 @@ impl Nodes {
                     .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes)
             })
             .or_else(|| {
-                self.experimentals
+                self.injected
                     .get_mut(unique_id)
-                    .map(|arc| Arc::make_mut(arc) as &mut dyn InternalDbtNodeAttributes)
+                    .map(|arc| make_injected_mut(arc) as &mut dyn InternalDbtNodeAttributes)
             })
     }
 
@@ -5233,7 +5235,7 @@ impl Nodes {
         self.groups.extend(other.groups);
         self.functions.extend(other.functions);
         self.checks.extend(other.checks);
-        self.experimentals.extend(other.experimentals);
+        self.injected.extend(other.injected);
     }
 
     pub fn warn_on_custom_materializations(&self) -> FsResult<()> {
@@ -5668,69 +5670,51 @@ pub struct DbtCheckAttr {
     pub compiled_sql: Option<String>,
 }
 
-/// A node an experimental adds to the project. Its kind is
-/// [`DbtExperimentalNodeAttr::experimental_type`].
+/// A node of a kind that a feature adds to dbt. [`Nodes`] holds these in one slot, whatever
+/// their type.
 ///
-/// The node holds what dbt needs to select, schedule and report it; the experimental's own data for
-/// it is opaque ([`ExperimentalData`]).
+/// Such a node writes no relation. It is not part of the manifest, is never selected by default,
+/// and is only ever selected directly (not through graph operators or `state:`).
 ///
-/// Experimental nodes write no relation. They are not part of the manifest, are never selected by
-/// default, and are only ever selected directly (not through graph operators or `state:`).
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-#[derive(dbt_proc_macros::JinjaNodeFields)]
-pub struct DbtExperimentalNode {
-    pub __common_attr__: CommonAttributes,
-
-    pub __base_attr__: NodeBaseAttributes,
-
-    pub __experimental_attr__: DbtExperimentalNodeAttr,
+/// A feature doesn't implement this trait: it implements [`InjectedNodeType`] for its node type.
+pub trait InjectedNode: InternalDbtNodeAttributes {
+    /// A copy of the node behind a new `Arc`, for a caller that changes the node.
+    fn clone_arc(&self) -> Arc<dyn InjectedNode>;
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-#[derive(dbt_proc_macros::JinjaNodeFields)]
-pub struct DbtExperimentalNodeAttr {
-    /// The kind of node, named by the experimental that added it (e.g. `widget`).
-    pub experimental_type: String,
-    /// The experimental's own data for this node. Never serialized.
-    #[serde(skip)]
-    pub data: ExperimentalData,
+/// The type of the nodes of a kind that a feature adds.
+///
+/// The type holds what dbt needs to select, schedule and report a node: its common and base
+/// attributes. Its other fields are the feature's own. A type that implements this trait is an
+/// [`InternalDbtNode`] and an [`InjectedNode`]. The feature gets its node back by type, with
+/// [`InternalDbtNode::as_any`].
+///
+/// Derive `Serialize` and [`JinjaNodeFields`](crate::jinja_node::JinjaNodeFields) for the type,
+/// with its attributes in fields named `__common_attr__` and `__base_attr__`, as dbt's own node
+/// types do, and skip the fields that dbt must not serialize.
+pub trait InjectedNodeType:
+    Any + Clone + fmt::Debug + Send + Sync + Serialize + crate::jinja_node::JinjaNodeFields
+{
+    /// The kind of node, e.g. `widget`: the prefix of its nodes' unique ids, and a value
+    /// `resource_type:` selects.
+    fn kind(&self) -> &str;
+
+    /// The node's common attributes.
+    fn common_attributes(&self) -> &CommonAttributes;
+    /// The node's common attributes, to change.
+    fn common_attributes_mut(&mut self) -> &mut CommonAttributes;
+    /// The node's base attributes.
+    fn base_attributes(&self) -> &NodeBaseAttributes;
+    /// The node's base attributes, to change.
+    fn base_attributes_mut(&mut self) -> &mut NodeBaseAttributes;
 }
 
-/// An experimental's data for one of its nodes, of a type only the experimental knows.
-#[derive(Clone)]
-pub struct ExperimentalData(Arc<dyn Any + Send + Sync>);
-
-impl ExperimentalData {
-    pub fn new<T: Any + Send + Sync>(data: T) -> Self {
-        Self(Arc::new(data))
+/// The node behind `node` to change: the node itself if nothing else holds it, or a copy of it.
+fn make_injected_mut(node: &mut Arc<dyn InjectedNode>) -> &mut dyn InjectedNode {
+    if Arc::get_mut(node).is_none() {
+        *node = node.clone_arc();
     }
-
-    /// The data, if it is a `T`.
-    pub fn get<T: Any>(&self) -> Option<&T> {
-        self.0.downcast_ref()
-    }
-}
-
-impl Default for ExperimentalData {
-    fn default() -> Self {
-        Self::new(())
-    }
-}
-
-impl fmt::Debug for ExperimentalData {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ExperimentalData(..)")
-    }
-}
-
-impl DbtExperimentalNode {
-    /// The experimental's data for this node, if it is a `T`.
-    pub fn experimental_data<T: Any>(&self) -> Option<&T> {
-        self.__experimental_attr__.data.get()
-    }
+    Arc::get_mut(node).expect("a new Arc has one owner")
 }
 
 #[skip_serializing_none]
@@ -5886,9 +5870,22 @@ pub struct DbtTestAttr {
 #[serde(rename_all = "snake_case")]
 pub struct TestMetadata {
     pub name: String,
-    #[serde(default)]
-    pub kwargs: BTreeMap<String, YmlValue>,
+    /// Kept sorted by key, so it serializes and iterates in key order.
+    #[serde(default, deserialize_with = "deserialize_sorted_kwargs")]
+    pub kwargs: IndexMap<String, YmlValue>,
     pub namespace: Option<String>,
+}
+
+/// Deserializes test kwargs in any key order and sorts them by key.
+fn deserialize_sorted_kwargs<'de, D>(
+    deserializer: D,
+) -> Result<IndexMap<String, YmlValue>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut kwargs = IndexMap::<String, YmlValue>::deserialize(deserializer)?;
+    kwargs.sort_unstable_keys();
+    Ok(kwargs)
 }
 
 #[skip_serializing_none]
@@ -6096,8 +6093,6 @@ pub struct DbtModel {
 }
 
 impl DbtModel {
-    /// Whether this is a BigQuery table or incremental model stored as Iceberg in a
-    /// resolved `biglake_metastore` catalog without `lakehouse_catalog`.
     pub fn is_bigquery_managed_iceberg_table(
         &self,
         catalogs: Option<&crate::schemas::dbt_catalogs::DbtCatalogs>,
@@ -6110,6 +6105,23 @@ impl DbtModel {
         {
             return Ok(false);
         }
+        let catalog_name = self
+            .__model_attr__
+            .catalog_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.eq_ignore_ascii_case("none"));
+        if catalog_name.is_none() {
+            if self.__common_attr__.language.as_deref() == Some("python") {
+                return Ok(false);
+            }
+            let table_format = TableFormat::parse(self.__model_attr__.table_format.as_deref())
+                .map_err(|err| {
+                    let message = format!("Model '{}': {err}", self.unique_id());
+                    Box::new(err.with_context(message))
+                })?;
+            return Ok(table_format.is_iceberg());
+        }
         let Some(catalogs) = catalogs else {
             return Ok(false);
         };
@@ -6117,8 +6129,7 @@ impl DbtModel {
         // unmanaged: the neighbouring parse checks propagate the same failure.
         let view = catalogs.view()?;
         Ok(view.catalogs.iter().any(|catalog| {
-            Some(catalog.name) == self.__model_attr__.catalog_name.as_deref()
-                && catalog.is_bigquery_managed_iceberg()
+            Some(catalog.name) == catalog_name && catalog.is_bigquery_managed_iceberg()
         }))
     }
 
@@ -8083,6 +8094,7 @@ mod tests {
     fn bigquery_managed_iceberg_table_classification() {
         use crate::schemas::common::DbtMaterialization;
         use crate::schemas::dbt_catalogs::DbtCatalogs;
+        use dbt_common::ErrorCode;
 
         let value: dbt_yaml::Value = dbt_yaml::from_str(
             r#"
@@ -8108,6 +8120,7 @@ catalogs:
 
         for (name, format, materialized, readable) in [
             (Some("bq"), None, DbtMaterialization::Table, true),
+            (Some(" bq "), None, DbtMaterialization::Table, true),
             (Some("bq"), None, DbtMaterialization::Incremental, true),
             (
                 Some("bq"),
@@ -8117,8 +8130,20 @@ catalogs:
             ),
             (Some("runtime"), None, DbtMaterialization::Table, false),
             (None, None, DbtMaterialization::Table, false),
-            (None, Some("iceberg"), DbtMaterialization::Table, false),
+            (None, Some("iceberg"), DbtMaterialization::Table, true),
             (Some("unknown"), None, DbtMaterialization::Table, false),
+            (
+                Some("unknown"),
+                Some("iceberg"),
+                DbtMaterialization::Table,
+                false,
+            ),
+            (
+                Some("none"),
+                Some("iceberg"),
+                DbtMaterialization::Table,
+                true,
+            ),
             (Some("bq"), Some("iceberg"), DbtMaterialization::View, false),
             (
                 Some("bq"),
@@ -8140,6 +8165,32 @@ catalogs:
                 "{name:?} {format:?} {materialized:?}"
             );
         }
+
+        let mut bare = DbtModel::default();
+        bare.__base_attr__.adapter = AdapterType::Bigquery;
+        bare.__base_attr__.materialized = DbtMaterialization::Table;
+        bare.__model_attr__.table_format = Some("iceberg".into());
+        assert!(
+            bare.is_bigquery_managed_iceberg_table(None).unwrap(),
+            "a BigQuery Iceberg table does not need catalogs.yml"
+        );
+
+        let mut invalid = bare.clone();
+        invalid.__common_attr__.unique_id = "model.test.invalid_upstream".into();
+        invalid.__model_attr__.table_format = Some("invalid_format".into());
+        let err = invalid.is_bigquery_managed_iceberg_table(None).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
+        let message = err.to_string();
+        assert!(message.contains("'invalid_format'"), "{message}");
+        assert!(message.contains("model.test.invalid_upstream"), "{message}");
+
+        bare.__common_attr__.language = Some("python".into());
+        assert!(
+            !bare
+                .is_bigquery_managed_iceberg_table(Some(&catalogs))
+                .unwrap(),
+            "a BigQuery Python model does not use table_format to write Iceberg"
+        );
 
         // The adapter is part of the predicate: a Snowflake model declaring the same Iceberg
         // catalog is not a BigQuery-managed table.
@@ -9502,6 +9553,7 @@ mod seed_has_same_content_tests {
                         require_fresh_data_from: Some(UpdatesOn::All),
                         evaluate_volatile_sql: Some(true),
                         compare_unrendered_code: None,
+                        compare_selected_columns: None,
                     })
                 }),
             ),
@@ -9744,81 +9796,125 @@ mod model_same_ref_representation_tests {
 }
 
 #[cfg(test)]
-mod experimental_node_tests {
+mod injected_node_tests {
     use super::*;
 
-    fn nodes_with_experimental_node() -> Nodes {
-        let mut node = DbtExperimentalNode::default();
+    /// The node type of a kind that a feature adds: `widget`.
+    #[derive(Debug, Clone, Default, Serialize, dbt_proc_macros::JinjaNodeFields)]
+    pub(super) struct Widget {
+        pub(super) __common_attr__: CommonAttributes,
+        pub(super) __base_attr__: NodeBaseAttributes,
+        /// The feature's own field.
+        #[serde(skip)]
+        pub(super) size: u64,
+    }
+
+    impl InjectedNodeType for Widget {
+        fn kind(&self) -> &str {
+            "widget"
+        }
+
+        fn common_attributes(&self) -> &CommonAttributes {
+            &self.__common_attr__
+        }
+        fn common_attributes_mut(&mut self) -> &mut CommonAttributes {
+            &mut self.__common_attr__
+        }
+        fn base_attributes(&self) -> &NodeBaseAttributes {
+            &self.__base_attr__
+        }
+        fn base_attributes_mut(&mut self) -> &mut NodeBaseAttributes {
+            &mut self.__base_attr__
+        }
+    }
+
+    fn nodes_with_a_widget() -> Nodes {
+        let mut node = Widget {
+            size: 3,
+            ..Default::default()
+        };
         node.__common_attr__.unique_id = "widget.shop.orders_widget".to_string();
-        node.__experimental_attr__.experimental_type = "widget".to_string();
         let mut nodes = Nodes::default();
         nodes
-            .experimentals
+            .injected
             .insert(node.__common_attr__.unique_id.clone(), Arc::new(node));
         nodes
     }
 
-    /// An experimental node is found and iterated like any other node, but is not in the default
+    /// An injected node is found and iterated like any other node, but is not in the default
     /// selection.
     #[test]
-    fn experimental_nodes_are_nodes_but_not_selected_by_default() {
-        let nodes = nodes_with_experimental_node();
+    fn injected_nodes_are_nodes_but_not_selected_by_default() {
+        let nodes = nodes_with_a_widget();
         let id = "widget.shop.orders_widget";
 
         assert!(nodes.contains(id));
         assert_eq!(nodes.node_count(), 1);
         assert_eq!(nodes.iter().count(), 1);
-        assert_eq!(nodes.iter().count(), 1);
         let node = nodes
             .get_node(id)
-            .expect("experimental node is found by unique id");
+            .expect("an injected node is found by unique id");
         assert_eq!(node.resource_type(), NodeType::Experimental);
-        assert_eq!(node.experimental_type(), Some("widget"));
+        assert_eq!(node.injected_kind(), Some("widget"));
         assert!(nodes.get_node_owned(id).is_some());
         assert_eq!(nodes.materializable_keys().count(), 0);
     }
 
-    /// An experimental gets back the value it stored, by type; nothing else can read it.
+    /// A feature gets its node back by type, with its own fields, which dbt doesn't serialize.
     #[test]
-    fn experimental_data_is_typed_and_opaque() {
-        #[derive(Debug, PartialEq)]
-        struct Widget {
-            size: u64,
-        }
-        let node = DbtExperimentalNode {
-            __experimental_attr__: DbtExperimentalNodeAttr {
-                experimental_type: "widget".to_string(),
-                data: ExperimentalData::new(Widget { size: 3 }),
-            },
-            ..Default::default()
-        };
+    fn a_feature_reads_its_node_by_type() {
+        let nodes = nodes_with_a_widget();
+        let node = nodes.get_node("widget.shop.orders_widget").unwrap();
         assert_eq!(
-            node.experimental_data::<Widget>(),
-            Some(&Widget { size: 3 })
+            node.as_any().downcast_ref::<Widget>().map(|w| w.size),
+            Some(3)
         );
-        assert_eq!(node.experimental_data::<u64>(), None);
-        let serialized = dbt_yaml::to_string(&node.__experimental_attr__).unwrap();
-        assert!(!serialized.contains("data"), "{serialized}");
+        assert!(node.as_any().downcast_ref::<DbtModel>().is_none());
+        let serialized = dbt_yaml::to_string(&node.serialize()).unwrap();
+        assert!(!serialized.contains("size"), "{serialized}");
+        assert!(
+            serialized.contains("resource_type: experimental"),
+            "{serialized}"
+        );
     }
 
-    /// Dependency resolution fills in an experimental node's `depends_on` through
-    /// `iter_values_mut`.
+    /// Dependency resolution fills in an injected node's `depends_on` through `iter_values_mut`.
+    /// A node that something else holds is copied first.
     #[test]
-    fn experimental_nodes_are_mutable_in_place() {
-        let mut nodes = nodes_with_experimental_node();
+    fn injected_nodes_are_mutable_in_place() {
+        let mut nodes = nodes_with_a_widget();
+        let shared = nodes.clone();
         for node in nodes.iter_values_mut() {
             node.base_mut()
                 .depends_on
                 .nodes
                 .push("model.shop.orders".to_string());
         }
-        assert_eq!(
-            nodes.experimentals["widget.shop.orders_widget"]
-                .__base_attr__
+        let depends_on = |nodes: &Nodes| {
+            nodes.injected["widget.shop.orders_widget"]
+                .base()
                 .depends_on
-                .nodes,
-            vec!["model.shop.orders".to_string()]
+                .nodes
+                .clone()
+        };
+        assert_eq!(depends_on(&nodes), ["model.shop.orders"]);
+        assert!(depends_on(&shared).is_empty());
+        // The copy is still the feature's type.
+        let node = nodes.get_value_mut("widget.shop.orders_widget").unwrap();
+        assert_eq!(
+            node.as_any().downcast_ref::<Widget>().map(|w| w.size),
+            Some(3)
         );
+    }
+
+    /// A deep clone copies each injected node.
+    #[test]
+    fn a_deep_clone_copies_injected_nodes() {
+        let nodes = nodes_with_a_widget();
+        let clone = nodes.deep_clone();
+        let id = "widget.shop.orders_widget";
+        assert!(!Arc::ptr_eq(&nodes.injected[id], &clone.injected[id]));
+        assert_eq!(clone.injected[id].injected_kind(), Some("widget"));
     }
 }
 
@@ -9849,7 +9945,12 @@ mod iter_tests {
         insert_two(&mut nodes.semantic_models, "semantic_model");
         insert_two(&mut nodes.metrics, "metric");
         insert_two(&mut nodes.saved_queries, "saved_query");
-        insert_two(&mut nodes.experimentals, "widget");
+        for name in ["b", "a"] {
+            nodes.injected.insert(
+                format!("widget.p.{name}"),
+                Arc::new(injected_node_tests::Widget::default()),
+            );
+        }
         nodes
     }
 

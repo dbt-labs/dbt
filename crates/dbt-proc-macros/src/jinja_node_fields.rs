@@ -186,16 +186,16 @@ pub fn derive(input: DeriveInput) -> syn::Result<TokenStream> {
         .iter()
         .any(|info| info.flatten && info.field.ident.as_ref().unwrap() != "__other__");
 
-    let mode_ty = quote! { crate::schemas::serialization_utils::SerializationMode };
+    let mode_ty = quote! { ::dbt_schemas::schemas::serialization_utils::SerializationMode };
     let keep_none = quote! { #mode_ty::KeepNone };
-    let field_kind = quote! { crate::jinja_node::FieldKind };
+    let field_kind = quote! { ::dbt_schemas::jinja_node::FieldKind };
     let mut getters = Vec::new();
     let mut keys = Vec::new();
     let mut contains = Vec::new();
     let mut kinds = Vec::new();
     let mut jinja_values = Vec::new();
     // `get_jinja_value` converts uncached fields directly and leaves every other field to `get`.
-    let via_get = quote! { return self.get(key, mode).map(::minijinja::Value::from_serialize); };
+    let via_get = quote! { return self.get(key, mode).map(::dbt_schemas::jinja_node::minijinja::Value::from_serialize); };
     // `keys` capacity: typed fields, assuming every `skip_serializing_if` lets them through, plus
     // the entries of each `__other__` map.
     let mut plain_count = 0usize;
@@ -217,7 +217,7 @@ pub fn derive(input: DeriveInput) -> syn::Result<TokenStream> {
             if ident == "__other__" {
                 getters.push(guard(quote! {
                     if let Some(value) = self.#ident.get(key) {
-                        return crate::jinja_node::serialize_field(value, mode);
+                        return ::dbt_schemas::jinja_node::serialize_field(value, mode);
                     }
                 }));
                 contains.push(guard(quote! {
@@ -248,27 +248,27 @@ pub fn derive(input: DeriveInput) -> syn::Result<TokenStream> {
                 other_capacity.push(quote! { self.#ident.len() });
             } else {
                 getters.push(guard(quote! {
-                    if crate::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, #keep_none) {
-                        return crate::jinja_node::JinjaNodeFields::get(&self.#ident, key, mode);
+                    if ::dbt_schemas::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, #keep_none) {
+                        return ::dbt_schemas::jinja_node::JinjaNodeFields::get(&self.#ident, key, mode);
                     }
                 }));
                 contains.push(guard(quote! {
-                    if crate::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, #keep_none) {
-                        return crate::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, mode);
+                    if ::dbt_schemas::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, #keep_none) {
+                        return ::dbt_schemas::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, mode);
                     }
                 }));
                 kinds.push(guard(quote! {
-                    if crate::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, #keep_none) {
-                        return crate::jinja_node::JinjaNodeFields::field_kind(&self.#ident, key);
+                    if ::dbt_schemas::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, #keep_none) {
+                        return ::dbt_schemas::jinja_node::JinjaNodeFields::field_kind(&self.#ident, key);
                     }
                 }));
                 jinja_values.push(guard(quote! {
-                    if crate::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, #keep_none) {
-                        return crate::jinja_node::JinjaNodeFields::get_jinja_value(&self.#ident, key, mode);
+                    if ::dbt_schemas::jinja_node::JinjaNodeFields::contains_key(&self.#ident, key, #keep_none) {
+                        return ::dbt_schemas::jinja_node::JinjaNodeFields::get_jinja_value(&self.#ident, key, mode);
                     }
                 }));
                 keys.push(guard(quote! {
-                    keys.extend(crate::jinja_node::JinjaNodeFields::keys(&self.#ident, #keep_none));
+                    keys.extend(::dbt_schemas::jinja_node::JinjaNodeFields::keys(&self.#ident, #keep_none));
                 }));
                 let ty = &info.field.ty;
                 flattened_capacity.push(quote! { <#ty>::JINJA_NODE_KEYS_CAPACITY });
@@ -278,11 +278,11 @@ pub fn derive(input: DeriveInput) -> syn::Result<TokenStream> {
         plain_count += 1;
         let serialize = match &info.serializer {
             Some(serializer) => quote! {
-                crate::jinja_node::serialize_field_with(&self.#ident, mode, |value, serializer| {
+                ::dbt_schemas::jinja_node::serialize_field_with(&self.#ident, mode, |value, serializer| {
                     #serializer(value, serializer)
                 })
             },
-            None => quote! { crate::jinja_node::serialize_field(&self.#ident, mode) },
+            None => quote! { ::dbt_schemas::jinja_node::serialize_field(&self.#ident, mode) },
         };
         let present = nonnull_check(info).map(|nonnull| quote! { mode == #keep_none || #nonnull });
         getters.push(quote! {
@@ -339,7 +339,7 @@ pub fn derive(input: DeriveInput) -> syn::Result<TokenStream> {
             keys.retain(|key| {
                 seen.insert(*key)
                     && (mode == #keep_none
-                        || crate::jinja_node::JinjaNodeFields::contains_key(self, key, mode))
+                        || ::dbt_schemas::jinja_node::JinjaNodeFields::contains_key(self, key, mode))
             });
         }
     });
@@ -349,14 +349,16 @@ pub fn derive(input: DeriveInput) -> syn::Result<TokenStream> {
         #(#warnings)*
 
         impl #impl_generics #name #ty_generics #where_clause {
-            /// Most keys `JinjaNodeFields::keys` can return from typed fields.
-            pub(crate) const JINJA_NODE_KEYS_CAPACITY: usize = #plain_count #(+ #flattened_capacity)*;
+            /// Most keys `JinjaNodeFields::keys` can return from typed fields. Public so that a
+            /// node type in another crate can flatten this type.
+            #[doc(hidden)]
+            pub const JINJA_NODE_KEYS_CAPACITY: usize = #plain_count #(+ #flattened_capacity)*;
         }
 
         // `serialize_with` paths come from the field attributes, as with serde's derive.
         #[automatically_derived]
         #[allow(unused_qualifications)]
-        impl #impl_generics crate::jinja_node::JinjaNodeFields for #name #ty_generics #where_clause {
+        impl #impl_generics ::dbt_schemas::jinja_node::JinjaNodeFields for #name #ty_generics #where_clause {
             fn get(&self, key: &str, mode: #mode_ty) -> Option<::dbt_yaml::Value> {
                 #(#getters)*
                 None
@@ -369,7 +371,7 @@ pub fn derive(input: DeriveInput) -> syn::Result<TokenStream> {
                 #(#kinds)*
                 #field_kind::Cached
             }
-            fn get_jinja_value(&self, key: &str, mode: #mode_ty) -> Option<::minijinja::Value> {
+            fn get_jinja_value(&self, key: &str, mode: #mode_ty) -> Option<::dbt_schemas::jinja_node::minijinja::Value> {
                 #(#jinja_values)*
                 #via_get
             }
@@ -387,9 +389,9 @@ pub fn derive(input: DeriveInput) -> syn::Result<TokenStream> {
 /// The `FieldKind` of a plain field.
 fn field_kind_variant(info: &FieldInfo<'_>) -> TokenStream {
     match (info.uncached, info.allow_uncached_transform) {
-        (false, _) => quote! { crate::jinja_node::FieldKind::Cached },
-        (true, false) => quote! { crate::jinja_node::FieldKind::Uncached },
-        (true, true) => quote! { crate::jinja_node::FieldKind::UncachedTransformable },
+        (false, _) => quote! { ::dbt_schemas::jinja_node::FieldKind::Cached },
+        (true, false) => quote! { ::dbt_schemas::jinja_node::FieldKind::Uncached },
+        (true, true) => quote! { ::dbt_schemas::jinja_node::FieldKind::UncachedTransformable },
     }
 }
 
@@ -398,7 +400,7 @@ fn field_kind_variant(info: &FieldInfo<'_>) -> TokenStream {
 fn direct_jinja_value(info: &FieldInfo<'_>) -> TokenStream {
     let ident = info.field.ident.as_ref().unwrap();
     let Some(serializer) = &info.serializer else {
-        return quote! { ::minijinja::Value::from_serialize(&self.#ident) };
+        return quote! { ::dbt_schemas::jinja_node::minijinja::Value::from_serialize(&self.#ident) };
     };
     let ty = &info.field.ty;
     quote! {{
@@ -408,7 +410,7 @@ fn direct_jinja_value(info: &FieldInfo<'_>) -> TokenStream {
                 #serializer(self.0, serializer)
             }
         }
-        ::minijinja::Value::from_serialize(SerializeWith(&self.#ident))
+        ::dbt_schemas::jinja_node::minijinja::Value::from_serialize(SerializeWith(&self.#ident))
     }}
 }
 
@@ -441,7 +443,8 @@ fn unknown_serde_warnings<'a>(
 fn nonnull_check(info: &FieldInfo<'_>) -> Option<TokenStream> {
     let ident = info.field.ident.as_ref().unwrap();
     let key = &info.key;
-    let serialized = quote! { crate::jinja_node::JinjaNodeFields::get(self, #key, mode).is_some() };
+    let serialized =
+        quote! { ::dbt_schemas::jinja_node::JinjaNodeFields::get(self, #key, mode).is_some() };
     if info.serializer.is_some() {
         return Some(serialized);
     }

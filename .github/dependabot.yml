@@ -1,32 +1,36 @@
 version: 2
 updates:
-  # python dependencies
-  - package-ecosystem: "pip"
-    directory: "/"
+  # main (Rust). Cargo/npm are managed upstream in dbt-labs/fs.
+  - package-ecosystem: "github-actions"
+    directories: ["/", "/.github/actions/*"]
     schedule:
-      interval: "daily"
-    rebase-strategy: "disabled"
-  - package-ecosystem: "pip"
-    directory: "/core"
-    schedule:
-      interval: "daily"
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
     rebase-strategy: "disabled"
 
-  # docker dependencies
-  - package-ecosystem: "docker"
-    directory: "/"
+  # 1.latest (Python)
+  - package-ecosystem: "pip"
+    directories: ["/", "/core"]
+    target-branch: "1.latest"
     schedule:
       interval: "weekly"
     rebase-strategy: "disabled"
+
   - package-ecosystem: "docker"
     directory: "/docker"
+    target-branch: "1.latest"
     schedule:
       interval: "weekly"
     rebase-strategy: "disabled"
 
-  # github dependencies
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories: ["/", "/.github/actions/*"]
+    target-branch: "1.latest"
     schedule:
       interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
     rebase-strategy: "disabled"

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod column_aware;
 pub mod explain;
 pub mod hash;
 pub mod materialization;

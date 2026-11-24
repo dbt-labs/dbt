@@ -619,8 +619,8 @@ pub struct NodeProcessed {
     /// Mirrors dbt core's `num_nodes`.
     #[prost(uint32, optional, tag = "47")]
     pub node_count_total: ::core::option::Option<u32>,
-    /// Adapter type this node runs on (e.g. "snowflake"). Only set when the
-    /// project can run nodes on more than one adapter.
+    /// Adapter type this node runs on (e.g. "snowflake"): its `+adapter` config if
+    /// it sets one, else the target's adapter type.
     #[prost(string, optional, tag = "48")]
     pub adapter: ::core::option::Option<::prost::alloc::string::String>,
     /// If node_type == NODE_TYPE_EXPERIMENTAL, the kind of node the experimental added
@@ -938,6 +938,8 @@ pub enum NodeSkipReason {
     NoOp = 4,
     /// Current evaluation phase skipped for this node due to previous phase outcome.
     PhaseSkipped = 5,
+    /// Skipped because another node failed under `--fail-fast`, which stops the whole run.
+    FailFast = 6,
 }
 impl NodeSkipReason {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -952,6 +954,7 @@ impl NodeSkipReason {
             Self::PhaseDisabled => "NODE_SKIP_REASON_PHASE_DISABLED",
             Self::NoOp => "NODE_SKIP_REASON_NO_OP",
             Self::PhaseSkipped => "NODE_SKIP_REASON_PHASE_SKIPPED",
+            Self::FailFast => "NODE_SKIP_REASON_FAIL_FAST",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -963,6 +966,7 @@ impl NodeSkipReason {
             "NODE_SKIP_REASON_PHASE_DISABLED" => Some(Self::PhaseDisabled),
             "NODE_SKIP_REASON_NO_OP" => Some(Self::NoOp),
             "NODE_SKIP_REASON_PHASE_SKIPPED" => Some(Self::PhaseSkipped),
+            "NODE_SKIP_REASON_FAIL_FAST" => Some(Self::FailFast),
             _ => None,
         }
     }

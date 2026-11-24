@@ -83,6 +83,8 @@ enum NodeSkipReason {
   NODE_SKIP_REASON_NO_OP = 4;
   // Current evaluation phase skipped for this node due to previous phase outcome.
   NODE_SKIP_REASON_PHASE_SKIPPED = 5;
+  // Skipped because another node failed under `--fail-fast`, which stops the whole run.
+  NODE_SKIP_REASON_FAIL_FAST = 6;
 }
 
 // Cache reuse classification when node_skip_reason == NODE_SKIP_REASON_CACHED.
@@ -551,8 +553,8 @@ message NodeProcessed {
   // Mirrors dbt core's `num_nodes`.
   optional uint32 node_count_total = 47;
 
-  // Adapter type this node runs on (e.g. "snowflake"). Only set when the
-  // project can run nodes on more than one adapter.
+  // Adapter type this node runs on (e.g. "snowflake"): its `+adapter` config if
+  // it sets one, else the target's adapter type.
   optional string adapter = 48;
 
   // If node_type == NODE_TYPE_EXPERIMENTAL, the kind of node the experimental added

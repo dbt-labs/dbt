@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter::{Adapter, AdapterStore};
@@ -11,7 +11,7 @@ use dbt_common::create_info_span;
 use dbt_common::io_args::FsCommand;
 use dbt_common::sccmap;
 use dbt_common::stats::{NodeStatus, Stat};
-use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
+use dbt_common::tracing::dbt_emit::{emit_debug_log_message, emit_error_log_from_fs_error};
 use dbt_common::tracing::span_info::{SpanStatusRecorder, record_span_status_with_attrs};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -53,6 +53,12 @@ use crate::utils::register_catalog_schemas_remote;
 use crate::visitor::visit_parallel;
 use crate::visitor::visit_sequential;
 
+/// After a cancelled run, how long the task runner waits for
+/// `TaskRunnerHooks::did_collect_all_run_task_results`. The whole command has
+/// `TIMEOUT_AFTER_CTRL_C` after the cancel, which must also cover the visit's wait for running
+/// tasks and writing the run's artifacts, so this stays well under it.
+const CANCELLED_RUN_HOOK_TIMEOUT: Duration = Duration::from_millis(500);
+
 pub fn summarize_task_runner_stats(
     ctx: &TaskRunnerCtx,
     schedule: &Schedule<String>,
@@ -80,20 +86,29 @@ pub fn summarize_task_runner_stats(
 /// `--infer-schemas` binds without a catalog and never executes against a
 /// real warehouse, so on-run-start hooks (arbitrary SQL, run for side
 /// effects on the target) have nothing meaningful to run against — skip
-/// them if there's nothing to run in the first place.
-fn should_run_on_run_start_hooks(infer_schemas_and_typeless: bool, has_hooks: bool) -> bool {
-    !infer_schemas_and_typeless && has_hooks
+/// them if there's nothing to run in the first place. `dbt check` runs no
+/// nodes, so it skips them too: they would only connect to the warehouse.
+fn should_run_on_run_start_hooks(
+    command: FsCommand,
+    infer_schemas_and_typeless: bool,
+    has_hooks: bool,
+) -> bool {
+    command != FsCommand::Check && !infer_schemas_and_typeless && has_hooks
 }
 
 /// Same reasoning as `should_run_on_run_start_hooks`, for the post-hooks
 /// phase (on-run-end hooks plus any other post-run bookkeeping gated behind
 /// remote execution).
 fn should_run_post_hooks(
+    command: FsCommand,
     execute: Execute,
     skip_post_hooks: bool,
     infer_schemas_and_typeless: bool,
 ) -> bool {
-    execute == Execute::Remote && !skip_post_hooks && !infer_schemas_and_typeless
+    command != FsCommand::Check
+        && execute == Execute::Remote
+        && !skip_post_hooks
+        && !infer_schemas_and_typeless
 }
 
 pub struct TaskRunner {
@@ -361,6 +376,7 @@ impl TaskRunner {
 
         // Create span for on-run-start phase if there are any hooks
         let on_run_start_span = if should_run_on_run_start_hooks(
+            run_task_args.command,
             run_task_args.infer_schemas_and_typeless || run_task_args.skip_on_run_start_hooks,
             !self.resolved_state.operations.on_run_start.is_empty(),
         ) {
@@ -439,15 +455,50 @@ impl TaskRunner {
                 &token,
             )
             .await?;
-        if run_task_args.no_parallel {
+        let abandoned = if run_task_args.no_parallel {
             visit_sequential(&run_task_args.io, &graph, &mut ctx, &token)
                 .in_current_span()
-                .await?;
+                .await?
         } else {
             visit_parallel(&run_task_args.io, &graph, &mut ctx, &token)
                 .in_current_span()
-                .await?;
+                .await?
+        };
+        // Ctrl+C or `--fail-fast` stopped the run. From the cancel, the whole command gets
+        // `TIMEOUT_AFTER_CTRL_C` (3s) before it is dropped, and run_results.json is only written
+        // after this returns. So a cancelled run only gathers its node results and releases its
+        // resources here: never add warehouse queries, network calls or other slow work to it.
+        if token.is_cancelled() {
+            let mut stats = summarize_task_runner_stats(&ctx, &schedule);
+            abandoned.apply(&mut stats.run.stats);
+            let adapter_responses = sccmap::to_vec_cloned(&ctx.inner.main_adapter_responses)
+                .into_iter()
+                .filter(|(unique_id, _)| !abandoned.contains(unique_id))
+                .collect();
+            // A slow hook must not cost the run its run_results.json, so stop waiting for it
+            // after `CANCELLED_RUN_HOOK_TIMEOUT`.
+            let hook =
+                self.hooks
+                    .did_collect_all_run_task_results(&run_task_args, &mut ctx, &token);
+            if tokio::time::timeout(CANCELLED_RUN_HOOK_TIMEOUT, hook)
+                .await
+                .is_err()
+            {
+                emit_debug_log_message(format!(
+                    "did_collect_all_run_task_results still running {CANCELLED_RUN_HOOK_TIMEOUT:?} after a cancelled run; not waiting for it"
+                ));
+            }
+            return Ok(RunTaskResults {
+                stats,
+                adapter_responses,
+                storeables: Vec::new(),
+                showables: Vec::new(),
+                jinja_env: self.jinja_env,
+                resolved_state: self.resolved_state,
+                preview: None,
+            });
         }
+
         self.hooks
             .did_visit_taskgraph(&run_task_args, &schedule, &graph, &mut ctx, &token)
             .await?;
@@ -481,6 +532,7 @@ impl TaskRunner {
 
         let execute = Execute::from_compute_flag(run_task_args.local_execution_backend);
         if should_run_post_hooks(
+            run_task_args.command,
             execute,
             run_task_args.skip_post_hooks,
             run_task_args.infer_schemas_and_typeless,
@@ -647,36 +699,79 @@ mod tests {
 
     #[test]
     fn on_run_start_hooks_run_when_there_are_hooks_and_infer_schemas_is_off() {
-        assert!(should_run_on_run_start_hooks(false, true));
+        assert!(should_run_on_run_start_hooks(FsCommand::Build, false, true));
     }
 
     #[test]
     fn on_run_start_hooks_skipped_under_infer_schemas() {
-        assert!(!should_run_on_run_start_hooks(true, true));
+        assert!(!should_run_on_run_start_hooks(FsCommand::Build, true, true));
     }
 
     #[test]
     fn on_run_start_hooks_skipped_when_there_are_none() {
-        assert!(!should_run_on_run_start_hooks(false, false));
+        assert!(!should_run_on_run_start_hooks(
+            FsCommand::Build,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn on_run_start_hooks_skipped_under_check() {
+        assert!(!should_run_on_run_start_hooks(
+            FsCommand::Check,
+            false,
+            true
+        ));
     }
 
     #[test]
     fn post_hooks_run_for_remote_execution_without_infer_schemas_or_skip() {
-        assert!(should_run_post_hooks(Execute::Remote, false, false));
+        assert!(should_run_post_hooks(
+            FsCommand::Build,
+            Execute::Remote,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn post_hooks_skipped_under_infer_schemas() {
-        assert!(!should_run_post_hooks(Execute::Remote, false, true));
+        assert!(!should_run_post_hooks(
+            FsCommand::Build,
+            Execute::Remote,
+            false,
+            true
+        ));
     }
 
     #[test]
     fn post_hooks_skipped_when_explicitly_requested() {
-        assert!(!should_run_post_hooks(Execute::Remote, true, false));
+        assert!(!should_run_post_hooks(
+            FsCommand::Build,
+            Execute::Remote,
+            true,
+            false
+        ));
     }
 
     #[test]
     fn post_hooks_skipped_for_non_remote_execution() {
-        assert!(!should_run_post_hooks(Execute::Sidecar, false, false));
+        assert!(!should_run_post_hooks(
+            FsCommand::Build,
+            Execute::Sidecar,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn post_hooks_skipped_under_check() {
+        assert!(!should_run_post_hooks(
+            FsCommand::Check,
+            Execute::Remote,
+            false,
+            false
+        ));
     }
 }

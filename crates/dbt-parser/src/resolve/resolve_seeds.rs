@@ -1,6 +1,10 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::properties_extensions::{
+    self, ExtensionReader, Extensions, NoExtensions, ReadExtensions,
+};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::{
     RawProjectConfigsByAdapter, err_resource_name_has_spaces, extract_config_map,
     node_effective_propagation_target, resolve_node_quoting, select_node_adapter,
@@ -10,6 +14,7 @@ use crate::utils::{
     register_duplicate_resource, trigger_duplicate_errors, update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
@@ -37,20 +42,68 @@ use indexmap::IndexMap;
 use minijinja::value::Value as MinijinjaValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
 
+/// How a package's seeds resolve. `E` names the extensions read beside a seed's properties.
+pub(crate) struct Seeds<E = NoExtensions>(PhantomData<E>);
+
+impl<E> Default for Seeds<E> {
+    fn default() -> Self {
+        Seeds(PhantomData)
+    }
+}
+
+#[async_trait]
+impl<E: Extensions> ResolvableNode for Seeds<E> {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["seeds"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        let extensions = ExtensionReader::of::<E::Seed>(ctx);
+        // Resolve seeds based on the dbt_state, database, schema, and project name
+        let (seeds, disabled_seeds, extensions) = resolve_seeds(
+            ctx.arg,
+            ctx.properties.take_entries("seeds"),
+            ctx.package,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            &mut ctx.node_resolver,
+            &extensions,
+        )
+        .await?;
+        ctx.nodes.seeds.extend(seeds);
+        ctx.disabled_nodes.seeds.extend(disabled_seeds);
+        properties_extensions::give_back(ctx, extensions, |ctx, unique_id| {
+            ctx.nodes.seeds.get(unique_id).cloned()
+        })
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_seeds(
     arg: &ResolveArgs,
-    mut seed_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    mut seed_properties: BTreeMap<String, PropertiesEntry>,
     package: &DbtPackage,
     // Authored quoting per declared adapter name. See `resolve_models`.
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
@@ -67,7 +120,14 @@ pub async fn resolve_seeds(
     test_name_truncations: &mut HashMap<String, String>,
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     node_resolver: &mut NodeResolver,
-) -> FsResult<(HashMap<String, Arc<DbtSeed>>, HashMap<String, Arc<DbtSeed>>)> {
+    extensions: &ExtensionReader,
+) -> FsResult<(
+    HashMap<String, Arc<DbtSeed>>,
+    HashMap<String, Arc<DbtSeed>>,
+    Vec<(String, ReadExtensions)>,
+)> {
+    // The extensions of each seed whose entry has some, by the seed's unique id.
+    let mut read_extensions: Vec<(String, ReadExtensions)> = Vec::new();
     let mut seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let mut disabled_seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let io_args = &arg.io;
@@ -245,6 +305,15 @@ pub async fn resolve_seeds(
                 dependency_package_name,
                 WarningEmission::Emit,
             );
+            // Read before the entry is typed as a seed's.
+            if let Some(read) = extensions.read(
+                &mut mpe.schema_value,
+                jinja_env,
+                base_ctx,
+                dependency_package_name,
+            )? {
+                read_extensions.push((unique_id.clone(), read));
+            }
             (
                 into_typed_with_jinja::<SeedProperties, _>(
                     mpe.schema_value,
@@ -517,5 +586,5 @@ pub async fn resolve_seeds(
     }
 
     trigger_duplicate_errors(&mut duplicate_errors)?;
-    Ok((seeds, disabled_seeds))
+    Ok((seeds, disabled_seeds, read_extensions))
 }

@@ -1133,7 +1133,10 @@ impl JsonCompatLayer {
                 (NodeOutcome::Canceled, _) => false,
                 // Skipped because of error causes children to be skipped as well
                 (NodeOutcome::Skipped, _) => {
-                    matches!(node_skip_reason, Some(NodeSkipReason::Upstream))
+                    matches!(
+                        node_skip_reason,
+                        Some(NodeSkipReason::Upstream | NodeSkipReason::FailFast)
+                    )
                 }
                 // should not happen, treat as not skipping children
                 (NodeOutcome::Unspecified, _) => false,

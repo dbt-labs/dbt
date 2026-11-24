@@ -89,7 +89,7 @@ pub async fn evaluate_state_selector(
     let mut node_data_list = Vec::new();
     for (unique_id, node) in nodes.iter() {
         // Experimental nodes are not in the manifest, and `state:` never selects them.
-        if nodes.experimentals.contains_key(unique_id) {
+        if nodes.injected.contains_key(unique_id) {
             continue;
         }
         let runtime_vars = resolve_compare_unrendered_code(node, args.compare_unrendered_code)
@@ -356,20 +356,47 @@ mod tests {
 
     #[tokio::test]
     async fn evaluate_state_selector_folds_vars_into_configs_hash_when_comparing_unrendered_code() {
-        use dbt_schemas::schemas::DbtExperimentalNode;
+        use dbt_schemas::jinja_node::JinjaNodeFields;
+        use dbt_schemas::schemas::{
+            CommonAttributes, InjectedNode, InjectedNodeType, NodeBaseAttributes,
+        };
         use dbt_schemas::state::DbtVars;
+
+        /// A node of a kind that a feature adds.
+        #[derive(Debug, Clone, Default, serde::Serialize, JinjaNodeFields)]
+        struct Widget {
+            __common_attr__: CommonAttributes,
+            __base_attr__: NodeBaseAttributes,
+        }
+
+        impl InjectedNodeType for Widget {
+            fn kind(&self) -> &str {
+                "widget"
+            }
+            fn common_attributes(&self) -> &CommonAttributes {
+                &self.__common_attr__
+            }
+            fn common_attributes_mut(&mut self) -> &mut CommonAttributes {
+                &mut self.__common_attr__
+            }
+            fn base_attributes(&self) -> &NodeBaseAttributes {
+                &self.__base_attr__
+            }
+            fn base_attributes_mut(&mut self) -> &mut NodeBaseAttributes {
+                &mut self.__base_attr__
+            }
+        }
 
         let mut model = model_node("model.pkg.model_0");
         model.__common_attr__.package_name = "pkg".to_string();
         model.__common_attr__.raw_code = Some("select {{ var('dry_run', false) }}".to_string());
-        let mut experimental = DbtExperimentalNode::default();
+        let mut experimental = Widget::default();
         experimental.__common_attr__.unique_id = "widget.pkg.widget_0".to_string();
-        experimental.__experimental_attr__.experimental_type = "widget".to_string();
         let nodes = Nodes {
             models: BTreeMap::from([("model.pkg.model_0".to_string(), Arc::new(model))]),
-            experimentals: BTreeMap::from([(
+            injected: BTreeMap::from([(
                 "widget.pkg.widget_0".to_string(),
-                Arc::new(experimental),
+                Arc::new(experimental) as Arc<dyn InjectedNode>,
             )]),
             ..Default::default()
         };

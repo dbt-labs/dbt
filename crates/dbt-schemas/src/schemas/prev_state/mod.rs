@@ -1323,7 +1323,7 @@ mod tests {
             attached_node: Some(attached_node.to_string()),
             test_metadata: Some(TestMetadata {
                 name: test_name.to_string(),
-                kwargs: BTreeMap::default(),
+                kwargs: Default::default(),
                 namespace: None,
             }),
             ..DbtTestAttr::default()
@@ -2583,6 +2583,7 @@ mod tests {
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
                         ignore_external_modifications: None,
+                        compare_selected_columns: None,
                     })
                 }),
             ),
@@ -2864,6 +2865,7 @@ mod tests {
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
                         ignore_external_modifications: None,
+                        compare_selected_columns: None,
                     })
                 }),
             ),

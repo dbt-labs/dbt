@@ -2,7 +2,8 @@ use crate::freshness::run_freshness_command;
 use crate::{dbt_lib::write_catalog_json, version_check};
 use arrow::datatypes::SchemaRef;
 use dbt_adapter::{
-    Adapter, adapter::AdapterFactory, relation::create_relation, sql_types::TypeOpsFactory,
+    Adapter, adapter::AdapterFactory, relation::create_relation, response::AdapterResponse,
+    sql_types::TypeOpsFactory,
 };
 use dbt_adapter_core::AdapterType;
 use dbt_clap_core::{Cli, Command, CompileArgs, CoreCommand, ShowArgs};
@@ -59,15 +60,16 @@ use dbt_tasks_core::{
 };
 
 use dbt_common::{
-    DiscreteEventEmitter, ErrorCode, FsResult,
+    DiscreteEventEmitter, ErrorCode, FsError, FsResult,
     artifact_io::{ArtifactSerialization, write_artifact_to_file},
-    cancellation::CancellationToken,
+    cancellation::{CancellationToken, CancelledError},
     constants::{DBT_MANIFEST_JSON, DBT_SEMANTIC_MANIFEST_JSON},
     fail_fast::FailFast,
     fs_err,
     io_args::{
         EvalArgs, EvalArgsBuilder, ListOutputFormat, Phases, ShowOptions,
-        optimize_test_defaults_from_project_flags, resolve_effective_optimize_tests,
+        optimize_test_defaults_from_project_flags, project_flag_bool,
+        resolve_effective_optimize_tests,
     },
     io_utils::{checkpoint_error_count_maybe_exit, checkpoint_maybe_exit},
     path::DbtPath,
@@ -105,7 +107,10 @@ use dbt_tasks_sa::{
         schedule_with_select, schedule_with_unique_ids, selection_reads_previous_state,
     },
 };
-use dbt_tasks_sa::{compiled_sql_cache::CompiledSqlCacheImpl, task_runner::TaskRunner};
+use dbt_tasks_sa::{
+    compiled_sql_cache::CompiledSqlCacheImpl,
+    task_runner::{TaskRunner, summarize_task_runner_stats},
+};
 use dbt_tasks_sa::{
     constraints::render_all_model_constraint_refs_in_place,
     run_operation::{INLINE_SQL_NAME, run_operation, run_operation_inline_sql},
@@ -495,8 +500,12 @@ impl<'a> CompilationPhasesExecutor<'a> {
         // parse-time gate queries. Stating it as its own condition rather than leaning on the
         // implied index is the point — `--no-write-index` must not decide whether a check runs,
         // and it did for as long as this was the index's write site alone.
+        //
+        // The information schema is built from the same epochs, so its default needs them
+        // for the same reason the index's does.
         if self.cli.common_args.effective_partial_parse()
             || self.arg.write_index
+            || self.arg.generate_info_schema
             || self.parse_time_checks_will_run(resolved_state)
         {
             let dbt_state = loaded_project.dbt_state();
@@ -775,11 +784,14 @@ impl<'a> CompilationPhasesExecutor<'a> {
         }
     }
 
+    /// `empty_by_sql_rewrite`: `--empty` is applied by rewriting the compiled SQL
+    /// rather than by rendering relations as zero-row subqueries.
     fn refresh_node_resolver(
         &self,
         loaded_project: &DbtLoadedProject,
         build_cache_changes: Option<&CacheState>,
         resolved_state: &mut ResolverState,
+        empty_by_sql_rewrite: bool,
     ) -> FsResult<()> {
         if build_cache_changes.is_some() {
             resolved_state.node_resolver = {
@@ -791,7 +803,10 @@ impl<'a> CompilationPhasesExecutor<'a> {
                     resolved_state.adapter_type,
                     root_project_name,
                     None,
-                    RunFilter::try_from(self.arg.empty, self.arg.sample.clone())?,
+                    RunFilter {
+                        empty_marker: empty_by_sql_rewrite,
+                        ..RunFilter::try_from(self.arg.empty, self.arg.sample.clone())?
+                    },
                     BTreeMap::new(), // renaming
                     compile_or_test,
                     PackageSearchOrder::resolve(
@@ -894,6 +909,41 @@ pub type DbtRunTasksResult = (
     Arc<Adapter>,
     Arc<DbtProjectCompilationCacheState>,
 );
+
+/// What run_results.json needs from a run that Ctrl+C or `--fail-fast` stopped.
+#[derive(Debug)]
+pub struct CancelledRun {
+    /// Only the nodes with a result.
+    pub stats: Stats,
+    pub adapter_responses: HashMap<String, AdapterResponse>,
+    /// The run's own state. Its nodes carry what the run added to them, which run_results.json
+    /// reports.
+    pub resolved_state: Arc<ResolverState>,
+}
+
+/// How [`DbtProjectCompilation::run_tasks`] fails.
+#[derive(Debug)]
+pub enum RunTasksError {
+    /// Ctrl+C or `--fail-fast` stopped the run.
+    Cancelled(Box<CancelledRun>),
+    Failed(Box<FsError>),
+}
+
+impl RunTasksError {
+    /// A cancelled run becomes a plain cancellation error.
+    pub fn into_fs_error(self) -> Box<FsError> {
+        match self {
+            RunTasksError::Cancelled(_) => CancelledError.into(),
+            RunTasksError::Failed(err) => err,
+        }
+    }
+}
+
+impl<E: Into<Box<FsError>>> From<E> for RunTasksError {
+    fn from(err: E) -> Self {
+        RunTasksError::Failed(err.into())
+    }
+}
 
 use crate::partial_parse::{
     PrevCompilationResult, try_lazy_load_fast_path, try_load_prev_compilation,
@@ -1469,8 +1519,24 @@ impl DbtProjectCompilation {
             CompleteStateWithKind::from_dbt_state(&executor.arg.io, &loaded_project.dbt_state())?;
         token.check_cancellation()?;
 
+        // Where the SQL rewriter applies `--empty`, relations render after a
+        // marker instead of as zero-row subqueries.
+        let empty_by_sql_rewrite = dbt_flags::USE_V2_EMPTY_SQL_REWRITE
+            .resolve_with_project(&project_flag_bool(
+                loaded_project.dbt_state().root_project().flags.as_ref(),
+            ))
+            .value
+            && feature_stack.task_runner.sql_rewriter.applies_empty(
+                loaded_project
+                    .dbt_state()
+                    .dbt_profile
+                    .default_db_config()
+                    .adapter_type(),
+            );
+
         let (mut resolved_state, jinja_env) = {
-            let resolve_args = ResolveArgs::try_from_eval_args(executor.arg.as_ref())?;
+            let mut resolve_args = ResolveArgs::try_from_eval_args(executor.arg.as_ref())?;
+            resolve_args.sample_config.empty_marker = empty_by_sql_rewrite;
             let invocation_args = InvocationArgs::from_eval_args(executor.arg.as_ref());
 
             loaded_project
@@ -1481,10 +1547,7 @@ impl DbtProjectCompilation {
                     token,
                     jinja_type_checking_event_listener_factory.clone(),
                     feature_stack.resolver.hooks.clone(),
-                    feature_stack
-                        .experimentals
-                        .experimentals
-                        .resolve_experimentals(),
+                    feature_stack.experimentals.experimentals.resolvable_nodes(),
                 )
                 .await?
         };
@@ -1619,6 +1682,7 @@ impl DbtProjectCompilation {
             &loaded_project,
             build_cache_changes.as_ref(),
             &mut resolved_state,
+            empty_by_sql_rewrite,
         )?;
         token.check_cancellation()?;
 
@@ -1743,6 +1807,8 @@ impl DbtProjectCompilation {
 
     /// Run tasks based on the arguments.
     /// This can be called multiple times on the same compilation.
+    /// A run that Ctrl+C or `--fail-fast` stopped fails with [`RunTasksError::Cancelled`], which
+    /// carries its results.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::cognitive_complexity)]
     pub async fn run_tasks(
@@ -1760,7 +1826,7 @@ impl DbtProjectCompilation {
         token: &CancellationToken,
         previous_batch_results: HashMap<String, dbt_schemas::schemas::BatchResults>,
         artifacts_sink: &mut DbtCommandExecutionArtifacts,
-    ) -> FsResult<DbtRunTasksResult> {
+    ) -> Result<DbtRunTasksResult, RunTasksError> {
         token.check_cancellation()?;
 
         let dbt_cloud_config = self.dbt_cloud_config().cloned();
@@ -1813,7 +1879,8 @@ impl DbtProjectCompilation {
                                 ErrorCode::InvalidArgument,
                                 "Macros cannot be previewed. The selected path '{}' resolves to a macro. Only models, seeds, snapshots, analyses, and tests can be previewed with 'dbt show'",
                                 matched
-                            ));
+                            )
+                            .into());
                         }
                     }
                 }
@@ -2255,14 +2322,16 @@ impl DbtProjectCompilation {
             return Err(fs_err!(
                 ErrorCode::InvalidArgument,
                 "Use --state or --defer-state to provide a state manifest for cloning"
-            ));
+            )
+            .into());
         }
         if run_task_args.command == FsCommand::Extension("compare") && self.previous_state.is_none()
         {
             return Err(fs_err!(
                 ErrorCode::InvalidArgument,
                 "Compare command requires a state manifest (via --state, --defer-state, or dbt Cloud)"
-            ));
+            )
+            .into());
         }
 
         if let Some(replay_adapter) = adapter.as_replay() {
@@ -2410,7 +2479,7 @@ impl DbtProjectCompilation {
                 )?;
             }
 
-            return Err(return_exit_code_from_error_counter());
+            return Err(return_exit_code_from_error_counter().into());
         };
         token.check_cancellation()?;
 
@@ -2471,7 +2540,7 @@ impl DbtProjectCompilation {
             }
             // An experimental node is graph work only while its experimental runs.
             if node
-                .experimental_type()
+                .injected_kind()
                 .is_some_and(|experimental_type| !experimental_runs.is_running(experimental_type))
             {
                 return;
@@ -2576,9 +2645,37 @@ impl DbtProjectCompilation {
                     )
                     .await;
                 }
-                run_result?
+                match run_result {
+                    Ok(run_task_results) => run_task_results,
+                    // Ctrl+C stopped the run outside the visit, e.g. in an on-run-start hook: it
+                    // keeps the results it has, which may be none.
+                    Err(_) if token.is_cancelled() => {
+                        let ctx = run_cache_ctx_on_error;
+                        return Err(RunTasksError::Cancelled(Box::new(CancelledRun {
+                            stats: summarize_task_runner_stats(&ctx, &ctx.inner.schedule).run,
+                            adapter_responses: dbt_common::sccmap::to_vec_cloned(
+                                &ctx.inner.main_adapter_responses,
+                            )
+                            .into_iter()
+                            .collect(),
+                            resolved_state: Arc::clone(&ctx.resolver_state),
+                        })));
+                    }
+                    Err(err) => return Err(err.into()),
+                }
             }
         };
+
+        // Ctrl+C or `--fail-fast` stopped the run, possibly just now: skip the remaining work.
+        // That includes the sidecar client's shutdown below, which waits for its runner to exit:
+        // the command only has `TIMEOUT_AFTER_CTRL_C` to write its results.
+        if token.is_cancelled() {
+            return Err(RunTasksError::Cancelled(Box::new(CancelledRun {
+                stats: run_task_results.stats.run,
+                adapter_responses: run_task_results.adapter_responses,
+                resolved_state: run_task_results.resolved_state,
+            })));
+        }
 
         // Shut down the adapter-level sidecar client so its dbt-db-runner
         // subprocess releases the DuckDB advisory lock before the next
@@ -2591,8 +2688,6 @@ impl DbtProjectCompilation {
         if let Some(client) = &sidecar_client {
             let _ = client.shutdown();
         }
-
-        token.check_cancellation()?;
 
         // Flush the parquet schema cache to disk (no-op for non-ParquetCache stores).
         if let Err(e) = schema_store.save(&arg.io.out_dir) {

@@ -1594,7 +1594,7 @@ mod tests {
 
         manifest.nodes = [(
             "model.root_project.orders".to_string(),
-            DbtNode::Model(manifest_model),
+            DbtNode::Model(Box::new(manifest_model)),
         )]
         .into_iter()
         .collect();

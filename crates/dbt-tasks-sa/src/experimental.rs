@@ -33,9 +33,7 @@ use dbt_jinja_utils::utils::render_sql;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::profiles::TargetContext;
 use dbt_schemas::schemas::relations::base::{BaseRelation, ComponentName};
-use dbt_schemas::schemas::{
-    DbtExperimentalNode, ExperimentalData, InternalDbtNodeAttributes, Nodes,
-};
+use dbt_schemas::schemas::{InjectedNode, InternalDbtNodeAttributes, Nodes};
 use dbt_tasks_core::RunTasksArgs;
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation};
@@ -47,16 +45,26 @@ use minijinja::listener::RenderingEventListener;
 use minijinja::value::{Object, OverlayMap};
 
 pub use dbt_parser::experimental::{
-    ExperimentalDiagnostics, ExperimentalEntry, ExperimentalError, ExperimentalFile,
-    ExperimentalNodeDef, ExperimentalPackage, ResolveExperimental, ResolveExperimentals,
+    ExperimentalDiagnostics, ExperimentalError, InjectedNodeDef, KindEntries, KindEntry,
+};
+pub use dbt_parser::resolve::resolvable_node::{
+    Extension, ExtensionSet, Extensions, IndexCtx, IndexedName, LinkCtx, NoExtension, NoExtensions,
+    ResolvableNode, ResolvableNodes, ResolveCtx,
 };
 
-/// Adds its own kind of node to a project ([`ResolveExperimental`]) and runs the ones selected.
+/// Adds its own kind of node to a project ([`ResolvableNode`]) and runs the ones selected.
+///
+/// The kind owns top-level keys of properties files ([`ResolvableNode::properties_keys`]) and has
+/// a feature flag that turns it on ([`ResolvableNode::flag`]), off by default.
 ///
 /// An experimental node runs only when it is selected directly, and only in its Run phase: it has
 /// nothing to render or analyze.
 #[async_trait]
-pub trait ExperimentalNode: ResolveExperimental {
+pub trait Experimental: ResolvableNode {
+    /// The kind of node the experimental adds, e.g. `widget`: the prefix of its nodes' unique ids
+    /// (`<experimental type>.<package>.<name>`), and a value `resource_type:` selects.
+    fn experimental_type(&self) -> &'static str;
+
     /// Prepares to run this experimental's selected nodes. Called once per invocation, after nodes
     /// are selected and before the task graph is built, so an error stops the invocation before any
     /// node runs. `None` runs none of them.
@@ -107,21 +115,20 @@ pub trait ExperimentalRun: Send + Sync {
 pub struct ExperimentalNodeRef {
     pub unique_id: String,
     pub name: String,
-    /// The experimental's own data for the node.
-    pub data: ExperimentalData,
+    node: Arc<dyn InjectedNode>,
     /// The nodes it depends on.
     pub depends_on: Vec<ExperimentalDependency>,
 }
 
 impl ExperimentalNodeRef {
-    /// The experimental's data for the node, if it is a `T`.
-    pub fn data<T: std::any::Any>(&self) -> Option<&T> {
-        self.data.get()
+    /// The node, if it is a `T`: the node type of the experimental that added it.
+    pub fn node<T: std::any::Any>(&self) -> Option<&T> {
+        self.node.as_any().downcast_ref()
     }
 
-    fn new(node: &DbtExperimentalNode, nodes: &Nodes) -> Self {
+    fn new(node: &Arc<dyn InjectedNode>, nodes: &Nodes) -> Self {
         let depends_on = node
-            .__base_attr__
+            .base()
             .depends_on
             .nodes
             .iter()
@@ -135,9 +142,9 @@ impl ExperimentalNodeRef {
             })
             .collect();
         Self {
-            unique_id: node.__common_attr__.unique_id.clone(),
-            name: node.__common_attr__.name.clone(),
-            data: node.__experimental_attr__.data.clone(),
+            unique_id: node.common().unique_id.clone(),
+            name: node.common().name.clone(),
+            node: Arc::clone(node),
             depends_on,
         }
     }
@@ -470,7 +477,7 @@ impl std::fmt::Debug for TargetRelation {
 /// The task the core runs for one selected experimental node.
 pub struct ExperimentalTask {
     experimental_type: &'static str,
-    node: Arc<DbtExperimentalNode>,
+    node: Arc<dyn InjectedNode>,
     node_ref: ExperimentalNodeRef,
     run: Arc<dyn ExperimentalRun>,
 }
@@ -552,7 +559,7 @@ fn target_namespace(ctx: &TaskRunnerCtx) -> (String, String) {
 
 /// The node's compile context, as a model's SQL is compiled with, plus `doc()` and `metric()`,
 /// which no compile context has.
-fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<DbtExperimentalNode>) -> FsResult<NodeJinja> {
+fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<dyn InjectedNode>) -> FsResult<NodeJinja> {
     let base = ctx.run_base_context(node.as_ref())?;
     let (mut context, _) = ctx.build_compile_node_context(
         Arc::clone(node),
@@ -560,7 +567,7 @@ fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<DbtExperimentalNode>) -> FsResult<
         DependencyValidationConfig::new_validated(),
     )?;
     let state = ctx.resolver_state();
-    let package = node.__common_attr__.package_name.clone();
+    let package = node.common().package_name.clone();
     let root = state.root_project_name.clone();
 
     // Docs from the root project first, then the node's package, as core searches them.
@@ -587,7 +594,7 @@ fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<DbtExperimentalNode>) -> FsResult<
     // At run time core's `metric()` is a reference that renders as the metric's name. Only
     // metrics the node depends on resolve.
     let metrics: BTreeSet<String> = node
-        .__base_attr__
+        .base()
         .depends_on
         .nodes
         .iter()
@@ -610,7 +617,7 @@ fn node_jinja(ctx: &TaskRunnerCtx, node: &Arc<DbtExperimentalNode>) -> FsResult<
     Ok(NodeJinja {
         env: Arc::clone(&ctx.env),
         context,
-        path: PathBuf::from(node.__common_attr__.original_file_path.to_string()),
+        path: PathBuf::from(node.common().original_file_path.to_string()),
     })
 }
 
@@ -643,82 +650,120 @@ impl Task for ExperimentalTask {
     }
 }
 
-/// The experimentals an invocation runs with, and every key ever reserved under `experimental:`.
+/// The experimentals an invocation runs with.
 #[derive(Clone, Default)]
 pub struct Experimentals {
-    experimentals: Vec<Arc<dyn ExperimentalNode>>,
-    reserved: Vec<&'static str>,
+    experimentals: Vec<Arc<dyn Experimental>>,
+    /// The kinds of node that have nothing to run: [`Self::with_kind`].
+    kinds: Vec<Arc<dyn ResolvableNode>>,
+    /// The kinds of the nodes that the experimentals and the kinds add.
+    types: BTreeSet<&'static str>,
+    /// The keys that the experimentals and the kinds read.
+    keys: BTreeSet<&'static str>,
+    /// dbt's own kinds of node, which the experimentals' kinds are added to.
+    dbt: ResolvableNodes,
 }
 
 impl Experimentals {
-    /// `reserved` lists every key ever released under `experimental:` (experimental types and
-    /// definition keys), registered or not. A reserved key is never released: projects may use it
-    /// whether or not its experimental still exists.
+    /// # Panics
+    ///
+    /// If an experimental's type or one of its keys isn't a lowercase identifier (or two, for a
+    /// key of a section: `section.key`) or names something dbt itself uses, if two experimentals have the same type or key, or if an
+    /// experimental has no flag, or one that is on by default or is a behavior flag.
+    pub fn new(experimentals: Vec<Arc<dyn Experimental>>) -> Self {
+        let mut registry = Self::default();
+        for experimental in &experimentals {
+            let experimental_type = experimental.experimental_type();
+            registry.register(
+                experimental_type,
+                &[experimental_type],
+                experimental.as_ref(),
+            );
+        }
+        registry.experimentals = experimentals;
+        registry
+    }
+
+    /// Adds `kind`, a kind of node that has nothing to run: its nodes are definitions, which
+    /// other nodes read. `node_kinds` are the kinds of its nodes: the prefixes of their unique
+    /// ids, and values `resource_type:` selects.
+    ///
+    /// It resolves after the experimentals, and is held to the same rules.
     ///
     /// # Panics
     ///
-    /// If an experimental's type or one of its definition keys isn't reserved or is claimed by
-    /// another experimental, or its flag is on by default or is a behavior flag. If a reserved key
-    /// isn't a lowercase identifier, names something dbt itself uses, or is reserved twice.
-    pub fn new(experimentals: Vec<Arc<dyn ExperimentalNode>>, reserved: &[&'static str]) -> Self {
-        let mut reserved_types = BTreeSet::new();
-        for experimental_type in reserved {
+    /// As [`Self::new`] does, for the kind's keys, its flag and the kinds of its nodes.
+    pub fn with_kind(mut self, kind: Arc<dyn ResolvableNode>, node_kinds: &[&'static str]) -> Self {
+        let name = node_kinds.first().expect("a kind adds nodes of some kind");
+        self.register(name, node_kinds, kind.as_ref());
+        self.kinds.push(kind);
+        self
+    }
+
+    /// Checks `kind`, which adds nodes of the kinds `node_kinds`, against dbt's own names and
+    /// what is registered so far. `name` names it in an error.
+    fn register(&mut self, name: &str, node_kinds: &[&'static str], kind: &dyn ResolvableNode) {
+        let dbt_keys: BTreeSet<&str> = ResolvableNodes::dbt().properties_keys().collect();
+        for node_kind in node_kinds {
+            check_name("experimental type", node_kind);
             assert!(
-                is_identifier(experimental_type),
-                "experimental type `{experimental_type}` is not a lowercase identifier"
-            );
-            assert!(
-                !is_dbt_name(experimental_type),
-                "experimental type `{experimental_type}` is a name dbt uses"
-            );
-            assert!(
-                reserved_types.insert(*experimental_type),
-                "experimental type `{experimental_type}` is reserved twice"
+                self.types.insert(node_kind),
+                "experimental type `{node_kind}` is registered twice"
             );
         }
-        let mut claimed = BTreeSet::new();
-        for experimental in &experimentals {
-            let experimental_type = experimental.experimental_type();
-            check_flag(experimental_type, experimental.flag());
-            for key in std::iter::once(experimental.key())
-                .chain(experimental.definition_keys().iter().copied())
-            {
-                assert!(
-                    reserved_types.contains(key),
-                    "experimental `{experimental_type}` reads `{key}`, which isn't reserved"
-                );
-                assert!(
-                    claimed.insert(key),
-                    "`{key}` is read by more than one experimental, or twice by `{experimental_type}`"
-                );
+        check_flag(name, kind.flag());
+        for key in kind.properties_keys() {
+            // A key of a section, `section.key`, is two names. The section is the top-level
+            // key.
+            let (top_level, section_key) = match key.split_once('.') {
+                Some((section, section_key)) => (section, Some(section_key)),
+                None => (*key, None),
+            };
+            check_name("key", top_level);
+            if let Some(section_key) = section_key {
+                check_name("key", section_key);
             }
-        }
-        Self {
-            experimentals,
-            reserved: reserved.to_vec(),
+            assert!(
+                !dbt_keys.contains(top_level) && !matches!(top_level, "version" | "anchors"),
+                "experimental `{name}` reads `{key}`, a key dbt reads"
+            );
+            assert!(
+                self.keys.insert(*key),
+                "`{key}` is read by more than one experimental, or twice by `{name}`"
+            );
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn ExperimentalNode>> {
+    /// The same experimentals, for a build whose own kinds of node read the extensions `E`
+    /// beside the properties of their entries.
+    pub fn with_extensions<E: Extensions>(mut self) -> Self {
+        self.dbt = ResolvableNodes::dbt_with::<E>();
+        self
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Experimental>> {
         self.experimentals.iter()
     }
 
     /// Every feature flag this binary knows: dbt's own, and the flags that turn on its
-    /// experimentals, which aren't in `dbt_flags::ALL`.
+    /// experimentals and its kinds, which need not be in `dbt_flags::ALL`.
     pub fn known_flags(&self) -> Vec<&'static FlagDef> {
-        dbt_flags::ALL
+        let mut known: Vec<&'static FlagDef> = dbt_flags::ALL.to_vec();
+        let added = self
+            .experimentals
             .iter()
-            .copied()
-            .chain(
-                self.experimentals
-                    .iter()
-                    .map(|experimental| experimental.flag()),
-            )
-            .collect()
+            .filter_map(|experimental| experimental.flag())
+            .chain(self.kinds.iter().filter_map(|kind| kind.flag()));
+        for flag in added {
+            if !known.iter().any(|known| known.name == flag.name) {
+                known.push(flag);
+            }
+        }
+        known
     }
 
     /// The experimental that owns `command`, if one does.
-    pub fn command_owner(&self, command: FsCommand) -> Option<&Arc<dyn ExperimentalNode>> {
+    pub fn command_owner(&self, command: FsCommand) -> Option<&Arc<dyn Experimental>> {
         let FsCommand::Extension(name) = command else {
             return None;
         };
@@ -727,20 +772,31 @@ impl Experimentals {
             .find(|experimental| experimental.command() == Some(name))
     }
 
-    /// The same experimentals, for resolving a project.
-    pub fn resolve_experimentals(&self) -> ResolveExperimentals {
-        ResolveExperimentals {
-            experimentals: self
-                .experimentals
-                .iter()
-                .map(|experimental| Arc::clone(experimental) as Arc<dyn ResolveExperimental>)
-                .collect(),
-            reserved: self.reserved.clone(),
-        }
+    /// The kinds of node a project resolves with: dbt's own, then the experimentals', then
+    /// the kinds that have nothing to run.
+    pub fn resolvable_nodes(&self) -> ResolvableNodes {
+        self.experimentals
+            .iter()
+            .map(|experimental| Arc::clone(experimental) as Arc<dyn ResolvableNode>)
+            .chain(self.kinds.iter().cloned())
+            .fold(self.dbt.clone(), |nodes, kind| nodes.with(kind))
     }
 }
 
-fn check_flag(experimental_type: &str, flag: &FlagDef) {
+/// Checks that `name`, an experimental type or a key, is a lowercase identifier that dbt doesn't
+/// use.
+fn check_name(what: &str, name: &str) {
+    assert!(
+        is_identifier(name),
+        "{what} `{name}` is not a lowercase identifier"
+    );
+    assert!(!is_dbt_name(name), "{what} `{name}` is a name dbt uses");
+}
+
+fn check_flag(experimental_type: &str, flag: Option<&FlagDef>) {
+    let Some(flag) = flag else {
+        panic!("experimental `{experimental_type}` must have a feature flag");
+    };
     assert!(
         matches!(flag.stage, Stage::Internal | Stage::Preview),
         "experimental `{experimental_type}`'s flag `{}` must be an internal or preview flag",
@@ -831,8 +887,8 @@ impl ExperimentalRuns {
                 .sorted_nodes
                 .iter()
                 .filter(|unique_id| schedule.selected_nodes.contains(*unique_id))
-                .filter_map(|unique_id| nodes.experimentals.get(unique_id))
-                .filter(|node| node.__experimental_attr__.experimental_type == experimental_type)
+                .filter_map(|unique_id| nodes.injected.get(unique_id))
+                .filter(|node| node.injected_kind() == Some(experimental_type))
                 .map(|node| ExperimentalNodeRef::new(node, nodes))
                 .collect();
             if selected.is_empty() {
@@ -869,11 +925,8 @@ impl ExperimentalRuns {
     }
 
     /// The task for an experimental node, if its experimental is running.
-    pub fn task(&self, node: &Arc<DbtExperimentalNode>, nodes: &Nodes) -> Option<Arc<dyn Task>> {
-        let (experimental_type, run) = self
-            .started
-            .runs
-            .get_key_value(node.__experimental_attr__.experimental_type.as_str())?;
+    pub fn task(&self, node: &Arc<dyn InjectedNode>, nodes: &Nodes) -> Option<Arc<dyn Task>> {
+        let (experimental_type, run) = self.started.runs.get_key_value(node.injected_kind()?)?;
         Some(Arc::new(ExperimentalTask {
             experimental_type,
             node: Arc::clone(node),
@@ -893,6 +946,8 @@ impl ExperimentalRuns {
 mod tests {
     use super::*;
     use dbt_flags::Remote;
+    use dbt_schemas::jinja_node::JinjaNodeFields;
+    use dbt_schemas::schemas::{CommonAttributes, InjectedNodeType, NodeBaseAttributes};
     use std::sync::atomic::AtomicUsize;
 
     static TEST_FLAG: FlagDef = flag(false, Stage::Preview);
@@ -918,49 +973,54 @@ mod tests {
     const GADGET: &str = "gadget";
     const GIZMO: &str = "gizmo";
 
-    /// An experimental of a type. `widget` also owns the `widgets` command.
-    struct TestExperimental(&'static str, &'static FlagDef);
-
-    impl ResolveExperimental for TestExperimental {
-        fn experimental_type(&self) -> &'static str {
-            self.0
-        }
-        fn flag(&self) -> &'static FlagDef {
-            self.1
-        }
-        fn resolve(
-            &self,
-            _package: &ExperimentalPackage<'_>,
-            _diagnostics: &mut ExperimentalDiagnostics,
-        ) -> Result<Vec<ExperimentalNodeDef>, ExperimentalError> {
-            Ok(vec![])
+    /// The one key of an experimental of the type `experimental_type`: the type itself.
+    fn own_key(experimental_type: &str) -> &'static [&'static str] {
+        match experimental_type {
+            WIDGET => &[WIDGET],
+            GADGET => &[GADGET],
+            GIZMO => &[GIZMO],
+            _ => &[],
         }
     }
 
-    /// A `widget` experimental that also reads `keys` under `experimental:`.
+    /// An experimental of a type, with a flag or without. `widget` also owns the `widgets`
+    /// command.
+    struct TestExperimental(&'static str, Option<&'static FlagDef>);
+
+    #[async_trait]
+    impl ResolvableNode for TestExperimental {
+        fn flag(&self) -> Option<&'static FlagDef> {
+            self.1
+        }
+        fn properties_keys(&self) -> &'static [&'static str] {
+            own_key(self.0)
+        }
+        async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+            Ok(())
+        }
+    }
+
+    /// A `widget` experimental that reads `keys`.
     struct WithKeys(&'static [&'static str]);
 
-    impl ResolveExperimental for WithKeys {
-        fn experimental_type(&self) -> &'static str {
-            WIDGET
+    #[async_trait]
+    impl ResolvableNode for WithKeys {
+        fn flag(&self) -> Option<&'static FlagDef> {
+            Some(&TEST_FLAG)
         }
-        fn definition_keys(&self) -> &'static [&'static str] {
+        fn properties_keys(&self) -> &'static [&'static str] {
             self.0
         }
-        fn flag(&self) -> &'static FlagDef {
-            &TEST_FLAG
-        }
-        fn resolve(
-            &self,
-            _package: &ExperimentalPackage<'_>,
-            _diagnostics: &mut ExperimentalDiagnostics,
-        ) -> Result<Vec<ExperimentalNodeDef>, ExperimentalError> {
-            Ok(vec![])
+        async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+            Ok(())
         }
     }
 
     #[async_trait]
-    impl ExperimentalNode for WithKeys {
+    impl Experimental for WithKeys {
+        fn experimental_type(&self) -> &'static str {
+            WIDGET
+        }
         async fn start(
             &self,
             _args: &ExperimentalRunArgs<'_>,
@@ -970,7 +1030,10 @@ mod tests {
     }
 
     #[async_trait]
-    impl ExperimentalNode for TestExperimental {
+    impl Experimental for TestExperimental {
+        fn experimental_type(&self) -> &'static str {
+            self.0
+        }
         async fn start(
             &self,
             _args: &ExperimentalRunArgs<'_>,
@@ -1002,24 +1065,24 @@ mod tests {
         finishes: Arc<AtomicUsize>,
     }
 
-    impl ResolveExperimental for CountingExperimental {
-        fn experimental_type(&self) -> &'static str {
-            self.experimental_type
+    #[async_trait]
+    impl ResolvableNode for CountingExperimental {
+        fn flag(&self) -> Option<&'static FlagDef> {
+            Some(&TEST_FLAG)
         }
-        fn flag(&self) -> &'static FlagDef {
-            &TEST_FLAG
+        fn properties_keys(&self) -> &'static [&'static str] {
+            own_key(self.experimental_type)
         }
-        fn resolve(
-            &self,
-            _package: &ExperimentalPackage<'_>,
-            _diagnostics: &mut ExperimentalDiagnostics,
-        ) -> Result<Vec<ExperimentalNodeDef>, ExperimentalError> {
-            Ok(vec![])
+        async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+            Ok(())
         }
     }
 
     #[async_trait]
-    impl ExperimentalNode for CountingExperimental {
+    impl Experimental for CountingExperimental {
+        fn experimental_type(&self) -> &'static str {
+            self.experimental_type
+        }
         async fn start(
             &self,
             _args: &ExperimentalRunArgs<'_>,
@@ -1052,21 +1115,18 @@ mod tests {
     /// `widget` run finishes.
     fn start_counting(gadget_starts: bool) -> (FsResult<ExperimentalRuns>, Arc<AtomicUsize>) {
         let finishes = Arc::new(AtomicUsize::new(0));
-        let experimentals = Experimentals::new(
-            vec![
-                Arc::new(CountingExperimental {
-                    experimental_type: WIDGET,
-                    starts: true,
-                    finishes: Arc::clone(&finishes),
-                }),
-                Arc::new(CountingExperimental {
-                    experimental_type: GADGET,
-                    starts: gadget_starts,
-                    finishes: Arc::new(AtomicUsize::new(0)),
-                }),
-            ],
-            &[WIDGET, GADGET],
-        );
+        let experimentals = Experimentals::new(vec![
+            Arc::new(CountingExperimental {
+                experimental_type: WIDGET,
+                starts: true,
+                finishes: Arc::clone(&finishes),
+            }),
+            Arc::new(CountingExperimental {
+                experimental_type: GADGET,
+                starts: gadget_starts,
+                finishes: Arc::new(AtomicUsize::new(0)),
+            }),
+        ]);
         let (nodes, schedule) = nodes_and_schedule();
         let arg = RunTasksArgs {
             command: FsCommand::Build,
@@ -1115,26 +1175,52 @@ mod tests {
             experimental_types
                 .iter()
                 .map(|experimental_type| {
-                    Arc::new(TestExperimental(experimental_type, &TEST_FLAG))
-                        as Arc<dyn ExperimentalNode>
+                    Arc::new(TestExperimental(experimental_type, Some(&TEST_FLAG)))
+                        as Arc<dyn Experimental>
                 })
                 .collect(),
-            &[WIDGET, GADGET, GIZMO],
         )
+    }
+
+    /// The node type of the tests' experimentals: dbt's attributes, and the node's kind.
+    #[derive(Debug, Clone, Default, serde::Serialize, JinjaNodeFields)]
+    struct TestNode {
+        __common_attr__: CommonAttributes,
+        __base_attr__: NodeBaseAttributes,
+        #[serde(skip)]
+        kind: &'static str,
+    }
+
+    impl InjectedNodeType for TestNode {
+        fn kind(&self) -> &str {
+            self.kind
+        }
+        fn common_attributes(&self) -> &CommonAttributes {
+            &self.__common_attr__
+        }
+        fn common_attributes_mut(&mut self) -> &mut CommonAttributes {
+            &mut self.__common_attr__
+        }
+        fn base_attributes(&self) -> &NodeBaseAttributes {
+            &self.__base_attr__
+        }
+        fn base_attributes_mut(&mut self) -> &mut NodeBaseAttributes {
+            &mut self.__base_attr__
+        }
     }
 
     /// A selected `widget` node and a selected `gadget` node.
     fn nodes_and_schedule() -> (Nodes, Schedule<String>) {
         let mut nodes = Nodes::default();
         let mut schedule = Schedule::default();
-        for experimental_type in ["widget", "gadget"] {
-            let mut node = DbtExperimentalNode::default();
+        for experimental_type in [WIDGET, GADGET] {
+            let mut node = TestNode {
+                kind: experimental_type,
+                ..Default::default()
+            };
             node.__common_attr__.unique_id = format!("{experimental_type}.p.n");
-            node.__experimental_attr__.experimental_type = experimental_type.to_string();
             let unique_id = node.__common_attr__.unique_id.clone();
-            nodes
-                .experimentals
-                .insert(unique_id.clone(), Arc::new(node));
+            nodes.injected.insert(unique_id.clone(), Arc::new(node));
             schedule.sorted_nodes.push(unique_id.clone());
             schedule.selected_nodes.insert(unique_id);
         }
@@ -1208,14 +1294,8 @@ mod tests {
             true,
         ))
         .unwrap();
-        assert!(
-            runs.task(&nodes.experimentals["widget.p.n"], &nodes)
-                .is_some()
-        );
-        assert!(
-            runs.task(&nodes.experimentals["gadget.p.n"], &nodes)
-                .is_none()
-        );
+        assert!(runs.task(&nodes.injected["widget.p.n"], &nodes).is_some());
+        assert!(runs.task(&nodes.injected["gadget.p.n"], &nodes).is_none());
         runs.finish();
     }
 
@@ -1228,50 +1308,121 @@ mod tests {
                 .map(|experimental| experimental.experimental_type()),
             Some(WIDGET)
         );
-        let resolve = experimentals.resolve_experimentals();
-        assert_eq!(resolve.experimentals.len(), 2);
-        assert_eq!(resolve.reserved, [WIDGET, GADGET, GIZMO]);
     }
 
+    /// A project resolves with dbt's kinds of node, then the experimentals'.
     #[test]
-    #[should_panic(expected = "experimental `widget` reads `widget`, which isn't reserved")]
-    fn a_experimental_needs_a_reserved_type() {
-        Experimentals::new(
-            vec![Arc::new(TestExperimental(WIDGET, &TEST_FLAG))],
-            &[GADGET],
+    fn experimentals_resolve_after_dbts_kinds() {
+        let dbt_keys: Vec<&str> = ResolvableNodes::dbt().properties_keys().collect();
+        let keys: Vec<&str> = experimentals(&[WIDGET, GADGET])
+            .resolvable_nodes()
+            .properties_keys()
+            .collect();
+        assert_eq!(keys[..dbt_keys.len()], dbt_keys);
+        assert_eq!(keys[dbt_keys.len()..], [WIDGET, GADGET]);
+    }
+
+    /// A kind that has nothing to run resolves after the experimentals, and its flag is known.
+    #[test]
+    fn a_kind_with_nothing_to_run_resolves_last() {
+        let dbt_keys = ResolvableNodes::dbt().properties_keys().count();
+        let with_kind = experimentals(&[WIDGET]).with_kind(
+            Arc::new(WithKeys(&[GIZMO, "workshop.parts"])),
+            &[GADGET, GIZMO],
         );
+        let keys: Vec<&str> = with_kind.resolvable_nodes().properties_keys().collect();
+        assert_eq!(keys[dbt_keys..], [WIDGET, GIZMO, "workshop.parts"]);
+        assert!(
+            with_kind
+                .known_flags()
+                .iter()
+                .any(|flag| flag.name == TEST_FLAG.name)
+        );
+        // It is not an experimental: nothing starts it.
+        assert_eq!(with_kind.iter().count(), 1);
     }
 
     #[test]
-    fn a_experimental_reads_its_reserved_definition_keys() {
-        Experimentals::new(vec![Arc::new(WithKeys(&[GIZMO]))], &[WIDGET, GIZMO]);
+    #[should_panic(expected = "experimental type `widget` is registered twice")]
+    fn a_kind_adds_nodes_of_kinds_that_nothing_else_adds() {
+        experimentals(&[WIDGET]).with_kind(Arc::new(WithKeys(&[GIZMO])), &[GADGET, WIDGET]);
     }
 
     #[test]
-    #[should_panic(expected = "experimental `widget` reads `gizmo`, which isn't reserved")]
-    fn a_experimentals_definition_keys_are_reserved() {
-        Experimentals::new(vec![Arc::new(WithKeys(&[GIZMO]))], &[WIDGET]);
+    #[should_panic(expected = "`widget` is read by more than one experimental")]
+    fn a_kind_reads_keys_that_nothing_else_reads() {
+        experimentals(&[WIDGET]).with_kind(Arc::new(WithKeys(&[WIDGET])), &[GADGET]);
+    }
+
+    #[test]
+    fn a_experimental_reads_its_keys() {
+        Experimentals::new(vec![Arc::new(WithKeys(&[WIDGET, GIZMO]))]);
     }
 
     #[test]
     #[should_panic(expected = "`gadget` is read by more than one experimental")]
     fn a_key_is_read_by_one_experimental() {
-        Experimentals::new(
-            vec![
-                Arc::new(WithKeys(&[GADGET])),
-                Arc::new(TestExperimental(GADGET, &TEST_FLAG)),
-            ],
-            &[WIDGET, GADGET],
-        );
+        Experimentals::new(vec![
+            Arc::new(WithKeys(&[GADGET])),
+            Arc::new(TestExperimental(GADGET, Some(&TEST_FLAG))),
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "experimental type `widget` is registered twice")]
+    fn a_experimental_type_is_registered_once() {
+        Experimentals::new(vec![
+            Arc::new(WithKeys(&[GIZMO])),
+            Arc::new(TestExperimental(WIDGET, Some(&TEST_FLAG))),
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "experimental `widget` reads `models`, a key dbt reads")]
+    fn a_key_cannot_be_a_key_dbt_reads() {
+        Experimentals::new(vec![Arc::new(WithKeys(&["models"]))]);
+    }
+
+    #[test]
+    fn a_key_can_be_a_key_of_a_section() {
+        let keys: Vec<&str> = Experimentals::new(vec![Arc::new(WithKeys(&["workshop.parts"]))])
+            .resolvable_nodes()
+            .properties_keys()
+            .collect();
+        assert_eq!(keys.last(), Some(&"workshop.parts"));
+    }
+
+    #[test]
+    #[should_panic(expected = "experimental `widget` reads `models.parts`, a key dbt reads")]
+    fn a_section_cannot_be_a_key_dbt_reads() {
+        Experimentals::new(vec![Arc::new(WithKeys(&["models.parts"]))]);
+    }
+
+    #[test]
+    #[should_panic(expected = "key `Parts` is not a lowercase identifier")]
+    fn a_key_of_a_section_is_a_lowercase_identifier() {
+        Experimentals::new(vec![Arc::new(WithKeys(&["workshop.Parts"]))]);
+    }
+
+    #[test]
+    #[should_panic(expected = "key `parts.bolts` is not a lowercase identifier")]
+    fn a_section_has_no_sections() {
+        Experimentals::new(vec![Arc::new(WithKeys(&["workshop.parts.bolts"]))]);
+    }
+
+    #[test]
+    #[should_panic(expected = "experimental `widget` must have a feature flag")]
+    fn a_experimental_has_a_flag() {
+        Experimentals::new(vec![Arc::new(TestExperimental(WIDGET, None))]);
     }
 
     #[test]
     #[should_panic(expected = "must be off by default")]
     fn a_experimentals_flag_is_off_by_default() {
-        Experimentals::new(
-            vec![Arc::new(TestExperimental(WIDGET, &ON_BY_DEFAULT))],
-            &[WIDGET],
-        );
+        Experimentals::new(vec![Arc::new(TestExperimental(
+            WIDGET,
+            Some(&ON_BY_DEFAULT),
+        ))]);
     }
 
     /// An experimental's flag is a known feature flag, so `--feature` turns it on without an
@@ -1281,25 +1432,45 @@ mod tests {
         let snapshot = dbt_flags::FlagSnapshot::builder()
             .cli(["test_experimentals"])
             .build();
-        let without = Experimentals::new(vec![], &[WIDGET]);
+        let without = Experimentals::new(vec![]);
         assert_eq!(
             snapshot.warnings(&without.known_flags()),
             ["Unknown feature flag 'test_experimentals' in --feature; it has no effect"]
         );
-        let with = Experimentals::new(
-            vec![Arc::new(TestExperimental(WIDGET, &TEST_FLAG))],
-            &[WIDGET],
-        );
+        let with = experimentals(&[WIDGET]);
         assert!(snapshot.warnings(&with.known_flags()).is_empty());
     }
 
     #[test]
     #[should_panic(expected = "must be an internal or preview flag")]
     fn a_experimentals_flag_is_not_a_behavior_flag() {
-        Experimentals::new(
-            vec![Arc::new(TestExperimental(WIDGET, &BEHAVIOR))],
-            &[WIDGET],
-        );
+        Experimentals::new(vec![Arc::new(TestExperimental(WIDGET, Some(&BEHAVIOR)))]);
+    }
+
+    /// An experimental whose type and one key are `name`.
+    struct Named(&'static str);
+
+    #[async_trait]
+    impl ResolvableNode for Named {
+        fn flag(&self) -> Option<&'static FlagDef> {
+            Some(&TEST_FLAG)
+        }
+        async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Experimental for Named {
+        fn experimental_type(&self) -> &'static str {
+            self.0
+        }
+        async fn start(
+            &self,
+            _args: &ExperimentalRunArgs<'_>,
+        ) -> Result<Option<Arc<dyn ExperimentalRun>>, ExperimentalError> {
+            Ok(None)
+        }
     }
 
     #[test]
@@ -1311,15 +1482,11 @@ mod tests {
             "group",
             "doc",
             "relation",
+            "Widget",
         ] {
-            let result = std::panic::catch_unwind(|| Experimentals::new(vec![], &[name]));
+            let result =
+                std::panic::catch_unwind(|| Experimentals::new(vec![Arc::new(Named(name))]));
             assert!(result.is_err(), "{name} should be rejected");
         }
-    }
-
-    #[test]
-    #[should_panic(expected = "experimental type `widget` is reserved twice")]
-    fn a_experimental_type_is_reserved_once() {
-        Experimentals::new(vec![], &[WIDGET, GADGET, WIDGET]);
     }
 }

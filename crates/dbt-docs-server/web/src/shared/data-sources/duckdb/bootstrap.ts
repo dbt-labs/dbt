@@ -23,12 +23,26 @@
  * through DuckDB.
  */
 
-import type { AsyncBuffer } from 'hyparquet';
+import { decompress as decompressZstd } from 'fzstd';
+import type { AsyncBuffer, Compressors } from 'hyparquet';
 import { parquetReadObjects } from 'hyparquet';
-import { compressors } from 'hyparquet-compressors';
 
 import type { NodeSummary } from '../../../types';
 import type { RestProject } from '../mappers/fromWire';
+
+/**
+ * The decoders first paint gives hyparquet: ZSTD only.
+ *
+ * dbt writes every information-schema artifact with ZSTD
+ * (`dbt-index-core/src/info_schema/`), and hyparquet has no built-in ZSTD decoder.
+ * `hyparquet-compressors` would add one, but it also bundles Brotli, gzip and LZ4,
+ * and its Brotli dictionary alone is ~79 KB of minified critical-path JS. Snappy and
+ * uncompressed pages still work through hyparquet's built-ins. Any other codec
+ * makes the read throw, and first paint shows what the other artifacts give it.
+ */
+const compressors: Compressors = {
+  ZSTD: (input) => decompressZstd(input),
+};
 
 /**
  * The artifacts holding the shell's resource list, in the order they are listed.
@@ -197,7 +211,6 @@ async function readRows(
   const file = await wholeFile(url);
   return parquetReadObjects({
     file,
-    // The index is written with ZSTD, which is not one of hyparquet's built-ins.
     compressors,
     rowFormat: 'object',
     ...(columns ? { columns } : {}),

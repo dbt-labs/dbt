@@ -49,10 +49,12 @@ pub static LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT: FlagDef = FlagDef {
     docs_url: None,
 };
 
-/// Load the SQL frontend from a dynamic library instead of the built-in one.
-pub static FRONTEND_LIBRARY: FlagDef = FlagDef {
-    name: "frontend_library",
-    description: "Load the SQL frontend from a dynamic library instead of the built-in one.",
+/// Call the SQL frontend through its protocol (serialized requests to a
+/// frontend session) instead of calling it directly.
+pub static FRONTEND_PROTOCOL: FlagDef = FlagDef {
+    name: "frontend_protocol",
+    description: "Call the SQL frontend through its protocol (serialized requests to a \
+                  frontend session) instead of calling it directly.",
     stage: Stage::Internal,
     default: false,
     remote: Remote::Never,
@@ -94,14 +96,47 @@ pub static LAKECOMPUTE_PROFILE_SETUP: FlagDef = FlagDef {
     docs_url: None,
 };
 
+/// Whether `--empty` empties the tables a model reads by rewriting the model's
+/// compiled SQL. Off, each relation renders as a zero-row subquery.
+pub static USE_V2_EMPTY_SQL_REWRITE: FlagDef = FlagDef {
+    name: "use_v2_empty_sql_rewrite",
+    description: "Apply --empty by rewriting the compiled SQL to read zero rows from each \
+                  table, which keeps implicit table aliases, instead of rendering each \
+                  relation as a zero-row subquery.",
+    stage: Stage::Behavior,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
+/// Models written in MetricFlow's semantic SQL.
+pub static METRICFLOW_V2: FlagDef = FlagDef {
+    name: "metricflow_v2",
+    description: "MetricFlow SQL: models written in MetricFlow's semantic SQL.",
+    stage: Stage::Preview,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
 /// Every flag declared in this crate.
 pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
     &REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT,
     &LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT,
-    &FRONTEND_LIBRARY,
+    &FRONTEND_PROTOCOL,
     &LOCK_WITH_STATE,
     &LAKECOMPUTE_PROFILE_SETUP,
+    &USE_V2_EMPTY_SQL_REWRITE,
+    &METRICFLOW_V2,
 ];
 
 #[cfg(test)]

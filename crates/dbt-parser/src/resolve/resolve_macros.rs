@@ -31,9 +31,29 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::resolve::resolve_properties::MinimalPropertiesEntry;
+use crate::resolve::properties_index::PropertiesEntry;
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
+use async_trait::async_trait;
 
 use crate::utils::parse_macro_statements;
+
+/// The properties of a package's macros.
+///
+/// Macros resolve before any package's nodes. Their properties are only collected here:
+/// [`apply_macro_patches`] applies them once every package has resolved.
+pub(crate) struct MacroProperties;
+
+#[async_trait]
+impl ResolvableNode for MacroProperties {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["macros"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        ctx.macro_properties = ctx.properties.take_entries("macros");
+        Ok(())
+    }
+}
 
 /// Resolve docs macros from a list of docs macro files
 pub fn resolve_docs_macros(
@@ -398,7 +418,7 @@ pub fn is_valid_macro_arg_type(s: &str) -> bool {
 /// - Infers undocumented parameters from the Jinja definition and adds them to `arguments`
 pub fn apply_macro_patches(
     macros: &mut BTreeMap<String, DbtMacro>,
-    macro_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    macro_properties: &BTreeMap<String, PropertiesEntry>,
     package_name: &str,
     jinja_env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
@@ -1015,8 +1035,8 @@ select 1 as id, current_timestamp as updated_at
         let yaml_str = "name: my_macro\nmeta:\n  owner: alice\ndocs:\n  show: false\n";
         let schema_value: dbt_yaml::Value = dbt_yaml::from_str(yaml_str).unwrap();
 
-        use crate::resolve::resolve_properties::MinimalPropertiesEntry;
-        let props_entry = MinimalPropertiesEntry {
+        use crate::resolve::properties_index::PropertiesEntry;
+        let props_entry = PropertiesEntry {
             name: "my_macro".to_string(),
             name_span: Span::default(),
             relative_path: PathBuf::from("macros/schema.yml"),

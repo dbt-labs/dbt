@@ -1,3 +1,5 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
+use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -49,7 +51,7 @@ use crate::{
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 
 /// Body + dependencies of an overload-only SQL file, captured during the build
 /// loop and merged into its root function during absorption. Overload SQL can
@@ -64,6 +66,45 @@ struct CapturedOverload {
     macros: Vec<String>,
 }
 
+/// How a package's functions resolve.
+pub(crate) struct Functions;
+
+#[async_trait]
+impl ResolvableNode for Functions {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["functions"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // Resolve functions
+        let (functions, disabled_functions, function_bodies) = resolve_functions(
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &mut ctx.properties.take_entries("functions"),
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            &mut ctx.node_resolver,
+            ctx.token,
+        )
+        .await?;
+        ctx.nodes.functions.extend(functions);
+        ctx.disabled_nodes.functions.extend(disabled_functions);
+        ctx.function_bodies.extend(function_bodies);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_functions(
     arg: &ResolveArgs,
@@ -71,7 +112,7 @@ pub async fn resolve_functions(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    function_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    function_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     parse_adapter_scopes: &Arc<AdapterScopes>,

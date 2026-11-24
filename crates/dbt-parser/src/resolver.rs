@@ -5,14 +5,15 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_GENERIC_TESTS_DIR_NAME;
-use dbt_common::io_args::{FsCommand, multi_adapter_enabled};
+use dbt_common::io_args::{FsCommand, multi_adapter_enabled, project_flag_bool};
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::path::DbtPath;
 use dbt_common::stdfs;
-use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
+use dbt_common::tracing::dbt_emit::{
+    emit_error_log_from_fs_error, emit_strict_parse_error, emit_warn_log_from_fs_error,
+};
 use dbt_common::tracing::event_info::store_event_attributes;
-use dbt_common::tracing::span_info::SpanStatusRecorder as _;
-use dbt_common::{ErrorCode, FsResult, create_debug_span, err, fs_err};
+use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_jinja_utils::JinjaFactory;
 use dbt_jinja_utils::invocation_args::InvocationArgs;
 use dbt_jinja_utils::invocation_graph::reset_invocation_graph;
@@ -35,14 +36,11 @@ use dbt_schemas::schemas::properties::{
     ModelProperties, is_any_type,
 };
 use dbt_schemas::schemas::{DbtModel, DbtSeed, DbtSource, InternalDbtNode, Nodes, TableFormat};
-use dbt_telemetry::GenericOpExecuted;
 
 use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{RootProjectConfigs, build_root_project_configs};
-use crate::experimental::{ActiveExperimentals, ResolveExperimentals};
-use crate::resolve::resolve_groups::resolve_groups;
 use crate::resolve::resolve_operations::resolve_operations;
 use crate::resolve::resolve_query_comment::resolve_query_comment;
 use crate::resolver_hooks::ResolverHooks;
@@ -51,8 +49,8 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schemas::schemas::common::DbtQuoting;
 use dbt_schemas::schemas::telemetry::{ExecutionPhase, NodeType, PhaseExecuted};
 use dbt_schemas::state::{
-    DbtPackage, GenericTestAsset, GetColumnsInRelationCalls, GetRelationCalls, Macros,
-    ManifestPathConfig, PatternedDanglingSources,
+    DbtPackage, GetColumnsInRelationCalls, GetRelationCalls, Macros, ManifestPathConfig,
+    PatternedDanglingSources,
 };
 use dbt_schemas::state::{DbtRuntimeConfig, Operations};
 use dbt_schemas::state::{DbtState, ResolverState};
@@ -62,37 +60,22 @@ use minijinja::value::OverlayMap;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::Instrument as _;
 
-use crate::resolve::resolve_analyses::resolve_analyses;
-use crate::resolve::resolve_checks::resolve_checks;
-use crate::resolve::resolve_experimentals::{
-    ExperimentalNodeContext, ResolvedExperimentalNodes, resolve_experimentals,
+use crate::resolve::properties_index::{PropertiesEntry, index_properties};
+use crate::resolve::resolvable_node::{
+    EnabledNodes, LinkCtx, LinkedDependency, ResolvableNodes, ResolveCtx,
 };
-use crate::resolve::resolve_exposures::resolve_exposures;
-use crate::resolve::resolve_functions::resolve_functions;
 use crate::resolve::resolve_macros::apply_macro_patches;
 use crate::resolve::resolve_macros::probe_internal_macro_overrides;
 use crate::resolve::resolve_macros::resolve_docs_macros;
 use crate::resolve::resolve_macros::resolve_macros;
 use crate::resolve::resolve_macros::typecheck_macros;
-use crate::resolve::resolve_metrics::resolve_metrics;
-use crate::resolve::resolve_models::resolve_models;
-use crate::resolve::resolve_properties;
-use crate::resolve::resolve_properties::resolve_minimal_properties;
-use crate::resolve::resolve_saved_queries::resolve_saved_queries;
-use crate::resolve::resolve_seeds::resolve_seeds;
-use crate::resolve::resolve_semantic_models::resolve_semantic_models;
-use crate::resolve::resolve_snapshots::resolve_snapshots;
-use crate::resolve::resolve_sources::resolve_sources;
-use crate::resolve::resolve_tests::resolve_data_tests::resolve_data_tests;
-use crate::resolve::resolve_tests::resolve_unit_tests::resolve_unit_tests;
-use crate::resolve::resolve_utils::validate_adapter_project_configs;
-
-use crate::resolve::primary_key_inference::infer_and_apply_primary_keys;
+use crate::resolve::resolve_models::properties::take_model_entries;
 use crate::resolve::resolve_selectors::{
     resolve_final_selectors, resolve_manifest_selectors, resolve_selectors_from_yaml,
 };
+use crate::resolve::resolve_semantic_models::uses_legacy_semantic_layer_spec;
+use crate::resolve::resolve_utils::validate_adapter_project_configs;
 use crate::unused_config_paths::check_unused_resource_config_paths;
 
 use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
@@ -146,7 +129,7 @@ pub async fn resolve(
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     resolver_hooks: Arc<dyn ResolverHooks>,
-    experimentals: ResolveExperimentals,
+    resolvable_nodes: ResolvableNodes,
     jinja_factory: Arc<dyn JinjaFactory>,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     // Hand this invocation a fresh `graph` mapping before any Jinja renders.
@@ -303,10 +286,8 @@ pub async fn resolve(
 
     let mut semantic_layer_spec_is_legacy = false;
     let mut test_name_truncations: HashMap<String, String> = HashMap::new();
-    let all_macro_properties: BTreeMap<
-        String,
-        BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
-    >;
+    let all_macro_properties: BTreeMap<String, BTreeMap<String, PropertiesEntry>>;
+    let kinds = Arc::new(resolvable_nodes.enabled(dbt_state.root_project().flags.as_ref()));
 
     let (
         resolved_nodes,
@@ -330,7 +311,7 @@ pub async fn resolve(
         root_runtime_config.clone(),
         token,
         jinja_type_checking_event_listener_factory.clone(),
-        Arc::new(experimentals.turned_on(dbt_state.root_project().flags.as_ref())),
+        Arc::clone(&kinds),
     )
     .await?;
     nodes.extend(resolved_nodes);
@@ -452,6 +433,23 @@ pub async fn resolve(
         &mut operations,
         &node_resolver,
     );
+    // Each kind adds the dependencies between nodes that only it knows of. They are read by
+    // the checks below as the ones above are.
+    for kind in kinds.on() {
+        let mut ctx = LinkCtx {
+            arg: &arg,
+            dbt_state: &dbt_state,
+            jinja_env: &jinja_env,
+            macros: &macros,
+            root_runtime_config: &root_runtime_config,
+            nodes: &nodes,
+            dependencies: Vec::new(),
+        };
+        kind.link(&mut ctx).await?;
+        let dependencies = ctx.dependencies;
+        add_linked_dependencies(&mut nodes, dependencies);
+    }
+
     for warning in microbatch_model_no_event_time_inputs_warnings(&nodes) {
         emit_warn_log_from_fs_error(warning);
     }
@@ -481,6 +479,33 @@ pub async fn resolve(
     // Validate function configuration against per-adapter capabilities:
     // JS UDF language support, JS-aggregate restrictions, default arguments.
     validate_function_config(&nodes, adapter_type);
+
+    // `metricflow` is a config of models only while `metricflow_v2` is on. While it is off, it
+    // is a config that nothing reads, on whichever of a model's config sources it is set.
+    if !dbt_flags::METRICFLOW_V2
+        .resolve_with_project(&project_flag_bool(dbt_state.root_project().flags.as_ref()))
+        .value
+    {
+        for model in nodes.models.values_mut() {
+            if model.deprecated_config.metricflow.is_none() {
+                continue;
+            }
+            let model = Arc::make_mut(model);
+            model.deprecated_config.metricflow = None;
+            let package_name = &model.__common_attr__.package_name;
+            emit_strict_parse_error(
+                *fs_err!(
+                    code => ErrorCode::UnusedConfigKey,
+                    loc => model.__common_attr__.original_file_path.to_path_buf(),
+                    "Ignored unexpected config `metricflow` of model '{}': the `{}` feature \
+                     flag is off",
+                    model.__common_attr__.name,
+                    dbt_flags::METRICFLOW_V2.name
+                ),
+                (package_name != root_project_name).then_some(package_name.as_str()),
+            );
+        }
+    }
 
     resolver_hooks.post_resolve(
         &arg.io,
@@ -541,6 +566,40 @@ pub async fn resolve(
         },
         jinja_env,
     ))
+}
+
+/// Adds the dependencies that a kind's [`ResolvableNode::link`] gave to `nodes`, as the ones
+/// `ref()` and `source()` give.
+///
+/// A dependency is added if both nodes are enabled nodes of dbt's own kinds and are not the
+/// same node. A node that a feature adds is not in the graph that selection and `state:` read.
+fn add_linked_dependencies(nodes: &mut Nodes, dependencies: Vec<LinkedDependency>) {
+    for LinkedDependency {
+        node,
+        depends_on,
+        location,
+    } in dependencies
+    {
+        if node == depends_on
+            || !nodes.contains(&depends_on)
+            || nodes.injected.contains_key(&depends_on)
+            || nodes.injected.contains_key(&node)
+        {
+            continue;
+        }
+        let Some(node) = nodes.get_value_mut(&node) else {
+            continue;
+        };
+        let node_depends_on = &mut node.base_mut().depends_on;
+        if !node_depends_on.nodes.contains(&depends_on) {
+            node_depends_on.nodes.push(depends_on.clone());
+        }
+        // A node that is not resolved again keeps what an earlier resolve added.
+        let located = (depends_on, location);
+        if !node_depends_on.nodes_with_ref_location.contains(&located) {
+            node_depends_on.nodes_with_ref_location.push(located);
+        }
+    }
 }
 
 // Check that models accessing other models (dependecies) can do so.
@@ -995,25 +1054,22 @@ pub async fn resolve_inner(
     parse_adapter_scopes: &Arc<AdapterScopes>,
     macros: &Macros,
     jinja_env: Arc<JinjaEnv>,
-    mut node_resolver: NodeResolver,
+    node_resolver: NodeResolver,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     test_name_truncations: &mut HashMap<String, String>,
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    experimentals: &ActiveExperimentals,
+    kinds: &EnabledNodes,
 ) -> FsResult<(
     Nodes,
     Nodes,
     HashMap<String, String>,
     NodeResolver,
     bool,
-    BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
+    BTreeMap<String, PropertiesEntry>,
 )> {
-    let mut nodes = Nodes::default();
-    let mut disabled_nodes = Nodes::default();
-
     let database: &String = &dbt_state.dbt_profile.database;
 
     let schema = &dbt_state.dbt_profile.schema;
@@ -1034,34 +1090,37 @@ pub async fn resolve_inner(
         Some(root_runtime_config.clone()),
     ));
     // Resolve the dbt properties (schema.yml) files
-    let mut min_properties = resolve_minimal_properties(
+    let nodes = kinds.on();
+    let mut properties = index_properties(
+        &nodes,
         arg,
         package,
-        dbt_state.root_package(),
         root_package_name,
-        root_project_configs,
         &jinja_env,
         &base_ctx,
         token,
-        adapter_type,
-        experimentals,
+        kinds.off_keys(),
     )
     .await?;
+    let semantic_layer_spec_is_legacy = uses_legacy_semantic_layer_spec(
+        &properties,
+        package,
+        dbt_state.root_package(),
+        root_project_configs,
+        adapter_type,
+    )?;
 
     let package_name = package.dbt_project.name.as_str();
 
-    // Collect macro properties for patching later (after all packages resolved)
-    let macro_properties = std::mem::take(&mut min_properties.macros);
-
-    let mut collected_generic_tests: Vec<GenericTestAsset> = Vec::new();
+    // The entries of models are taken before any kind resolves: the pass below and several
+    // kinds read them.
+    let model_properties = take_model_entries(&mut properties, &jinja_env, &base_ctx)?;
 
     let dbt_tests_dir = arg.io.out_dir.join(DBT_GENERIC_TESTS_DIR_NAME);
     stdfs::create_dir_all(&dbt_tests_dir)?;
 
     let dependency_package_name = dependency_package_name_from_ctx(&jinja_env, &base_ctx);
     let mut typed_models_properties: BTreeMap<String, ModelProperties> = BTreeMap::new();
-
-    let semantic_layer_spec_is_legacy = min_properties.semantic_layer_spec_is_legacy;
 
     // TODO: this eager pass should not exist. Only semantic model and metric resolution read
     // `typed_models_properties`, so it should be a lazy closure that types only the models
@@ -1075,7 +1134,7 @@ pub async fn resolve_inner(
     //   resources resolve, including entries with no model file.
     // Removing it means the parallel render pass must emit those warnings instead, and the
     // errors surface later or not at all. That is a breaking change that needs explicit handling.
-    for (model_name, minimal_model_props) in &min_properties.models {
+    for (model_name, minimal_model_props) in &model_properties {
         // Layer the relative yaml file path over the shared base context.
         // We do this for accurate error reporting.
         let mut model_ctx =
@@ -1111,365 +1170,57 @@ pub async fn resolve_inner(
         }
     }
 
-    // Resolve sources based on the dbt_state, database, schema, and project name
-    let (sources, disabled_sources) = resolve_sources(
+    let mut ctx = ResolveCtx {
         arg,
         package,
+        dbt_state: Arc::clone(&dbt_state),
         root_package_name,
-        dbt_state.root_package(),
         root_project_configs,
-        min_properties.source_tables,
-        database,
         adapter_type,
-        &base_ctx,
-        &jinja_env,
-        &mut collected_generic_tests,
+        parse_adapter_scopes: Arc::clone(parse_adapter_scopes),
+        macros,
+        jinja_env,
+        base_ctx,
+        runtime_config,
+        root_runtime_config,
+        token,
+        jinja_type_checking_event_listener_factory,
+        database,
+        schema,
+        package_name,
+        package_quoting,
+        semantic_layer_spec_is_legacy,
+        typed_models_properties,
+        properties,
+        model_properties,
+        macro_properties: BTreeMap::new(),
+        nodes: Nodes::default(),
+        disabled_nodes: Nodes::default(),
+        function_bodies: HashMap::new(),
+        node_resolver,
+        collected_generic_tests: Vec::new(),
         test_name_truncations,
         seen_generic_test_paths,
-        &mut node_resolver,
-    )
-    .await?;
-    nodes.sources.extend(sources);
-    disabled_nodes.sources.extend(disabled_sources);
-
-    // Resolve seeds based on the dbt_state, database, schema, and project name
-    let (seeds, disabled_seeds) = resolve_seeds(
-        arg,
-        min_properties.seeds,
-        package,
-        &root_project_configs.adapter_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        database,
-        schema,
-        parse_adapter_scopes,
-        adapter_type,
-        package_name,
-        &jinja_env,
-        &base_ctx,
-        &mut collected_generic_tests,
-        test_name_truncations,
-        seen_generic_test_paths,
-        &mut node_resolver,
-    )
-    .await?;
-    nodes.seeds.extend(seeds);
-    disabled_nodes.seeds.extend(disabled_seeds);
-
-    // TODO: resolve_snapshots still creates its own local JinjaTypeCheckingEventListenerFactory
-    // instead of receiving the top-level one, so snapshot macro dependencies are populated
-    // locally rather than via update_manifest_with_macro_depends_on. Out of scope for now.
-    // Resolve snapshots based on the dbt_state, database, schema, and project name
-    let (snapshots, disabled_snapshots) = resolve_snapshots(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        min_properties.snapshots,
-        &macros.macros,
-        database,
-        schema,
-        parse_adapter_scopes,
-        adapter_type,
-        &root_project_configs.adapter_quoting,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        &mut node_resolver,
-        &mut collected_generic_tests,
-        test_name_truncations,
-        seen_generic_test_paths,
-        token,
-    )
-    .await?;
-    nodes.snapshots.extend(snapshots);
-    disabled_nodes.snapshots.extend(disabled_snapshots);
-
-    let (groups, disabled_groups) = resolve_groups(
-        adapter_type,
-        &mut min_properties.groups,
-        package_name,
-        &jinja_env,
-        &base_ctx,
-    )
-    .await?;
-
-    nodes.groups.extend(groups);
-    disabled_nodes.groups.extend(disabled_groups);
-
-    // Resolve SQLs and get nodes except refs and sources
-    let (models, disabled_models) = resolve_models(
-        arg,
-        package,
-        package_quoting,
-        &root_project_configs.adapter_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &min_properties.models,
-        // TODO: pass in typed_models_properties
-        database,
-        schema,
-        parse_adapter_scopes,
-        adapter_type,
-        package_name,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        &mut collected_generic_tests,
-        test_name_truncations,
-        seen_generic_test_paths,
-        &mut node_resolver,
-        token,
-        jinja_type_checking_event_listener_factory.clone(),
-    )
-    .await?;
-    nodes.models.extend(models);
-    disabled_nodes.models.extend(disabled_models);
-
-    // TODO: resolve_analyses still creates its own local JinjaTypeCheckingEventListenerFactory
-    // instead of receiving the top-level one — same issue as resolve_snapshots. Out of scope for now.
-    let analyses = resolve_analyses(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &mut min_properties.analyses,
-        database,
-        schema,
-        parse_adapter_scopes,
-        adapter_type,
-        package_name,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        token,
-    )
-    .await?;
-    nodes.analyses.extend(analyses);
-
-    // Resolve checks
-    let (checks, disabled_checks) = resolve_checks(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &mut min_properties.checks,
-        database,
-        schema,
-        adapter_type,
-        package_name,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        token,
-    )
-    .await?;
-    nodes.checks.extend(checks);
-    disabled_nodes.checks.extend(disabled_checks);
-
-    // Resolve functions
-    let (functions, disabled_functions, function_bodies) = resolve_functions(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &mut min_properties.functions,
-        database,
-        schema,
-        parse_adapter_scopes,
-        adapter_type,
-        &root_project_configs.adapter_quoting,
-        package_name,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        &mut node_resolver,
-        token,
-    )
-    .await?;
-    nodes.functions.extend(functions);
-    disabled_nodes.functions.extend(disabled_functions);
-
-    let (exposures, disabled_exposures) = resolve_exposures(
-        arg,
-        &mut min_properties.exposures,
-        package,
-        dbt_state.root_package(),
-        root_project_configs,
-        database,
-        schema,
-        adapter_type,
-        package_name,
-        &jinja_env,
-        &base_ctx,
-    )
-    .await?;
-    nodes.exposures.extend(exposures);
-    disabled_nodes.exposures.extend(disabled_exposures);
-
-    let experimental_ctx = ExperimentalNodeContext {
-        args: arg,
-        package,
-        root_package: dbt_state.root_package(),
-        database,
-        schema,
-        adapter_type,
-        env: &jinja_env,
-        base_ctx: &base_ctx,
     };
-    let mut experimental_nodes = ResolvedExperimentalNodes::default();
-    resolve_experimentals(
-        &experimental_ctx,
-        experimentals,
-        &mut min_properties.experimental,
-        &mut experimental_nodes,
-    )?;
-    nodes.experimentals.extend(experimental_nodes.enabled);
-    disabled_nodes
-        .experimentals
-        .extend(experimental_nodes.disabled);
 
-    if !semantic_layer_spec_is_legacy {
-        let (semantic_models, disabled_semantic_models) = resolve_semantic_models(
-            adapter_type,
-            arg,
-            package,
-            dbt_state.root_package(),
-            root_project_configs,
-            &min_properties.models,
-            &typed_models_properties,
-            &nodes.models,
-            package_name,
-            &jinja_env,
-            &base_ctx,
-        )
-        .await?;
-        nodes.semantic_models.extend(semantic_models);
-        disabled_nodes
-            .semantic_models
-            .extend(disabled_semantic_models);
-
-        let (metrics, disabled_metrics) = resolve_metrics(
-            adapter_type,
-            arg,
-            package,
-            dbt_state.root_package(),
-            root_project_configs,
-            &min_properties.models,
-            &min_properties.metrics,
-            &typed_models_properties,
-            package_name,
-            &jinja_env,
-            &base_ctx,
-        )
-        .await?;
-        nodes.metrics.extend(metrics);
-        disabled_nodes.metrics.extend(disabled_metrics);
-
-        let (saved_queries, disabled_saved_queries) = resolve_saved_queries(
-            adapter_type,
-            arg,
-            package,
-            dbt_state.root_package(),
-            root_package_name,
-            root_project_configs,
-            &mut min_properties.saved_queries,
-            database,
-            schema,
-            package_name,
-            jinja_env.clone(),
-            &base_ctx,
-        )
-        .await?;
-        nodes.saved_queries.extend(saved_queries);
-        disabled_nodes.saved_queries.extend(disabled_saved_queries);
+    // Each kind of node resolves in turn and adds its nodes to `ctx`.
+    for node in nodes {
+        node.resolve(&mut ctx).await?;
     }
 
-    // Scoped so the span handle drops on both exits: SpanEnd fires on last-handle-drop.
-    // operation_id has the package name: resolve_inner runs concurrently across packages.
-    let (data_tests, disabled_tests) = {
-        let span = create_debug_span(GenericOpExecuted::new(
-            format!("resolve.resolve_data_tests.{package_name}"),
-            "resolving data tests".to_string(),
-            None,
-        ));
-        resolve_data_tests(
-            arg,
-            package,
-            package_quoting,
-            dbt_state.root_package(),
-            root_project_configs,
-            &mut min_properties.tests,
-            database,
-            schema,
-            parse_adapter_scopes,
-            adapter_type,
-            jinja_env.clone(),
-            &base_ctx,
-            runtime_config.clone(),
-            root_runtime_config.clone(),
-            &collected_generic_tests,
-            &node_resolver,
-            token,
-            jinja_type_checking_event_listener_factory.clone(),
-            &root_project_configs.adapter_quoting,
-            &nodes.models,
-            &disabled_nodes.models,
-            &nodes.seeds,
-            &nodes.snapshots,
-        )
-        .instrument(span.clone())
-        .await
-        .record_status(&span)?
-    };
-    nodes.tests.extend(data_tests);
-    disabled_nodes.tests.extend(disabled_tests);
-
-    infer_and_apply_primary_keys(&mut nodes, &disabled_nodes);
-
-    let (unit_tests, disabled_unit_tests) = resolve_unit_tests(
-        arg,
-        min_properties.unit_tests,
-        package,
-        dbt_state.root_package(),
-        package_quoting,
-        root_project_configs,
-        package_name,
-        &jinja_env,
-        &base_ctx,
-        &min_properties.models,
-        &nodes.models,
-        &dbt_state.packages,
-        adapter_type,
-        &node_resolver,
-    )
-    .await?;
-
-    nodes.unit_tests.extend(unit_tests);
-    disabled_nodes.unit_tests.extend(disabled_unit_tests);
-
-    if let Some(query_comment) = package.dbt_project.query_comment.as_ref() {
-        resolve_query_comment(query_comment, &jinja_env, &base_ctx)?;
+    if let Some(query_comment) = ctx.package.dbt_project.query_comment.as_ref() {
+        resolve_query_comment(query_comment, &ctx.jinja_env, &ctx.base_ctx)?;
     }
 
-    clear_package_diagnostics(&arg.io, package);
+    clear_package_diagnostics(&ctx.arg.io, ctx.package);
 
     Ok((
-        nodes,
-        disabled_nodes,
-        function_bodies,
-        node_resolver,
-        semantic_layer_spec_is_legacy,
-        macro_properties,
+        ctx.nodes,
+        ctx.disabled_nodes,
+        ctx.function_bodies,
+        ctx.node_resolver,
+        ctx.semantic_layer_spec_is_legacy,
+        ctx.macro_properties,
     ))
 }
 
@@ -1720,9 +1471,11 @@ fn check_upstreams_reachable(
                             )
                         },
                         format!(
-                            "Materialize '{upstream_id}' as 'table' or 'incremental' with 'catalog_name' set to a \
-                             'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog', \
-                             and make BigQuery the profile's default adapter, or run '{unique_id}' on BigQuery."
+                            "Materialize '{upstream_id}' as 'table' or 'incremental' with either 'catalog_name' set to a \
+                             'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog' or \
+                             (for a SQL model only) 'table_format: iceberg' with no 'catalog_name' and a storage location \
+                             (model 'storage_uri' or 'external_volume'), and make BigQuery the profile's default adapter, \
+                             or run '{unique_id}' on BigQuery."
                         )
                     );
                 } else if no_storage {
@@ -1877,7 +1630,7 @@ async fn resolve_package(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    experimentals: &ActiveExperimentals,
+    kinds: &EnabledNodes,
 ) -> FsResult<(
     String,
     Nodes,
@@ -1886,7 +1639,7 @@ async fn resolve_package(
     NodeResolver,
     bool,
     HashMap<String, String>,
-    BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
+    BTreeMap<String, PropertiesEntry>,
 )> {
     let package = dbt_state
         .packages
@@ -1933,7 +1686,7 @@ async fn resolve_package(
         &mut seen_generic_test_paths,
         token,
         jinja_type_checking_event_listener_factory.clone(),
-        experimentals,
+        kinds,
     )
     .await?;
 
@@ -1967,14 +1720,14 @@ async fn resolve_package_waves(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    experimentals: Arc<ActiveExperimentals>,
+    kinds: Arc<EnabledNodes>,
 ) -> FsResult<(
     Nodes,
     Nodes,
     BTreeMap<String, String>,
     bool,
     HashMap<String, String>,
-    BTreeMap<String, BTreeMap<String, resolve_properties::MinimalPropertiesEntry>>,
+    BTreeMap<String, BTreeMap<String, PropertiesEntry>>,
 )> {
     let max_concurrency = crate::parallel::effective_parallelism(arg.no_parallel);
     let arg = Arc::new(arg.clone());
@@ -1985,10 +1738,8 @@ async fn resolve_package_waves(
     let mut function_bodies: BTreeMap<String, String> = BTreeMap::new();
     let mut semantic_layer_spec_is_legacy = false;
     let mut test_name_truncations: HashMap<String, String> = HashMap::new();
-    let mut all_macro_properties: BTreeMap<
-        String,
-        BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
-    > = BTreeMap::new();
+    let mut all_macro_properties: BTreeMap<String, BTreeMap<String, PropertiesEntry>> =
+        BTreeMap::new();
 
     for package_wave in package_waves {
         token.check_cancellation()?;
@@ -2009,7 +1760,7 @@ async fn resolve_package_waves(
         let token = token.clone();
         let jinja_type_checking_event_listener_factory =
             jinja_type_checking_event_listener_factory.clone();
-        let experimentals = experimentals.clone();
+        let kinds = kinds.clone();
         let parse_adapter_scopes = parse_adapter_scopes.clone();
 
         let results = crate::parallel::dispatch_maybe_parallel(
@@ -2028,7 +1779,7 @@ async fn resolve_package_waves(
                 let token = token.clone();
                 let jinja_type_checking_event_listener_factory =
                     jinja_type_checking_event_listener_factory.clone();
-                let experimentals = experimentals.clone();
+                let kinds = kinds.clone();
                 let parse_adapter_scopes = parse_adapter_scopes.clone();
 
                 async move {
@@ -2047,7 +1798,7 @@ async fn resolve_package_waves(
                         root_runtime_config,
                         &token,
                         jinja_type_checking_event_listener_factory,
-                        &experimentals,
+                        &kinds,
                     )
                     .await
                 }
@@ -2681,25 +2432,36 @@ catalogs:
         // hint names the node kind it rejected. Which upstreams classify as reachable is
         // `DbtModel::is_bigquery_managed_iceberg_table`'s test.
         for as_test in [false, true] {
-            for (catalog_name, format, materialized, accepted, rejected_because) in [
-                (Some("bq"), None, DbtMaterialization::Table, true, ""),
-                (
-                    Some("bq"),
-                    None,
-                    DbtMaterialization::View,
-                    false,
-                    "has no physical storage format",
-                ),
+            for (catalog_name, format, materialized, language, accepted, rejected_because) in [
                 (
                     None,
                     Some("iceberg"),
                     DbtMaterialization::Table,
+                    Some("python"),
                     false,
                     "is not reachable through a catalog",
+                ),
+                (Some("bq"), None, DbtMaterialization::Table, None, true, ""),
+                (
+                    None,
+                    Some("iceberg"),
+                    DbtMaterialization::Table,
+                    None,
+                    true,
+                    "",
+                ),
+                (
+                    Some("bq"),
+                    None,
+                    DbtMaterialization::View,
+                    None,
+                    false,
+                    "has no physical storage format",
                 ),
             ] {
                 let mut parent = DbtModel::default();
                 parent.__base_attr__.adapter = AdapterType::Bigquery;
+                parent.__common_attr__.language = language.map(str::to_string);
                 parent.__model_attr__.catalog_name = catalog_name.map(str::to_string);
                 parent.__model_attr__.table_format = format.map(str::to_string);
                 parent.__base_attr__.materialized = materialized.clone();
@@ -2743,9 +2505,13 @@ catalogs:
                     } else {
                         "model.test.child"
                     };
-                    assert!(error.context.contains(&format!(
-                        "Materialize 'model.test.parent' as 'table' or 'incremental' with 'catalog_name' set to a 'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog', and make BigQuery the profile's default adapter, or run '{unique_id}' on BigQuery."
-                    )));
+                    assert!(
+                        error.context.contains(&format!(
+                            "Materialize 'model.test.parent' as 'table' or 'incremental' with either 'catalog_name' set to a 'biglake_metastore' catalog whose 'bigquery' config has no 'lakehouse_catalog' or (for a SQL model only) 'table_format: iceberg' with no 'catalog_name' and a storage location (model 'storage_uri' or 'external_volume'), and make BigQuery the profile's default adapter, or run '{unique_id}' on BigQuery."
+                        )),
+                        "language={language:?}: {}",
+                        error.context
+                    );
                 }
             }
         }
@@ -3438,5 +3204,80 @@ catalogs:
             Arc::new(make_seed(AdapterType::Snowflake, None)),
         );
         assert!(check_compute_platform_upstreams(&nodes, None, AdapterType::Snowflake).is_err());
+    }
+
+    mod linked_dependencies {
+        use std::sync::Arc;
+
+        use dbt_common::CodeLocationWithFile;
+        use dbt_schemas::schemas::{CommonAttributes, DbtModel, Nodes};
+
+        use crate::resolve::resolvable_node::LinkedDependency;
+        use crate::resolver::add_linked_dependencies;
+
+        /// Models `model.p.a` and `model.p.b`, which depend on nothing.
+        fn nodes() -> Nodes {
+            let mut nodes = Nodes::default();
+            for unique_id in ["model.p.a", "model.p.b"] {
+                let model = DbtModel {
+                    __common_attr__: CommonAttributes {
+                        unique_id: unique_id.to_string(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                nodes.models.insert(unique_id.to_string(), Arc::new(model));
+            }
+            nodes
+        }
+
+        fn dependency(node: &str, depends_on: &str) -> LinkedDependency {
+            LinkedDependency {
+                node: node.to_string(),
+                depends_on: depends_on.to_string(),
+                location: CodeLocationWithFile::default(),
+            }
+        }
+
+        #[test]
+        fn a_linked_dependency_is_added_once() {
+            let mut nodes = nodes();
+            add_linked_dependencies(
+                &mut nodes,
+                vec![
+                    dependency("model.p.a", "model.p.b"),
+                    dependency("model.p.a", "model.p.b"),
+                ],
+            );
+            // A node that is not resolved again is linked again by the next resolve.
+            add_linked_dependencies(&mut nodes, vec![dependency("model.p.a", "model.p.b")]);
+
+            let depends_on = &nodes.models["model.p.a"].__base_attr__.depends_on;
+            assert_eq!(depends_on.nodes, ["model.p.b"]);
+            assert_eq!(depends_on.nodes_with_ref_location.len(), 1);
+            assert!(
+                nodes.models["model.p.b"]
+                    .__base_attr__
+                    .depends_on
+                    .nodes
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn a_dependency_on_itself_or_on_no_node_is_not_added() {
+            let mut nodes = nodes();
+            add_linked_dependencies(
+                &mut nodes,
+                vec![
+                    dependency("model.p.a", "model.p.a"),
+                    dependency("model.p.a", "model.p.gone"),
+                    dependency("model.p.gone", "model.p.b"),
+                ],
+            );
+            for model in nodes.models.values() {
+                assert!(model.__base_attr__.depends_on.nodes.is_empty());
+            }
+        }
     }
 }

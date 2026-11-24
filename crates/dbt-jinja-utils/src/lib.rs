@@ -13,6 +13,9 @@ pub mod serde;
 /// Module containing utility functions and helpers
 pub mod utils;
 
+/// Text edits and how they move macro spans.
+pub mod edit_mapping;
+
 /// The `info_schema()` Jinja helper for project quality checks
 pub mod info_schema;
 

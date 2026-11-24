@@ -701,6 +701,10 @@ pub struct EvalArgs {
     pub metadata_dir: Option<PathBuf>,
     /// Write the dbt information schema to target/info_schema/ (implies write_metadata)
     pub generate_info_schema: bool,
+    /// True when `generate_info_schema` came from a command's default rather than from the
+    /// command line. Same role as `write_index_implied`: suppresses advisories naming flags
+    /// the user never passed.
+    pub generate_info_schema_implied: bool,
     /// Directory for information schema parquet output (default: <target>/info_schema/)
     pub info_schema_dir: Option<PathBuf>,
     /// Whether to skip creating generic tests

@@ -258,13 +258,14 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
     // Handle regular execution
     match result {
         Ok(cancellation_report) => {
-            if let Some(_report) = cancellation_report {
+            if let Some(report) = cancellation_report {
                 // TODO(felipecrv): move the Vortex shutdown logging here so we can
                 // also log the cancellation report.
 
-                // TODO(felipecrv): Use the UNIX convention of returning: 128 + signal.
-                // SIGINIT is 2, so we should return 130.
-                let exit_code = 1;
+                // Fail-fast stops the run because a node failed, so it exits 1 like
+                // any failed run. Ctrl+C follows the UNIX convention of 128 + signal:
+                // SIGINT is 2, so 130. Not 2, which means a panic.
+                let exit_code = if report.fail_fast_triggered { 1 } else { 130 };
 
                 // The runtimes were forgotten above. Terminate the process with
                 // a platform-specific function.

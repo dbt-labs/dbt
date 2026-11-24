@@ -1,5 +1,5 @@
 use dbt_adapter_core::AdapterType;
-use dbt_common::FsResult;
+use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::DbConfig;
 
 mod bigquery_config;
@@ -132,7 +132,11 @@ impl ProfileSetup {
                 ))))
             }
             MotherDuck => {
-                todo!("setup_motherduck_profile")
+                let _c0 = unwrap_db_config!(MotherDuck);
+                Err(fs_err!(
+                    ErrorCode::UnsupportedFusionFeature,
+                    "Interactive MotherDuck profile setup is not yet implemented."
+                ))
             }
         }
     }

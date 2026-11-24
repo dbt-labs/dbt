@@ -337,6 +337,11 @@ pub struct Cli {
     pub common_args: CommonArgs,
 }
 
+/// Commands that write the information schema unless told not to.
+pub fn info_schema_is_default_for(command: FsCommand) -> bool {
+    matches!(command, FsCommand::Run | FsCommand::Build)
+}
+
 /// The output directory `in_out_dir` will choose, computed before project setup
 /// and without touching the filesystem beyond the `dbt_project.yml` search.
 /// Falls back to the current directory when no project is found.
@@ -515,6 +520,13 @@ got {:?}, expected an instance of {}",
             arg.write_metadata = true;
             arg.write_index = true;
             arg.write_index_implied = true;
+        }
+        // `build` and `run` write the information schema by default. Placed and scoped like
+        // the index default above: after the lineage block, on `EvalArgs` only.
+        if info_schema_is_default_for(arg.command) && common_args.defaults_info_schema() {
+            arg.write_metadata = true;
+            arg.generate_info_schema = true;
+            arg.generate_info_schema_implied = true;
         }
         Ok(arg)
     }
@@ -2168,10 +2180,14 @@ pub struct CommonArgs {
     pub index_dir: Option<PathBuf>,
 
     /// Write the dbt information schema to target/info_schema/: a queryable
-    /// parquet layer over your project's metadata. With --static-analysis strict,
-    /// also writes column types and column-level lineage.
+    /// parquet layer over your project's metadata. Written by default by build
+    /// and run. With --static-analysis strict, also writes column types and
+    /// column-level lineage.
     #[arg(global = true, long = "generate-info-schema", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_ENGINE_GENERATE_INFO_SCHEMA", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS)]
     pub generate_info_schema: bool,
+    /// Skip the information schema that build and run write by default.
+    #[arg(global = true, long, action = ArgAction::SetTrue, default_value_t=false, value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS, hide_short_help = true)]
+    pub no_generate_info_schema: bool,
 
     /// Directory for information schema parquet output (default: <target>/info_schema/)
     #[arg(
@@ -2892,7 +2908,7 @@ impl CommonArgs {
     pub fn effective_partial_parse(&self) -> bool {
         self.write_metadata
             || self.effective_write_index()
-            || self.generate_info_schema
+            || self.effective_generate_info_schema()
             || self.partial_parse
             || self.partial_load
             || self.verify_partial_load
@@ -2910,7 +2926,7 @@ impl CommonArgs {
         !self.no_partial_load
             && (self.write_metadata
                 || self.effective_write_index()
-                || self.generate_info_schema
+                || self.effective_generate_info_schema()
                 || self.partial_load
                 || self.verify_partial_load)
     }
@@ -2926,6 +2942,23 @@ impl CommonArgs {
     /// above regardless of `--no-write-index`.)
     pub fn effective_write_index(&self) -> bool {
         self.write_index && !self.no_write_index
+    }
+
+    /// `--generate-info-schema` after `--no-generate-info-schema` cancels it, the same way
+    /// `--no-write-index` cancels `--write-index`.
+    pub fn effective_generate_info_schema(&self) -> bool {
+        self.generate_info_schema && !self.no_generate_info_schema
+    }
+
+    /// Whether a command's default information schema applies. Not when the flag was passed
+    /// (it is already on) or opted out of, and not under `--no-write-index`, which keeps
+    /// meaning no default metadata artifacts. Not under `--write-metadata` either, so that
+    /// flag stays epochs without derived artifacts.
+    pub fn defaults_info_schema(&self) -> bool {
+        !self.generate_info_schema
+            && !self.no_generate_info_schema
+            && !self.no_write_index
+            && !self.write_metadata
     }
 
     /// Resolve the effective value of `--quiet` / `--no-quiet`.
@@ -3084,14 +3117,15 @@ impl CommonArgs {
             // `--generate-info-schema` implies `--write-metadata` on its own.
             write_metadata: self.write_metadata
                 || self.effective_write_index()
-                || self.generate_info_schema,
+                || self.effective_generate_info_schema(),
             write_index: self.effective_write_index(),
             // Set by `Cli::to_eval_args` for the commands that default the index on; a
             // per-command conversion cannot know it was a default rather than a request.
             write_index_implied: false,
             check_names: Vec::new(),
             skip_checks: false,
-            generate_info_schema: self.generate_info_schema,
+            generate_info_schema: self.effective_generate_info_schema(),
+            generate_info_schema_implied: false,
             info_schema_dir: self.info_schema_dir.clone(),
             classify_with_warehouse_tags: self.classify_with_warehouse_tags,
             index_dir: self.index_dir.clone(),
@@ -3608,6 +3642,47 @@ mod tests {
             Some(false),
             "--no-partial-load must not read DBT_PARTIAL_LOAD via clap"
         );
+    }
+
+    #[test]
+    fn no_generate_info_schema_cancels_the_flag_and_its_implications() {
+        let mut args = CommonArgs {
+            generate_info_schema: true,
+            ..Default::default()
+        };
+        assert!(args.effective_generate_info_schema());
+        assert!(args.effective_partial_parse());
+        assert!(args.effective_partial_load());
+
+        args.no_generate_info_schema = true;
+        assert!(!args.effective_generate_info_schema());
+        assert!(!args.effective_partial_parse());
+        assert!(!args.effective_partial_load());
+    }
+
+    #[test]
+    fn info_schema_default_yields_to_explicit_flags_and_opt_outs() {
+        assert!(CommonArgs::default().defaults_info_schema());
+        for args in [
+            CommonArgs {
+                generate_info_schema: true,
+                ..Default::default()
+            },
+            CommonArgs {
+                no_generate_info_schema: true,
+                ..Default::default()
+            },
+            CommonArgs {
+                no_write_index: true,
+                ..Default::default()
+            },
+            CommonArgs {
+                write_metadata: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(!args.defaults_info_schema());
+        }
     }
 
     #[test]

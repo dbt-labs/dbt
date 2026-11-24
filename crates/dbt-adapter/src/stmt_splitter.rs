@@ -196,6 +196,35 @@ mod tests {
         );
     }
 
+    /// A `;` must not split a statement, and a `'` must not merge the next one,
+    /// when both sit inside a DuckDB dollar quote.
+    #[test]
+    fn test_split_duckdb_dollar_quoted_strings() {
+        let sql = "comment on column t.c is $dbt_comment_literal_block$it's a; test$dbt_comment_literal_block$; select 2";
+        let expected = vec![
+            "comment on column t.c is $dbt_comment_literal_block$it's a; test$dbt_comment_literal_block$",
+            " select 2",
+        ];
+        // LakeCompute uses the DuckDB dialect. Postgres and Salesforce use
+        // Dialect::Postgresql, which splits with the Redshift lexer.
+        for adapter in [
+            AdapterType::DuckDB,
+            AdapterType::LakeCompute,
+            AdapterType::Postgres,
+            AdapterType::Salesforce,
+        ] {
+            assert_eq!(split(sql, adapter), expected, "{adapter:?}");
+        }
+        assert_eq!(
+            split("select $$it's a; test$$; select 2", AdapterType::DuckDB),
+            vec!["select $$it's a; test$$", " select 2"]
+        );
+        assert_eq!(
+            split("select '$a$x$a$'; select 2", AdapterType::DuckDB),
+            vec!["select '$a$x$a$'", " select 2"]
+        );
+    }
+
     #[test]
     fn test_split_semicolon_in_line_comment() {
         for d in REPRESENTATIVE_DIALECTS {

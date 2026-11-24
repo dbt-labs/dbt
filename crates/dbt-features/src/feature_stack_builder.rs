@@ -17,6 +17,7 @@ use dbt_parser::resolver_hooks::NoOpResolverHooks;
 use dbt_schemas::state::ResolverState;
 use dbt_tasks_core::context::ExtendedCtx;
 use dbt_tasks_core::context_factory::TaskRunnerCtxFactory;
+use dbt_tasks_core::sql_rewriter::{DefaultSqlRewriter, SqlRewriter};
 use dbt_tasks_core::{PreTaskRunData, RunTasksArgs};
 use dbt_tasks_sa::schema_hydrator::DefaultSchemaHydratorFactory;
 use dbt_tasks_sa::sources_extractor::DefaultSourcesExtractor;
@@ -40,15 +41,18 @@ use crate::tracing::TracingFeature;
 struct DefaultTaskRunnerCtxFactory {
     rendering_listener_factory: Arc<dyn RenderingEventListenerFactory>,
     sources_extractor: Arc<dyn SourcesExtractor>,
+    sql_rewriter: Arc<dyn SqlRewriter>,
 }
 impl DefaultTaskRunnerCtxFactory {
     fn new(
         rendering_listener_factory: Arc<dyn RenderingEventListenerFactory>,
         sources_extractor: Arc<dyn SourcesExtractor>,
+        sql_rewriter: Arc<dyn SqlRewriter>,
     ) -> Self {
         Self {
             rendering_listener_factory,
             sources_extractor,
+            sql_rewriter,
         }
     }
 }
@@ -60,6 +64,10 @@ impl TaskRunnerCtxFactory for DefaultTaskRunnerCtxFactory {
 
     fn sources_extractor(&self) -> Arc<dyn SourcesExtractor> {
         Arc::clone(&self.sources_extractor)
+    }
+
+    fn sql_rewriter(&self) -> Arc<dyn SqlRewriter> {
+        Arc::clone(&self.sql_rewriter)
     }
 
     fn build_node_hashes<'a>(
@@ -125,10 +133,12 @@ impl FeatureStackBuilder {
                 Arc::new(DefaultRenderingEventListenerFactory::default());
 
             let sources_extractor = Arc::new(DefaultSourcesExtractor) as Arc<dyn SourcesExtractor>;
+            let sql_rewriter = Arc::new(DefaultSqlRewriter) as Arc<dyn SqlRewriter>;
 
             let task_runner_ctx_factory = Arc::new(DefaultTaskRunnerCtxFactory::new(
                 Arc::clone(&rendering_listener_factory),
                 Arc::clone(&sources_extractor),
+                Arc::clone(&sql_rewriter),
             )) as Arc<dyn TaskRunnerCtxFactory>;
 
             TaskRunnerFeature {
@@ -137,6 +147,7 @@ impl FeatureStackBuilder {
                 compare_task_graph_builder: None,
                 rendering_listener_factory,
                 sources_extractor,
+                sql_rewriter,
                 task_runner_ctx_factory,
                 hooks_factory: Arc::new(DefaultTaskRunnerHooksFactory),
             }

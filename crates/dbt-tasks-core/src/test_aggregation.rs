@@ -124,14 +124,14 @@ pub fn is_data_test_static_analysis_eligible(test: &DbtTest) -> bool {
     eligible && has_safe_data_test_config(test)
 }
 
-fn get_test_group_key(test: &DbtTest) -> Option<(String, String)> {
+fn get_test_group_key(test: &DbtTest) -> Option<(String, String, AdapterType)> {
     if !is_data_test_aggregation_eligible(test) {
         return None;
     }
 
     let resource_name = test.__test_attr__.attached_node.clone()?;
     let macro_name = get_macro_name(test)?;
-    Some((resource_name, macro_name))
+    Some((resource_name, macro_name, test.node_adapter()))
 }
 
 /// Generates test group name using the same conventions as persist_generic_data_tests.
@@ -233,8 +233,9 @@ pub fn create_generic_test_aggregation(
         return Ok(None);
     }
 
-    // Collect eligible tests keyed by (attached_node, macro_name)
-    let mut grouped_tests: HashMap<(String, String), Vec<Arc<DbtTest>>> = HashMap::new();
+    // Collect eligible tests keyed by (attached_node, macro_name, adapter)
+    let mut grouped_tests: HashMap<(String, String, AdapterType), Vec<Arc<DbtTest>>> =
+        HashMap::new();
 
     for unique_id in &schedule.selected_nodes {
         let Some(test) = nodes.tests.get(unique_id) else {
@@ -247,11 +248,11 @@ pub fn create_generic_test_aggregation(
         {
             continue;
         }
-        let Some((resource_name, macro_name)) = get_test_group_key(test) else {
+        let Some(group_key) = get_test_group_key(test) else {
             continue;
         };
         grouped_tests
-            .entry((resource_name, macro_name))
+            .entry(group_key)
             .or_default()
             .push(test.clone());
     }
@@ -259,7 +260,7 @@ pub fn create_generic_test_aggregation(
     let mut groups: BTreeMap<String, Arc<GenericTestGroup>> = BTreeMap::new();
     let mut group_ids = HashMap::new();
 
-    for ((resource_name, macro_name), member_tests) in grouped_tests {
+    for ((resource_name, macro_name, adapter), member_tests) in grouped_tests {
         // Too few to aggregate
         if member_tests.len() < 2 {
             continue;
@@ -283,9 +284,14 @@ pub fn create_generic_test_aggregation(
             tests.push(test);
         }
 
+        // A batch off the default adapter names it, so batches split by adapter keep distinct ids.
+        let mut resource_name_display = resource_name.replace('.', "_");
+        if adapter != default_adapter {
+            resource_name_display = format!("{resource_name_display}_{adapter}");
+        }
         let group_name = get_group_name(
             &format!("aggregated_{macro_name}"),
-            &resource_name.replace('.', "_"),
+            &resource_name_display,
             &column_names,
         );
         let group_id = format!(
@@ -355,7 +361,7 @@ fn create_aggregated_test(
         )
     })?;
     let mut kwargs = template_metadata.kwargs.clone();
-    kwargs.insert(
+    kwargs.insert_sorted(
         "column_names".to_string(),
         dbt_yaml::Value::Sequence(
             columns
@@ -446,7 +452,7 @@ fn build_aggregated_raw_code(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use indexmap::IndexMap;
 
     use dbt_schemas::schemas::common::StoreFailuresAs;
     use dbt_schemas::schemas::nodes::{DbtTestAttr, Nodes};
@@ -466,7 +472,7 @@ mod tests {
             test_subject_unique_id: Some("model.pkg.orders".to_string()),
             test_metadata: Some(TestMetadata {
                 name: macro_name.to_string(),
-                kwargs: BTreeMap::from([
+                kwargs: IndexMap::from([
                     (
                         "column_name".to_string(),
                         dbt_yaml::Value::string(column_name.to_string()),

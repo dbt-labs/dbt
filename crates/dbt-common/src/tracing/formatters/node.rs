@@ -10,7 +10,7 @@ use dbt_telemetry::{
     is_statically_checked_test,
 };
 
-use crate::io_args::FsCommand;
+use crate::io_args::{FsCommand, multi_adapter_enabled};
 
 use super::{
     color::{BLUE, CYAN, GREEN, MaybeColored, PLAIN, RED, YELLOW},
@@ -312,7 +312,7 @@ fn node_outcome_status_parts(
         (NodeOutcome::Success, _, None, None) => ("success", &GREEN),
         (NodeOutcome::Error, _, _, _) => ("error", &RED),
         (NodeOutcome::Skipped, s_reason, _, _) => match s_reason {
-            Some(NodeSkipReason::Upstream) => ("skipped", &YELLOW),
+            Some(NodeSkipReason::Upstream | NodeSkipReason::FailFast) => ("skipped", &YELLOW),
             Some(NodeSkipReason::Cached) => ("reused", &GREEN),
             Some(NodeSkipReason::NoOp) => ("no-op", &YELLOW),
             // Other skip reasons are just "skipped"
@@ -354,7 +354,7 @@ fn node_action_parts(
         (NodeOutcome::Success, _, None, None) => ("Succeeded", &GREEN),
         (NodeOutcome::Error, _, _, _) => ("Failed", &RED),
         (NodeOutcome::Skipped, s_reason, _, _) => match s_reason {
-            Some(NodeSkipReason::Upstream) => ("Skipped", &YELLOW),
+            Some(NodeSkipReason::Upstream | NodeSkipReason::FailFast) => ("Skipped", &YELLOW),
             Some(NodeSkipReason::Cached) => ("Reused", &GREEN),
             Some(NodeSkipReason::NoOp) => ("Skipped", &YELLOW),
             // Other skip reasons are just "skipped"
@@ -687,7 +687,8 @@ impl fmt::Display for NodeProcessedEnd<'_> {
             "{}",
             MaterializationSuffix {
                 materialization,
-                adapter: node.adapter.as_deref(),
+                // Only named when nodes can run on different adapters.
+                adapter: node.adapter.as_deref().filter(|_| multi_adapter_enabled()),
                 // Determine description based on outcome
                 desc: NodeDescription::new(node),
             }
@@ -1229,7 +1230,8 @@ impl fmt::Display for AggregatedTestGroupMember<'_> {
             },
             MaterializationSuffix {
                 materialization: None,
-                adapter: node.adapter.as_deref(),
+                // Only named when nodes can run on different adapters.
+                adapter: node.adapter.as_deref().filter(|_| multi_adapter_enabled()),
                 desc,
             }
         )
@@ -1724,74 +1726,6 @@ mod tests {
         assert!(!output.contains("Batched"));
     }
 
-    fn model_processed(adapter: Option<&str>) -> NodeProcessed {
-        let mut node = NodeProcessed::start(
-            "model.project.customers".to_string(),
-            "customers".to_string(),
-            None,
-            Some("analytics".to_string()),
-            Some("customers".to_string()),
-            Some(NodeMaterialization::Table),
-            None,
-            NodeType::Model,
-            Some(ExecutionPhase::Run),
-            "models/customers.sql".to_string(),
-            None,
-            None,
-            "checksum".to_string(),
-            true,
-            None,
-        );
-        node.adapter = adapter.map(str::to_string);
-        node.set_node_outcome(NodeOutcome::Success);
-        node
-    }
-
-    #[test]
-    fn adapter_renders_alongside_materialization() {
-        let output = NodeProcessedEnd {
-            node: &model_processed(Some("snowflake")),
-            duration: std::time::Duration::from_millis(250),
-            colorize: false,
-        }
-        .to_string();
-
-        assert!(
-            output.contains("analytics.customers (table, snowflake)"),
-            "{output}"
-        );
-    }
-
-    #[test]
-    fn missing_adapter_keeps_materialization_alone() {
-        let output = NodeProcessedEnd {
-            node: &model_processed(None),
-            duration: std::time::Duration::from_millis(250),
-            colorize: false,
-        }
-        .to_string();
-
-        assert!(output.contains("analytics.customers (table) "), "{output}");
-    }
-
-    #[test]
-    fn adapter_renders_for_tests_without_materialization() {
-        let mut node = test_processed(TestOutcome::Passed, 0, None, None);
-        node.adapter = Some("snowflake".to_string());
-
-        let output = NodeProcessedEnd {
-            node: &node,
-            duration: std::time::Duration::from_millis(250),
-            colorize: false,
-        }
-        .to_string();
-
-        assert!(
-            output.contains("accepted_values_orders_is_today_order__True (snowflake) "),
-            "{output}"
-        );
-    }
-
     #[test]
     fn materialization_suffix_places_adapter_before_description() {
         assert_eq!(
@@ -2068,21 +2002,6 @@ mod tests {
         .to_string();
 
         assert!(output.contains("(snowflake - 2 batched)"), "{output}");
-    }
-
-    #[test]
-    fn aggregated_group_member_shows_adapter() {
-        let mut node = test_processed(TestOutcome::Passed, 0, None, Some(BATCH_UNIQUE_ID));
-        node.adapter = Some("snowflake".to_string());
-
-        let output = AggregatedTestGroupMember {
-            node: &node,
-            is_last: false,
-            colorize: false,
-        }
-        .to_string();
-
-        assert!(output.ends_with("(snowflake)"), "{output}");
     }
 
     #[test]

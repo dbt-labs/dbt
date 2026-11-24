@@ -354,7 +354,7 @@ impl ::prost::Name for ResourceCounts {
 /// it determines it does not need to be run. The Account Identifier and Project Identifier
 /// can be found by joining this message on the Invocation message specified in the invocation_id
 /// field.
-#[derive(::serde::Serialize)]
+#[derive(::serde::Serialize, ::serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunModel {
     /// This field is a toggle to enable enrichment of the message by the Vortex service.

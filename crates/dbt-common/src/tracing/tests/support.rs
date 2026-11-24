@@ -2,7 +2,7 @@
 
 use dbt_tracing::emit::create_root_info_span;
 use dbt_tracing::test_support::mocks::{MockDynSpanEvent, TestLayer, test_data_layer};
-use dbt_tracing::{LogRecordInfo, TelemetryOutputFlags};
+use dbt_tracing::{LogRecordInfo, SpanEndInfo, SpanStartInfo, TelemetryOutputFlags};
 use tracing::level_filters::LevelFilter;
 
 use crate::tracing::dbt_init::create_tracing_subcriber_with_layer;
@@ -13,8 +13,24 @@ pub(super) fn capture_log_records(
     middlewares: Vec<MiddlewareLayer>,
     emit: impl FnOnce(),
 ) -> Vec<LogRecordInfo> {
+    capture_records(middlewares, emit).log_records
+}
+
+/// The spans and log records that reached a consumer.
+pub(super) struct CapturedRecords {
+    pub span_starts: Vec<SpanStartInfo>,
+    pub span_ends: Vec<SpanEndInfo>,
+    pub log_records: Vec<LogRecordInfo>,
+}
+
+/// Runs `emit` under the given middlewares and returns the spans and log records that reach
+/// a consumer.
+pub(super) fn capture_records(
+    middlewares: Vec<MiddlewareLayer>,
+    emit: impl FnOnce(),
+) -> CapturedRecords {
     let trace_id = rand::random::<u128>();
-    let (test_layer, _span_starts, _span_ends, log_records) = TestLayer::new();
+    let (test_layer, span_starts, span_ends, log_records) = TestLayer::new();
     let consumers: Vec<ConsumerLayer> = vec![Box::new(test_layer)];
     let mut data_layer = test_data_layer(
         trace_id,
@@ -36,8 +52,15 @@ pub(super) fn capture_log_records(
         emit();
     });
 
-    log_records
-        .lock()
-        .expect("log records mutex poisoned")
-        .clone()
+    CapturedRecords {
+        span_starts: span_starts
+            .lock()
+            .expect("span starts mutex poisoned")
+            .clone(),
+        span_ends: span_ends.lock().expect("span ends mutex poisoned").clone(),
+        log_records: log_records
+            .lock()
+            .expect("log records mutex poisoned")
+            .clone(),
+    }
 }

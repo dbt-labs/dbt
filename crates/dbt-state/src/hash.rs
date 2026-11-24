@@ -799,7 +799,7 @@ mod tests {
         let mut t = test_node(fqn);
         t.__test_attr__.test_metadata = Some(TestMetadata {
             name: "unique".to_string(),
-            kwargs: BTreeMap::default(),
+            kwargs: Default::default(),
             namespace: None,
         });
         t
@@ -2011,7 +2011,7 @@ mod runtime_vars {
             BTreeMap::from([("severity".to_string(), YmlValue::string("warn".to_string()))]);
         t.__test_attr__.test_metadata = Some(dbt_schemas::schemas::TestMetadata {
             name: "accepted_values".to_string(),
-            kwargs: BTreeMap::from([("values".to_string(), value)]),
+            kwargs: [("values".to_string(), value)].into_iter().collect(),
             namespace: None,
         });
         t

@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
+    time::Duration,
 };
 
 use petgraph::algo::{Cycle, toposort};
@@ -9,7 +10,11 @@ use petgraph::{
     graph::{DiGraph, NodeIndex},
     visit::EdgeRef,
 };
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::mpsc,
+    task::JoinHandle,
+    time::{Instant, timeout_at},
+};
 use tracing::Instrument;
 
 use dbt_common::cancellation::{CancellationToken, CancelledError};
@@ -21,8 +26,10 @@ use dbt_common::{FsResult, io_args::IoArgs, unexpected_err};
 use dbt_schemas::schemas::common::OnError;
 use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::TaskRunnerCtx;
+use dbt_tasks_core::span_manager::SpanManager;
 use dbt_tasks_core::task::TP;
 use dbt_tasks_core::task::Task;
+use dbt_tasks_core::task_spans::create_task_span_for_node;
 use dbt_tasks_core::visitor::SkipReason;
 use dbt_telemetry::{ExecutionPhase, NodeOutcome, NodeType};
 use dbt_yaml::Span;
@@ -61,6 +68,49 @@ impl WorkerSlotPool {
 }
 
 type SkippedNodes = Vec<Arc<dyn InternalDbtNodeAttributes>>;
+
+/// After a cancel, how long the visit waits for running tasks to report their results. The whole
+/// command has `TIMEOUT_AFTER_CTRL_C` after the cancel, which must also cover writing the run's
+/// artifacts, so this stays well under it.
+const CANCELLED_TASKS_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How often the visit checks the token while it waits for a task: the token can't be awaited,
+/// and the wait after a cancel must start when the cancel happens, not when a task next reports.
+const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The nodes of the tasks a cancelled visit gave up on: cancelled mid-query, or still running at
+/// `CANCELLED_TASKS_REPORT_TIMEOUT`. The visit can't stop such a task, and a task records its own
+/// stat if it still finishes, so [`Self::apply`] makes the run's stats match what the visit
+/// reported in telemetry.
+#[derive(Debug, Default)]
+pub struct AbandonedNodes {
+    unique_ids: HashSet<String>,
+    /// Under `--fail-fast` the nodes are skipped. After Ctrl+C they are left out.
+    fail_fast: bool,
+}
+
+impl AbandonedNodes {
+    pub fn contains(&self, unique_id: &str) -> bool {
+        self.unique_ids.contains(unique_id)
+    }
+
+    pub fn apply(&self, stats: &mut Vec<Stat>) {
+        if self.unique_ids.is_empty() {
+            return;
+        }
+        if !self.fail_fast {
+            stats.retain(|stat| !self.contains(&stat.unique_id));
+            return;
+        }
+        let now = chrono::Utc::now();
+        for stat in stats {
+            if self.contains(&stat.unique_id) && stat.status != NodeStatus::SkippedUpstreamFailed {
+                let unique_id = std::mem::take(&mut stat.unique_id);
+                *stat = skipped_stat(unique_id, &SkipReason::FailFast, now);
+            }
+        }
+    }
+}
 
 // Handle skipping of the task
 struct SkipSet {
@@ -312,29 +362,40 @@ fn record_skipped_stats(
     let now = chrono::Utc::now();
     for node in skipped_nodes {
         let unique_id = node.common().unique_id.clone();
-        let (status, message) = match skip_reason {
-            SkipReason::Reused => (
-                NodeStatus::ReusedNoChanges("Model reused".to_string()),
-                Some("Skipped due to model reuse".to_string()),
-            ),
-            SkipReason::FailedUpstream(_) | SkipReason::FailedPhase => (
-                NodeStatus::SkippedUpstreamFailed,
-                Some("Skipped due to upstream failure".to_string()),
-            ),
-        };
         // Insert stats for skipped nodes so they appear in run_results.json
-        ctx.inner.run_stats.upsert_sync(
-            unique_id.clone(),
-            Stat::new(
-                unique_id,
-                now.into(),
-                None,
-                status,
-                message,
-                0, // thread_id - use 0 as skipped nodes weren't actually executed
-            ),
-        );
+        ctx.inner
+            .run_stats
+            .upsert_sync(unique_id.clone(), skipped_stat(unique_id, skip_reason, now));
     }
+}
+
+fn skipped_stat(
+    unique_id: String,
+    skip_reason: &SkipReason,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Stat {
+    let (status, message) = match skip_reason {
+        SkipReason::Reused => (
+            NodeStatus::ReusedNoChanges("Model reused".to_string()),
+            Some("Skipped due to model reuse".to_string()),
+        ),
+        SkipReason::FailedUpstream(_) | SkipReason::FailedPhase => (
+            NodeStatus::SkippedUpstreamFailed,
+            Some("Skipped due to upstream failure".to_string()),
+        ),
+        SkipReason::FailFast => (
+            NodeStatus::SkippedUpstreamFailed,
+            Some("Skipping due to fail_fast".to_string()),
+        ),
+    };
+    Stat::new(
+        unique_id,
+        now.into(),
+        None,
+        status,
+        message,
+        0, // thread_id - use 0 as skipped nodes weren't actually executed
+    )
 }
 
 fn task_graph_cycle_error(
@@ -391,7 +452,7 @@ pub async fn visit_sequential(
     schedule: &DiGraph<Arc<dyn Task>, ()>,
     ctx: &mut TaskRunnerCtx,
     token: &CancellationToken,
-) -> FsResult<()> {
+) -> FsResult<AbandonedNodes> {
     visit(io, schedule, ctx, VisitStrategy::Sequential, token).await
 }
 
@@ -401,7 +462,7 @@ pub async fn visit_parallel(
     schedule: &DiGraph<Arc<dyn Task>, ()>,
     ctx: &mut TaskRunnerCtx,
     token: &CancellationToken,
-) -> FsResult<()> {
+) -> FsResult<AbandonedNodes> {
     visit(io, schedule, ctx, VisitStrategy::Parallel, token).await
 }
 
@@ -525,7 +586,7 @@ async fn visit(
     ctx: &mut TaskRunnerCtx,
     strategy: VisitStrategy,
     token: &CancellationToken,
-) -> FsResult<()> {
+) -> FsResult<AbandonedNodes> {
     let mut slot_pool = WorkerSlotPool::new();
     // Work items yet to be started:
     let mut pending = strategy.new_pending_nodes(schedule)?;
@@ -542,21 +603,16 @@ async fn visit(
 
     let (mut indegree, dependents) = get_indegree_and_dependents(schedule);
 
-    let handle_cancellation = |ctx: &mut TaskRunnerCtx,
-                               e: CancelledError,
-                               waiting: HashMap<NodeIndex, _>|
-     -> FsResult<()> {
-        // Any tasks that are running and waiting need to be reported as failed.
-        for (node_idx, task_span) in waiting {
-            let maybe_node = schedule.node_weight(node_idx);
-            if let Some(node) = maybe_node {
-                report_node_evaluation(ctx, node.as_ref(), Some(&NodeStatus::Errored));
-            }
-            // Record span result
-            span_manager.handle_task_finished(task_span, &Ok(NodeStatus::Errored));
-        }
-        return Err(e.into());
-    };
+    // Work items that finished or were skipped
+    let mut settled = HashSet::<NodeIndex>::new();
+    // The task whose failure set off `--fail-fast`. Once set, every node that didn't run is
+    // skipped with `SkipReason::FailFast`, in run_results.json and in telemetry.
+    let mut fail_fast_trigger: Option<NodeIndex> = None;
+    // Used only after a cancel.
+    // `abandoned`: tasks that started and will never give the visit a result.
+    // `cancel_deadline`: when the visit stops waiting for the tasks still running.
+    let mut abandoned = HashMap::<NodeIndex, tracing::Span>::new();
+    let mut cancel_deadline: Option<Instant> = None;
 
     // Termination proof for the loop below
     // ======================================
@@ -592,14 +648,42 @@ async fn visit(
     // that were never produced — violating assumption (3) and causing the loop to
     // hang. This is why `propagate_reuse_to_downstream_tests` must mark ALL phases
     // of a reused test, not just the direct dependent. See #8439.
+    //
+    // The wait for a task times out every `CANCEL_CHECK_INTERVAL` to check the token. Such an
+    // iteration processes nothing but changes no state either, and by (3) a message still
+    // arrives, so the measure keeps decreasing.
+    //
+    // After Ctrl+C or `--fail-fast` cancels the token, the loop starts no new tasks. It keeps
+    // receiving until every running task has reported or `CANCELLED_TASKS_REPORT_TIMEOUT` has
+    // passed, then returns through `finish_cancelled_visit`.
     loop {
-        if let Err(e) = token.check_cancellation() {
-            return handle_cancellation(ctx, e, waiting);
+        if token.is_cancelled() {
+            let deadline = *cancel_deadline
+                .get_or_insert_with(|| Instant::now() + CANCELLED_TASKS_REPORT_TIMEOUT);
+            if waiting.is_empty() || Instant::now() >= deadline {
+                abandoned.extend(waiting);
+                return finish_cancelled_visit(
+                    io,
+                    ctx,
+                    schedule,
+                    &skip_set,
+                    settled,
+                    abandoned,
+                    fail_fast_trigger,
+                );
+            }
         }
 
-        while let Some(node_index) = strategy.try_pop_pending_node(&waiting, &mut pending) {
+        while !token.is_cancelled()
+            && let Some(node_index) = strategy.try_pop_pending_node(&waiting, &mut pending)
+        {
             if let Some(node) = schedule.node_weight(node_index) {
-                let skip_reason = skip_set.skip.get(&node_index);
+                let skip_reason = skip_set.skip.get(&node_index).map(|reason| match reason {
+                    SkipReason::FailedUpstream(_) if fail_fast_trigger.is_some() => {
+                        &SkipReason::FailFast
+                    }
+                    _ => reason,
+                });
                 let task_span = span_manager.get_task_span(node.telemetry_request(
                     &io.in_dir,
                     &io.out_dir,
@@ -617,6 +701,8 @@ async fn visit(
 
                     // If node is skipped, record skipped result and close it immediately
                     span_manager.handle_task_skipped(task_span, skip_reason);
+                    skip_node_spans_for_fail_fast(io, &span_manager, node.as_ref(), skip_reason)?;
+                    settled.insert(node_index);
                     continue;
                 }
                 let sender = sender.clone();
@@ -660,20 +746,39 @@ async fn visit(
 
         // Process the next completed task
         if !waiting.is_empty() {
-            if let Err(e) = token.check_cancellation() {
-                return handle_cancellation(ctx, e, waiting);
-            }
-
-            let (result, node_idx, thread_id) = match receiver.recv().await {
+            let wait_until =
+                cancel_deadline.unwrap_or_else(|| Instant::now() + CANCEL_CHECK_INTERVAL);
+            let received = match timeout_at(wait_until, receiver.recv()).await {
+                Ok(received) => received,
+                // Back to the top of the loop, which checks the token and the deadline.
+                Err(_) => continue,
+            };
+            let (result, node_idx, thread_id) = match received {
                 Some((res, node_idx, thread_id)) => (res, node_idx, thread_id),
                 None => return unexpected_err!("Receiver channel closed"),
             };
 
             slot_pool.release(thread_id);
 
+            // Stopped by the cancel without a result
+            if token.is_cancelled() && matches!(&result, Err(e) if e.code.is_cancellation()) {
+                let task_span = waiting
+                    .remove(&node_idx)
+                    .expect("Completed node was not in waiting set");
+                abandoned.insert(node_idx, task_span);
+                continue;
+            }
+            settled.insert(node_idx);
+
             let maybe_node = schedule.node_weight(node_idx);
             if let Some(node) = maybe_node {
-                report_node_evaluation(ctx, node.as_ref(), result.as_ref().ok());
+                let node_outcome = match result.as_ref() {
+                    Ok(NodeStatus::Succeeded | NodeStatus::SucceededWithWarning) => {
+                        NodeOutcome::Success
+                    }
+                    _ => NodeOutcome::Error,
+                };
+                report_node_evaluation(ctx, node.as_ref(), node_outcome);
             }
 
             let task_span = waiting
@@ -708,7 +813,16 @@ async fn visit(
             if let Some(node) = maybe_node {
                 report_skipped_node_evaluations(ctx, node.as_ref(), &failed_nodes);
             }
-            record_skipped_stats(ctx, &failed_nodes, &SkipReason::FailedPhase);
+            if is_error && ctx.inner.arg.fail_fast_flag && fail_fast_trigger.is_none() {
+                fail_fast_trigger = Some(node_idx);
+            }
+            // dbt-core: every node that didn't run gets the fail_fast skip.
+            let failed_reason = if fail_fast_trigger.is_some() {
+                &SkipReason::FailFast
+            } else {
+                &SkipReason::FailedPhase
+            };
+            record_skipped_stats(ctx, &failed_nodes, failed_reason);
             record_skipped_stats(ctx, &reused_nodes, &SkipReason::Reused);
             show_skip_summary(io, &failed_nodes);
             if is_error {
@@ -719,8 +833,9 @@ async fn visit(
             strategy.release_dependents(node_idx, &dependents, &mut indegree, &mut pending);
         }
 
-        // All done if nothing is in the worklist and nothing is waiting
-        if pending.is_empty() && waiting.is_empty() {
+        // All done if nothing is in the worklist and nothing is waiting. An abandoned task
+        // leaves the visit to `finish_cancelled_visit` at the top of the loop.
+        if pending.is_empty() && waiting.is_empty() && abandoned.is_empty() {
             break;
         }
     }
@@ -749,6 +864,133 @@ async fn visit(
         ));
     }
 
+    Ok(AbandonedNodes::default())
+}
+
+/// Closes a visit that Ctrl+C or `--fail-fast` cancelled, and decides what is recorded for the
+/// nodes without a result. `abandoned` holds the tasks that started but have no result.
+///
+/// - Ctrl+C (no `fail_fast_trigger`): the nodes are left out of the results, like dbt-core, and
+///   the spans of the abandoned tasks are cancelled.
+/// - `--fail-fast`: every selected node without a result is skipped, like dbt-core.
+fn finish_cancelled_visit(
+    io: &IoArgs,
+    ctx: &mut TaskRunnerCtx,
+    schedule: &DiGraph<Arc<dyn Task>, ()>,
+    skip_set: &SkipSet,
+    mut settled: HashSet<NodeIndex>,
+    abandoned: HashMap<NodeIndex, tracing::Span>,
+    fail_fast_trigger: Option<NodeIndex>,
+) -> FsResult<AbandonedNodes> {
+    let span_manager = ctx.inner.span_manager();
+    let mut unique_ids = HashSet::new();
+
+    // Ctrl+C: cancel the spans of the abandoned tasks and record no stat, which keeps their
+    // nodes out of run_results.json.
+    let Some(trigger_task) = fail_fast_trigger else {
+        for (node_idx, task_span) in abandoned {
+            if let Some(task) = schedule.node_weight(node_idx) {
+                report_node_evaluation(ctx, task.as_ref(), NodeOutcome::Canceled);
+                unique_ids.extend(
+                    task.dbt_nodes()
+                        .iter()
+                        .map(|n| n.common().unique_id.clone()),
+                );
+            }
+            span_manager.handle_task_finished(task_span, &Err(CancelledError.into()));
+        }
+        return Ok(AbandonedNodes {
+            unique_ids,
+            fail_fast: false,
+        });
+    };
+
+    // `--fail-fast` from here on. `candidates` collects the dbt nodes of every task that did not
+    // finish. The ones that get a skipped row are picked from it below.
+    let mut candidates: SkippedNodes = Vec::new();
+
+    // Tasks that started: their span is open, so close it as skipped.
+    for (node_idx, task_span) in abandoned {
+        if let Some(task) = schedule.node_weight(node_idx) {
+            let nodes = task.dbt_nodes();
+            unique_ids.extend(nodes.iter().map(|n| n.common().unique_id.clone()));
+            candidates.extend(nodes);
+        }
+        span_manager.handle_task_skipped(task_span, &SkipReason::FailFast);
+        settled.insert(node_idx);
+    }
+
+    // Tasks that never started: telemetry only knows a task through its span, so open one and
+    // close it as skipped, as the visit loop does for a task it skips.
+    for node_idx in schedule.node_indices() {
+        if settled.contains(&node_idx) {
+            continue;
+        }
+        let Some(task) = schedule.node_weight(node_idx) else {
+            return unexpected_err!("Node {:?} not found in schedule", node_idx);
+        };
+        // Keep a reason decided earlier for a later phase of the failed node or a reused test.
+        let reason = match skip_set.skip.get(&node_idx) {
+            Some(reason @ (SkipReason::FailedPhase | SkipReason::Reused)) => reason,
+            _ => &SkipReason::FailFast,
+        };
+        let task_span = span_manager.get_task_span(task.telemetry_request(
+            &io.in_dir,
+            &io.out_dir,
+            Some(reason),
+        ))?;
+        span_manager.handle_task_skipped(task_span, reason);
+        skip_node_spans_for_fail_fast(io, &span_manager, task.as_ref(), reason)?;
+        candidates.extend(task.dbt_nodes());
+    }
+
+    // A node has one task per phase, so it can be in `candidates` several times. It can also be
+    // unselected, or already have a result: it failed in an earlier phase, or was reused. Keep
+    // each selected node without a result once.
+    let mut seen = HashSet::new();
+    let skipped: SkippedNodes = candidates
+        .iter()
+        .filter(|node| {
+            let unique_id = &node.common().unique_id;
+            ctx.inner.schedule.selected_nodes.contains(unique_id)
+                && !ctx.inner.run_stats.contains_sync(unique_id)
+                && seen.insert(unique_id.as_str())
+        })
+        .cloned()
+        .collect();
+
+    // Record those nodes as skipped: for the status reporter, in the stats that become
+    // run_results.json, and on the terminal.
+    if let Some(trigger_task) = schedule.node_weight(trigger_task) {
+        report_skipped_node_evaluations(ctx, trigger_task.as_ref(), &skipped);
+    }
+    record_skipped_stats(ctx, &skipped, &SkipReason::FailFast);
+    show_skip_summary(io, &skipped);
+    Ok(AbandonedNodes {
+        unique_ids,
+        fail_fast: true,
+    })
+}
+
+/// A task for several nodes, such as batched tests, has no span of its own: it opens one per
+/// node when it runs. When `--fail-fast` skips such a task before it starts, its nodes are
+/// skipped in run_results.json, so this gives each of them a skipped span to match.
+fn skip_node_spans_for_fail_fast(
+    io: &IoArgs,
+    span_manager: &SpanManager<FsResult<NodeStatus>, SkipReason>,
+    task: &dyn Task,
+    reason: &SkipReason,
+) -> FsResult<()> {
+    let nodes = task.dbt_nodes();
+    if !matches!(reason, SkipReason::FailFast) || nodes.len() < 2 || task.task_phase().is_none() {
+        return Ok(());
+    }
+    let phase = get_execution_phase_from_task(task);
+    for node in &nodes {
+        let node_span =
+            create_task_span_for_node(node.as_ref(), phase, span_manager, &io.in_dir, &io.out_dir)?;
+        span_manager.handle_task_skipped(node_span, reason);
+    }
     Ok(())
 }
 
@@ -775,17 +1017,8 @@ fn get_execution_phase_from_task(node: &dyn Task) -> ExecutionPhase {
     }
 }
 
-fn report_node_evaluation(
-    ctx: &mut TaskRunnerCtx,
-    node: &dyn Task,
-    node_status: Option<&NodeStatus>,
-) {
+fn report_node_evaluation(ctx: &mut TaskRunnerCtx, node: &dyn Task, node_outcome: NodeOutcome) {
     if let Some(reporter) = &ctx.inner.arg.io.status_reporter {
-        // For successful status, emit a node evaluation event
-        let node_outcome = match node_status {
-            Some(NodeStatus::Succeeded | NodeStatus::SucceededWithWarning) => NodeOutcome::Success,
-            _ => NodeOutcome::Error,
-        };
         for dbt_node in node.dbt_nodes().iter() {
             reporter.collect_node_evaluation(
                 &dbt_node.common().unique_id,
@@ -828,6 +1061,52 @@ mod tests {
     use dbt_schemas::schemas::nodes::{DbtModel, DbtTest};
     use std::future::Future;
     use std::pin::Pin;
+    use std::time::SystemTime;
+
+    fn succeeded(unique_id: &str) -> Stat {
+        Stat::new(
+            unique_id.to_string(),
+            SystemTime::now(),
+            Some(3),
+            NodeStatus::Succeeded,
+            None,
+            1,
+        )
+    }
+
+    fn abandoned(fail_fast: bool) -> AbandonedNodes {
+        AbandonedNodes {
+            unique_ids: HashSet::from(["model.p.late".to_string()]),
+            fail_fast,
+        }
+    }
+
+    /// A task still running when the visit gave up records its stat if it finishes. Under
+    /// `--fail-fast` the visit reported the node as skipped, so the stat becomes the skip.
+    #[test]
+    fn abandoned_node_finishing_late_is_skipped_under_fail_fast() {
+        let mut stats = vec![succeeded("model.p.done"), succeeded("model.p.late")];
+        abandoned(true).apply(&mut stats);
+
+        assert_eq!(stats[0].status, NodeStatus::Succeeded);
+        assert_eq!(stats[1].unique_id, "model.p.late");
+        assert_eq!(stats[1].status, NodeStatus::SkippedUpstreamFailed);
+        assert_eq!(
+            stats[1].message.as_deref(),
+            Some("Skipping due to fail_fast")
+        );
+        assert_eq!(stats[1].num_rows, None);
+    }
+
+    /// After Ctrl+C the visit reported the node as cancelled, so its late stat is dropped.
+    #[test]
+    fn abandoned_node_finishing_late_is_left_out_after_ctrl_c() {
+        let mut stats = vec![succeeded("model.p.done"), succeeded("model.p.late")];
+        abandoned(false).apply(&mut stats);
+
+        let unique_ids: Vec<&str> = stats.iter().map(|s| s.unique_id.as_str()).collect();
+        assert_eq!(unique_ids, ["model.p.done"]);
+    }
 
     struct TestTask {
         resource_type: NodeType,

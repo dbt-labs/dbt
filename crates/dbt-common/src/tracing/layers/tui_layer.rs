@@ -31,7 +31,7 @@ use crate::{
     constants::DBT_GENERIC_TESTS_DIR_NAME, tracing::event_classifiers::is_exit_with_status_log,
 };
 use crate::{
-    io_args::{FsCommand, LogFormat, ShowOptions},
+    io_args::{FsCommand, LogFormat, ShowOptions, multi_adapter_enabled},
     tracing::{
         data_provider::DataProvider,
         dbt_metrics::CompatibilityProbe,
@@ -286,6 +286,7 @@ fn node_evaluated_progress_status(
             NodeSkipReason::Cached => Some("reused"),
             NodeSkipReason::NoOp => Some("no-op"),
             NodeSkipReason::Upstream
+            | NodeSkipReason::FailFast
             | NodeSkipReason::PhaseSkipped
             | NodeSkipReason::PhaseDisabled
             | NodeSkipReason::Unspecified => Some("skipped"),
@@ -1431,7 +1432,10 @@ impl TuiLayer {
         // Determine if the current node is a skipped test
         let is_current_node_skipped_test = (node.node_type() == NodeType::Test
             || node.node_type() == NodeType::UnitTest)
-            && matches!(node.node_skip_reason(), NodeSkipReason::Upstream);
+            && matches!(
+                node.node_skip_reason(),
+                NodeSkipReason::Upstream | NodeSkipReason::FailFast
+            );
 
         // Check if we need to emit pending skipped tests summary before processing current node
         if !is_current_node_skipped_test
@@ -1588,10 +1592,12 @@ impl TuiLayer {
             duration: max_duration,
             // Every member shares the one invocation-wide denominator.
             node_count_total: members.first().and_then(|(node, _)| node.node_count_total),
-            // A group attaches to one model, so its members share an adapter.
+            // Batches are split by adapter, so members share one. Only named when nodes can
+            // run on different adapters.
             adapter: members
                 .first()
-                .and_then(|(node, _)| node.adapter.as_deref()),
+                .and_then(|(node, _)| node.adapter.as_deref())
+                .filter(|_| multi_adapter_enabled()),
             colorize: self.colorize,
         };
 

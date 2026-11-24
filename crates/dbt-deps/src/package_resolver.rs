@@ -16,9 +16,8 @@ use crate::git_client::download_git_like_package;
 use crate::package_listing::UnpinnedPackage;
 use crate::steps::load_dbt_packages;
 use crate::types::{
-    GitPinnedPackage, GitUnpinnedPackage, HubUnpinnedPackage, LocalPinnedPackage,
-    LocalUnpinnedPackage, PrivatePinnedPackage, PrivateUnpinnedPackage, TarballPinnedPackage,
-    TarballUnpinnedPackage,
+    GitPinnedPackage, GitUnpinnedPackage, HubUnpinnedPackage, LocalUnpinnedPackage,
+    PrivatePinnedPackage, PrivateUnpinnedPackage, TarballPinnedPackage, TarballUnpinnedPackage,
 };
 use crate::utils::{ensure_dir, make_tempdir, read_and_validate_dbt_project};
 
@@ -115,23 +114,21 @@ impl PackageResolver for GitUnpinnedPackage {
 
 impl PackageResolver for LocalUnpinnedPackage {
     async fn resolve_inner(&mut self, ctx: &DepsOperationContext<'_>) -> FsResult<ResolvedPackage> {
-        let pinned: LocalPinnedPackage = self.clone().try_into()?;
         let mut transitive_deps = Vec::new();
         if let Some(dbt_packages) = load_dbt_packages(&self.local).await?.0 {
             ctx.notices.collect(&dbt_packages);
             transitive_deps = dbt_packages.packages;
         }
         Ok(ResolvedPackage {
-            project_name: pinned.name.clone(),
+            project_name: self.name.clone(),
             pinned_version: None,
             transitive_deps,
         })
     }
 
     async fn to_lock_entry(&self, ctx: &DepsOperationContext<'_>) -> FsResult<DbtPackageLock> {
-        let pinned_package: LocalPinnedPackage = self.clone().try_into()?;
         Ok(DbtPackageLock::Local(LocalPackageLock {
-            name: pinned_package.name,
+            name: self.name.clone(),
             local: stdfs::diff_paths(&self.local, &ctx.io.in_dir)?,
         }))
     }

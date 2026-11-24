@@ -1,3 +1,5 @@
+pub(crate) mod properties;
+
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, ResolvedNode};
@@ -11,6 +13,11 @@ use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
+use crate::resolve::properties_extensions::{
+    self, ExtensionReader, Extensions, NoExtensions, ReadExtensions,
+};
+use crate::resolve::properties_index::{IndexCtx, IndexedName};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::RawProjectConfigsByAdapter;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
 use crate::resolve::resolve_utils::extract_config_map;
@@ -20,6 +27,7 @@ use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
 use crate::utils::{node_starting_database_and_schema, update_node_relation_components};
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 
 use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
@@ -89,10 +97,11 @@ use dbt_yaml::Spanned;
 use minijinja::constants::CURRENT_PATH;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
@@ -158,6 +167,69 @@ fn parse_source_from_constraint(to: &str) -> Option<(String, String)> {
     Some((src.to_string(), tbl.to_string()))
 }
 
+/// How a package's models resolve. `E` names the extensions read beside a model's properties.
+pub(crate) struct Models<E = NoExtensions>(PhantomData<E>);
+
+impl<E> Default for Models<E> {
+    fn default() -> Self {
+        Models(PhantomData)
+    }
+}
+
+#[async_trait]
+impl<E: Extensions> ResolvableNode for Models<E> {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["models"]
+    }
+
+    /// A model defines one name for each of its versions.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        ctx: &IndexCtx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        properties::index_model(key, item, ctx)
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        let extensions = ExtensionReader::of::<E::Model>(ctx);
+        // Resolve SQLs and get nodes except refs and sources
+        let (models, disabled_models, extensions) = resolve_models(
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &ctx.model_properties,
+            // TODO: pass in typed_models_properties
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            &mut ctx.node_resolver,
+            ctx.token,
+            ctx.jinja_type_checking_event_listener_factory.clone(),
+            &extensions,
+        )
+        .await?;
+        ctx.nodes.models.extend(models);
+        ctx.disabled_nodes.models.extend(disabled_models);
+        properties_extensions::give_back(ctx, extensions, |ctx, unique_id| {
+            ctx.nodes.models.get(unique_id).cloned()
+        })
+    }
+}
+
 #[allow(
     clippy::cognitive_complexity,
     clippy::expect_fun_call,
@@ -174,7 +246,7 @@ pub async fn resolve_models(
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    models_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties: &BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     parse_adapter_scopes: &Arc<AdapterScopes>,
@@ -190,9 +262,11 @@ pub async fn resolve_models(
     node_resolver: &mut NodeResolver,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    extensions: &ExtensionReader,
 ) -> FsResult<(
     HashMap<String, Arc<DbtModel>>,
     HashMap<String, Arc<DbtModel>>,
+    Vec<(String, ReadExtensions)>,
 )> {
     let mut models: HashMap<String, Arc<DbtModel>> = HashMap::new();
     let mut models_with_execute: HashMap<String, DbtModel> = HashMap::new();
@@ -261,8 +335,7 @@ pub async fn resolve_models(
     // This is a hack because we treat models and models.metrics differently in an attempt
     // for only-once parsing of model yaml properties in resolver.rs, which duplicates the knowledge
     // that you must treat them separately, such as the removal of semantic properties here.
-    let mut models_properties_sans_semantics: BTreeMap<String, MinimalPropertiesEntry> =
-        BTreeMap::new();
+    let mut models_properties_sans_semantics: BTreeMap<String, PropertiesEntry> = BTreeMap::new();
     models_properties.iter().for_each(|(model_key, v)| {
         let mut v = v.clone();
         if let Some(m) = v.schema_value.as_mapping_mut() {
@@ -305,6 +378,20 @@ pub async fn resolve_models(
         NodeType::Model,
         dependency_package_name,
     );
+
+    // The extensions of each entry that has some, by the name the entry is found under, which is
+    // the name of its model's file. They are read before the entry is typed as a model's.
+    let mut extensions_by_name: Vec<(String, ReadExtensions)> = Vec::new();
+    for (name, mpe) in models_properties_sans_semantics.iter_mut() {
+        if let Some(read) = extensions.read(
+            &mut mpe.schema_value,
+            &env,
+            base_ctx,
+            dependency_package_name,
+        )? {
+            extensions_by_name.push((name.clone(), read));
+        }
+    }
 
     // Split SQL and Python models for different processing paths
     let (sql_files, python_files): (Vec<_>, Vec<_>) =
@@ -461,7 +548,24 @@ pub async fn resolve_models(
             .into_iter()
             .map(|(v, _)| (v.__common_attr__.unique_id.to_string(), Arc::new(v))),
     );
-    Ok((models, disabled_models))
+    // Extensions are their model's: the enabled model whose file has the entry's name.
+    let unique_ids: HashMap<&str, &String> = models
+        .iter()
+        .filter_map(|(unique_id, model)| {
+            Some((
+                node_name_from_path(model.__common_attr__.path.as_path())?,
+                unique_id,
+            ))
+        })
+        .collect();
+    let extensions = extensions_by_name
+        .into_iter()
+        .filter_map(|(name, read)| {
+            let unique_id = unique_ids.get(name.as_str())?;
+            Some(((*unique_id).clone(), read))
+        })
+        .collect();
+    Ok((models, disabled_models, extensions))
 }
 
 /// Builds a `DbtModel` node for each rendered model file, routing it into `models`,
@@ -491,7 +595,7 @@ async fn build_model_nodes(
     package: &DbtPackage,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     root_package: &DbtPackage,
-    models_properties_sans_semantics: &BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties_sans_semantics: &BTreeMap<String, PropertiesEntry>,
     raw_project_configs_by_adapter: &mut RawProjectConfigsByAdapter<'_>,
     raw_schema_yml_configs: &BTreeMap<String, BTreeMap<String, dbt_yaml::Value>>,
     raw_test_configs: &BTreeMap<String, TestUnrenderedConfigs>,
@@ -1579,7 +1683,7 @@ fn process_python_models(
     dbt_project: &DbtProject,
     config_resolver: &ProjectConfigResolver<ModelConfig>,
     python_files: Vec<dbt_schemas::state::DbtAsset>,
-    models_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties: &mut BTreeMap<String, PropertiesEntry>,
     adapter_type: AdapterType,
 ) -> FsResult<Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>> {
     let mut results = Vec::new();
@@ -1703,7 +1807,7 @@ fn process_python_models(
 fn extract_model_properties(
     env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
-    models_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    models_properties: &mut BTreeMap<String, PropertiesEntry>,
     ref_name: &str,
 ) -> FsResult<(Option<ModelProperties>, Option<PathBuf>)> {
     if let Some(mpe) = models_properties.get_mut(ref_name)

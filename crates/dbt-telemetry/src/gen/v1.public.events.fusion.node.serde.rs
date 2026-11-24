@@ -3092,6 +3092,7 @@ impl serde::Serialize for NodeSkipReason {
             Self::PhaseDisabled => "NODE_SKIP_REASON_PHASE_DISABLED",
             Self::NoOp => "NODE_SKIP_REASON_NO_OP",
             Self::PhaseSkipped => "NODE_SKIP_REASON_PHASE_SKIPPED",
+            Self::FailFast => "NODE_SKIP_REASON_FAIL_FAST",
         };
         serializer.serialize_str(variant)
     }
@@ -3109,6 +3110,7 @@ impl<'de> serde::Deserialize<'de> for NodeSkipReason {
             "NODE_SKIP_REASON_PHASE_DISABLED",
             "NODE_SKIP_REASON_NO_OP",
             "NODE_SKIP_REASON_PHASE_SKIPPED",
+            "NODE_SKIP_REASON_FAIL_FAST",
         ];
 
         struct GeneratedVisitor;
@@ -3155,6 +3157,7 @@ impl<'de> serde::Deserialize<'de> for NodeSkipReason {
                     "NODE_SKIP_REASON_PHASE_DISABLED" => Ok(NodeSkipReason::PhaseDisabled),
                     "NODE_SKIP_REASON_NO_OP" => Ok(NodeSkipReason::NoOp),
                     "NODE_SKIP_REASON_PHASE_SKIPPED" => Ok(NodeSkipReason::PhaseSkipped),
+                    "NODE_SKIP_REASON_FAIL_FAST" => Ok(NodeSkipReason::FailFast),
                     _ => Err(serde::de::Error::unknown_variant(value, FIELDS)),
                 }
             }

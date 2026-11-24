@@ -300,6 +300,12 @@ fn find_bundled_drivers_cache_dir() -> Option<PathBuf> {
 static BUNDLED_DRIVERS_CACHE_DIR: LazyLock<Option<PathBuf>> =
     LazyLock::new(find_bundled_drivers_cache_dir);
 
+/// The read-only cache directory next to the executable, e.g. `<prefix>/drivers/` for
+/// `<prefix>/bin/dbt`, if there is one. It is laid out as the OS cache directory is.
+pub fn bundled_cache_dir() -> Option<&'static Path> {
+    BUNDLED_DRIVERS_CACHE_DIR.as_deref()
+}
+
 /// Climb up the directory tree and returns the first lib/dbt/ directory found.
 ///
 /// This is the `~/.local/lib/dbt/` layout adopted by the installer that bundles
