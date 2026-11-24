@@ -8,7 +8,8 @@ use std::rc::Rc;
 use minijinja::listener::RenderingEventListener;
 use minijinja::machinery::Span;
 use minijinja::{CodeLocation, JinjaLayoutEventKind, OutputTrackerLocation};
-use serde::Serialize;
+use serde::ser::SerializeMap;
+use serde::{Serialize, Serializer};
 
 /// An event observed during execution, in execution order.
 #[derive(Debug, Clone, Serialize)]
@@ -26,7 +27,7 @@ pub struct RenderTraceEvent {
 }
 
 /// Exact input, output and ordered observations from a successful render.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone)]
 pub struct RenderTrace {
     /// Input to Jinja, without newline normalization or source rewriting here.
     pub source: String,
@@ -34,6 +35,49 @@ pub struct RenderTrace {
     pub rendered: String,
     /// Execution events; source ranges may repeat or move backwards in loops.
     pub events: Vec<RenderTraceEvent>,
+}
+
+impl Serialize for RenderTrace {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let kinds = self
+            .events
+            .iter()
+            .map(|event| &event.kind)
+            .collect::<Vec<_>>();
+        let source_starts = self
+            .events
+            .iter()
+            .map(|event| event.source_start)
+            .collect::<Vec<_>>();
+        let source_ends = self
+            .events
+            .iter()
+            .map(|event| event.source_end)
+            .collect::<Vec<_>>();
+        let rendered_starts = self
+            .events
+            .iter()
+            .map(|event| event.rendered_start)
+            .collect::<Vec<_>>();
+        let rendered_ends = self
+            .events
+            .iter()
+            .map(|event| event.rendered_end)
+            .collect::<Vec<_>>();
+
+        let mut map = serializer.serialize_map(Some(7))?;
+        map.serialize_entry("source", &self.source)?;
+        map.serialize_entry("rendered", &self.rendered)?;
+        map.serialize_entry("kind", &kinds)?;
+        map.serialize_entry("source_start", &source_starts)?;
+        map.serialize_entry("source_end", &source_ends)?;
+        map.serialize_entry("rendered_start", &rendered_starts)?;
+        map.serialize_entry("rendered_end", &rendered_ends)?;
+        map.end()
+    }
 }
 
 #[derive(Debug)]
@@ -361,6 +405,33 @@ mod tests {
         assert_output_coverage(trace);
     }
 
+    #[test]
+    fn serializes_events_as_aligned_top_level_columns() {
+        let trace = render("select {{ 1 + 1 }}", true);
+        let value = serde_json::to_value(&trace).unwrap();
+        let object = value.as_object().unwrap();
+
+        let event_count = trace.events.len();
+        for column in [
+            "kind",
+            "source_start",
+            "source_end",
+            "rendered_start",
+            "rendered_end",
+        ] {
+            assert_eq!(object[column].as_array().unwrap().len(), event_count);
+        }
+        assert_eq!(object["kind"][0], trace.events[0].kind);
+        assert_eq!(object["source_start"][0], trace.events[0].source_start);
+
+        let mut columns = object.clone();
+        columns.remove("source");
+        columns.remove("rendered");
+        let row_json = serde_json::to_vec(&trace.events.iter().collect::<Vec<_>>()).unwrap();
+        let column_json = serde_json::to_vec(&columns).unwrap();
+        assert!(column_json.len() < row_json.len());
+    }
+
     fn assert_output_coverage(trace: &RenderTrace) {
         let mut covered = vec![false; trace.rendered.len()];
         for event in &trace.events {
@@ -378,6 +449,19 @@ mod tests {
         assert_eq!(observer.position(), position);
         assert!(observer.buffers.borrow().is_empty());
         assert!(observer.templates.borrow().is_empty());
+    }
+
+    #[test]
+    fn first_iteration_break_preserves_else_rendering() {
+        let source = "{% for n in [1,2] %}select {{ n }};{% break %}{% else %}select 0{% endfor %}";
+        let trace = render(source, true);
+        assert_eq!(trace.rendered, "select 1;select 0");
+        assert!(
+            !trace
+                .events
+                .iter()
+                .any(|event| event.kind == "loop_skipped")
+        );
     }
 
     #[test]
@@ -728,7 +812,7 @@ mod tests {
                     if control == "continue" {
                         "select 1;select 2;select 9"
                     } else {
-                        "select 1;select 9"
+                        "select 1;unusedselect 9"
                     }
                 );
                 assert_balanced_layout(&trace);

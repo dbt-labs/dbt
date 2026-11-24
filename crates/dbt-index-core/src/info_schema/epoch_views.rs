@@ -63,6 +63,13 @@ pub struct Generated {
 /// the output tables that read it, so a project that has only ever parsed gets a
 /// file covering the parse tables and nothing about runs.
 pub fn generate(metadata_dir: &Path) -> Result<Generated, IndexError> {
+    generate_with_render_traces(metadata_dir, dbt_flags::WRITE_RENDER_TRACE.enabled())
+}
+
+pub(super) fn generate_with_render_traces(
+    metadata_dir: &Path,
+    include_render_traces: bool,
+) -> Result<Generated, IndexError> {
     let metadata_dir = &std::path::absolute(metadata_dir)
         .map_err(|e| IndexError::Other(format!("epoch views: {}: {e}", metadata_dir.display())))?;
     let mut sql = String::new();
@@ -85,7 +92,9 @@ pub fn generate(metadata_dir: &Path) -> Result<Generated, IndexError> {
     // Epoch relations first: the public views select from them by name.
     let mut present: Vec<&'static str> = Vec::new();
     for rel in EPOCH_RELATIONS {
-        if !rel.has_files(metadata_dir) {
+        if (rel.view == "epoch_render_traces" && !include_render_traces)
+            || !rel.has_files(metadata_dir)
+        {
             continue;
         }
         let stmt = rel.create_view_sql(metadata_dir);
@@ -282,6 +291,20 @@ fn duckdb_type(ty: &DataType) -> Result<String, IndexError> {
         DataType::Float64 => "DOUBLE".into(),
         DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => "TIMESTAMP WITH TIME ZONE".into(),
         DataType::Timestamp(TimeUnit::Microsecond, None) => "TIMESTAMP".into(),
+        DataType::Struct(fields) => format!(
+            "STRUCT({})",
+            fields
+                .iter()
+                .map(|field| {
+                    Ok(format!(
+                        "\"{}\" {}",
+                        field.name().replace('"', "\"\""),
+                        duckdb_type(field.data_type())?
+                    ))
+                })
+                .collect::<Result<Vec<_>, IndexError>>()?
+                .join(", ")
+        ),
         DataType::List(f) | DataType::LargeList(f) => format!("{}[]", duckdb_type(f.data_type())?),
         other => {
             return Err(IndexError::Other(format!(

@@ -30,6 +30,8 @@ arrow-schema = { workspace = true }
 arrow-select = { workspace = true }
 chrono = { workspace = true }
 dbt-adbc = { workspace = true }
+dbt-flags = { workspace = true }
+dbt-metadata-parquet = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 parquet = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

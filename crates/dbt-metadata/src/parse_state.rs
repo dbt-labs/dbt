@@ -1277,13 +1277,35 @@ pub fn save(args: &SaveArgs<'_>) -> Result<(), String> {
         args.ingested_at,
     );
     let alive_path = dir.join("alive.parquet");
-    if let Err(e) = dbt_metadata_parquet::parse_alive::write_alive(&alive_path, &alive_rows) {
-        eprintln!("[warning] Failed to write alive.parquet: {e}");
+    // Delta saves may contain only a selector's dependency closure. Preserve
+    // other live nodes, and remove prior rows only for ids this delta replaces.
+    let alive_rows = if let Some(changed) = args.changed_nodes {
+        dbt_metadata_parquet::parse_alive::read_alive_snapshot(&alive_path)
+            .map_err(|error| error.to_string())?
+            .map(|prior| {
+                let mut by_id: BTreeMap<_, _> = prior
+                    .into_iter()
+                    .filter(|row| !changed.contains(&row.unique_id))
+                    .map(|row| (row.unique_id.clone(), row))
+                    .collect();
+                by_id.extend(
+                    alive_rows
+                        .into_iter()
+                        .map(|row| (row.unique_id.clone(), row)),
+                );
+                by_id.into_values().collect::<Vec<_>>()
+            })
+    } else {
+        Some(alive_rows)
+    };
+    if let Some(alive_rows) = alive_rows {
+        dbt_metadata_parquet::parse_alive::write_alive(&alive_path, &alive_rows)
+            .map_err(|error| error.to_string())?;
+        t(
+            &format!("write alive.parquet ({} rows)", alive_rows.len()),
+            ta,
+        );
     }
-    t(
-        &format!("write alive.parquet ({} rows)", alive_rows.len()),
-        ta,
-    );
 
     // ── parse/columns ─────────────────────────────────────────────────────────
     let tc = Instant::now();
@@ -1819,6 +1841,67 @@ mod tests {
             payload: payload.to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn delta_save_preserves_unloaded_live_nodes() {
+        use dbt_metadata_parquet::parse_alive::read_alive_ids;
+        use dbt_schemas::schemas::nodes::DbtModel;
+
+        let tmp = TempDir::new().unwrap();
+        let make_nodes = |names: &[&str]| {
+            let mut nodes = Nodes::default();
+            for name in names {
+                let mut model = DbtModel::default();
+                model.__common_attr__.unique_id = format!("model.pkg.{name}");
+                nodes
+                    .models
+                    .insert(model.__common_attr__.unique_id.clone(), Arc::new(model));
+            }
+            nodes
+        };
+        let initial = make_nodes(&["retained", "updated", "deleted"]);
+        save(&SaveArgs {
+            nodes: &initial,
+            ..SaveArgs::test_default(tmp.path())
+        })
+        .unwrap();
+
+        let delta = make_nodes(&["updated", "added"]);
+        let changed = HashSet::from([
+            "model.pkg.updated".to_string(),
+            "model.pkg.deleted".to_string(),
+            "model.pkg.added".to_string(),
+        ]);
+        save(&SaveArgs {
+            nodes: &delta,
+            changed_nodes: Some(&changed),
+            ingested_at: 2,
+            ..SaveArgs::test_default(tmp.path())
+        })
+        .unwrap();
+        assert_eq!(
+            read_alive_ids(&cache_dir(tmp.path()).join("alive.parquet"))
+                .unwrap()
+                .unwrap(),
+            HashSet::from([
+                "model.pkg.retained".to_string(),
+                "model.pkg.updated".to_string(),
+                "model.pkg.added".to_string(),
+            ])
+        );
+
+        save(&SaveArgs {
+            nodes: &delta,
+            ..SaveArgs::test_default(tmp.path())
+        })
+        .unwrap();
+        assert_eq!(
+            read_alive_ids(&cache_dir(tmp.path()).join("alive.parquet"))
+                .unwrap()
+                .unwrap(),
+            delta.models.keys().cloned().collect()
+        );
     }
 
     #[test]

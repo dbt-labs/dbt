@@ -3,6 +3,7 @@
 import json
 from collections import Counter
 
+import duckdb
 import pytest
 
 
@@ -173,10 +174,10 @@ import pytest
         pytest.param(
             (
                 "{% for n in [1, 2] %}select {{ n }};{% break %}{% else %}select 0{% endfor %}",
-                "select 1;",
-                {"block_end": 1, "loop_skipped": 0},
+                "select 1;select 0",
+                {"loop_skipped": 0},
             ),
-            id="first-item-break-does-not-run-else",
+            id="first-item-break-preserves-else",
         ),
         pytest.param(
             (
@@ -273,7 +274,7 @@ def test_review_regression_artifact(case, tmp_project, invoke):
     model.write_text(source, encoding="utf-8", newline="")
     normal = invoke(project, "compile", "--select", "probe", "--target-path", "normal")
     assert normal.success, normal.exception
-    assert not list((project / "normal").rglob("*.render_trace.json"))
+    assert not list(project.glob("normal/private/metadata/compile/render_traces/*.parquet"))
     traced = invoke(
         project,
         "compile",
@@ -283,15 +284,24 @@ def test_review_regression_artifact(case, tmp_project, invoke):
         "traced",
         "--feature",
         "write_render_trace",
+        "--generate-info-schema",
     )
     assert traced.success, traced.exception
     relative = "compiled/render_trace/models/probe"
     assert (project / "normal" / f"{relative}.sql").read_bytes() == (
         project / "traced" / f"{relative}.sql"
     ).read_bytes()
-    trace = json.loads((project / "traced" / f"{relative}.render_trace.json").read_bytes())
+    epochs = project / "traced/info_schema/v1/dbt.render_traces.parquet"
+    with duckdb.connect() as connection:
+        row = connection.execute(
+            "select to_json(t) from read_parquet(?) t "
+            "where unique_id = 'model.render_trace.probe' order by ingested_at desc limit 1",
+            [str(epochs)],
+        ).fetchone()
+    assert row is not None
+    trace = json.loads(row[0])
     manifest = json.loads((project / "traced/manifest.json").read_bytes())
-    assert trace["protocol_version"] == 1
+    assert trace["protocol_version"] == 2
     assert trace["render_stage"] == "jinja_before_ephemeral_injection"
     assert trace["unique_id"] == "model.render_trace.probe"
     assert trace["invocation_id"] == manifest["metadata"]["invocation_id"]
@@ -305,11 +315,12 @@ def assert_provenance(trace):
     """Check UTF-8 ranges, exact literals, balanced source scopes and output coverage."""
     source = trace["source"].encode("utf-8")
     rendered = trace["rendered"].encode("utf-8")
-    for event in trace["events"]:
+    event_rows = events(trace)
+    for event in event_rows:
         assert_event_ranges(event, source, rendered)
-    assert_layout(trace["events"], source)
+    assert_layout(event_rows, source)
     covered = bytearray(len(rendered))
-    for event in trace["events"]:
+    for event in event_rows:
         if event["kind"] in {"literal", "templated", "macro"}:
             start, end = event["rendered_start"], event["rendered_end"]
             covered[start:end] = b"\x01" * (end - start)
@@ -349,13 +360,19 @@ def assert_layout(events, source):
 
 def assert_expected_events(trace, checks):
     """Pin the event multiplicities and writable literals involved in each bug."""
-    counts = Counter(event["kind"] for event in trace["events"])
+    event_rows = events(trace)
+    counts = Counter(event["kind"] for event in event_rows)
     source = trace["source"].encode("utf-8")
     literals = b"".join(
         source[event["source_start"] : event["source_end"]]
-        for event in trace["events"]
+        for event in event_rows
         if event["kind"] == "literal"
     ).decode("utf-8")
     expected = {kind: count for kind, count in checks.items() if kind != "literals"}
     assert {kind: counts[kind] for kind in expected} == expected
     assert literals == checks.get("literals", literals)
+
+
+def events(trace):
+    """Return execution-order rows from the nested Parquet list."""
+    return trace["events"]

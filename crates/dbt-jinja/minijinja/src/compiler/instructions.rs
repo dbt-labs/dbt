@@ -275,6 +275,7 @@ pub enum Instruction<'source> {
     JinjaLayoutEvent(JinjaLayoutEventKind, Span),
     JinjaLayoutEventIfLoopDidNotIterate(JinjaLayoutEventKind, Span),
     JinjaLayoutLoopIterationStart(Span),
+    JinjaLayoutLoopElseStart(Span, Span),
     JinjaLayoutLoopRecursionStart(Span),
     JinjaLayoutLoopRecursionSkippedEnd(Span),
 

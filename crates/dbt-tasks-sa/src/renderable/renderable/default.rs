@@ -8,7 +8,7 @@ use dbt_common::constants::RENDERING;
 use dbt_common::serde_utils::convert_yml_to_scc_map;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::emit::emit_debug_event;
-use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, fs_err, stdfs};
+use dbt_common::{FsResult, MacroSpansOnly, stdfs};
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::render_trace::RenderTrace;
 use dbt_jinja_utils::utils::{
@@ -19,13 +19,11 @@ use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, NodePathKind};
-use dbt_tasks_core::context::TaskRunnerCtx;
+use dbt_tasks_core::context::{ModelRenderTrace, TaskRunnerCtx};
+use dbt_tasks_core::task::TaskResult;
 use dbt_tasks_core::task::run_blocking_task_operation_with_wait_parents;
 use dbt_telemetry::{CompiledCode, NodeType};
 use minijinja::Value as MinijinjaValue;
-use serde::Serialize;
-
-use dbt_tasks_core::task::TaskResult;
 
 use super::common::handle_render_result;
 use super::unit_test;
@@ -82,6 +80,12 @@ fn render_default(
 
     // Python models skip Jinja rendering and use raw Python code + py_script_postfix
     if node.common().language.as_deref() == Some("python") {
+        if dbt_flags::WRITE_RENDER_TRACE.enabled() {
+            ctx.inner
+                .render_trace_attempts
+                .lock()
+                .insert(node.unique_id());
+        }
         return render_python_model(node, ctx, &raw_sql, &base_context);
     }
 
@@ -109,6 +113,7 @@ fn render_default(
         &compile_context,
         &ModelRenderInput {
             source: &raw_sql,
+            capture_trace: local_exec_unit_test_overrides.is_none(),
             filename: &render_file_path,
             source_path: &absolute_path,
         },
@@ -190,6 +195,7 @@ fn cached_render(
 /// The exact Jinja input and its display and on-disk source identities.
 struct ModelRenderInput<'a> {
     source: &'a str,
+    capture_trace: bool,
     filename: &'a Path,
     source_path: &'a Path,
 }
@@ -200,7 +206,12 @@ fn render_model_sql(
     compile_context: &BTreeMap<String, MinijinjaValue>,
     input: &ModelRenderInput<'_>,
 ) -> FsResult<String> {
-    if dbt_flags::WRITE_RENDER_TRACE.enabled() {
+    // Unit-test overrides are not the model's canonical render context.
+    if input.capture_trace && dbt_flags::WRITE_RENDER_TRACE.enabled() {
+        ctx.inner
+            .render_trace_attempts
+            .lock()
+            .insert(node.unique_id());
         let trace = render_sql_with_trace(
             input.source,
             &ctx.env,
@@ -209,8 +220,7 @@ fn render_model_sql(
             input.filename,
         )
         .map_err(|error| error.with_location(input.filename.to_path_buf()))?;
-        write_model_render_trace(node, ctx, input, &trace)?;
-        Ok(trace.rendered)
+        Ok(write_model_render_trace(node, ctx, input, trace))
     } else {
         Ok(render_sql(
             input.source,
@@ -223,52 +233,25 @@ fn render_model_sql(
     }
 }
 
-#[derive(Serialize)]
-struct ModelRenderTrace<'a> {
-    protocol_version: u32,
-    dbt_version: &'static str,
-    invocation_id: String,
-    unique_id: String,
-    filename: &'a Path,
-    source_path: &'a Path,
-    render_stage: &'static str,
-    #[serde(flatten)]
-    trace: &'a RenderTrace,
-}
-
 fn write_model_render_trace(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &TaskRunnerCtx,
     input: &ModelRenderInput<'_>,
-    trace: &RenderTrace,
-) -> FsResult<()> {
-    let io = &ctx.inner.arg.io;
-    let path = ctx
-        .inner
-        .compiled_sql_cache
-        .get_compiled_sql_path(io, node.common())
-        .with_extension("render_trace.json");
+    trace: RenderTrace,
+) -> String {
+    let rendered = trace.rendered.clone();
     let artifact = ModelRenderTrace {
-        protocol_version: 1,
+        protocol_version: 2,
         dbt_version: env!("CARGO_PKG_VERSION"),
-        invocation_id: io.invocation_id.to_string(),
+        invocation_id: ctx.inner.arg.io.invocation_id.to_string(),
         unique_id: node.unique_id(),
-        filename: input.filename,
-        source_path: input.source_path,
+        filename: input.filename.to_path_buf(),
+        source_path: input.source_path.to_path_buf(),
         render_stage: "jinja_before_ephemeral_injection",
         trace,
     };
-    let bytes = serde_json::to_vec_pretty(&artifact).map_err(|error| {
-        fs_err!(
-            ErrorCode::SerializationError,
-            "Failed to serialize render trace for '{}': {error}",
-            node.unique_id()
-        )
-    })?;
-    if let Some(parent) = path.parent() {
-        stdfs::create_dir_all(parent)?;
-    }
-    stdfs::write(path, bytes)
+    ctx.inner.render_traces.lock().push(artifact);
+    rendered
 }
 
 fn report_rendering_progress(node: &Arc<dyn InternalDbtNodeAttributes>, ctx: &TaskRunnerCtx) {
@@ -390,29 +373,6 @@ mod tests {
             filename,
         )
         .unwrap();
-        // Fixed producer metadata keeps the example independent of releases,
-        // machines and invocation IDs. The artifact uses the production type.
-        let artifact = ModelRenderTrace {
-            protocol_version: 1,
-            dbt_version: "0.0.0-example",
-            invocation_id: "00000000-0000-4000-8000-000000000001".to_owned(),
-            unique_id: "model.example.trace".to_owned(),
-            filename,
-            source_path: filename,
-            render_stage: "jinja_before_ephemeral_injection",
-            trace: &trace,
-        };
-        let expected: serde_json::Value = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/render_trace/example.render_trace.json"
-        )))
-        .unwrap();
-        assert_eq!(
-            serde_json::to_value(&artifact).unwrap(),
-            expected,
-            "Rendered trace fixture:\n{}",
-            serde_json::to_string_pretty(&artifact).unwrap()
-        );
         assert!(trace.rendered.contains("select 2 as n union all"));
         assert!(trace.rendered.contains("select 4 as n"));
         assert!(!trace.rendered.contains("skipped"));

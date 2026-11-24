@@ -154,6 +154,8 @@ pub enum Supersede {
     /// Keep every row. The append-only `run/*` sources, where each invocation
     /// adds history that stays queryable.
     KeepAll,
+    /// Latest ingestion timestamp per key, retaining the original `filename` column.
+    LatestTimestamp(&'static str),
     /// One row per key, from the highest epoch that has it. Mirrors the ingest,
     /// which walks epochs newest-first and keeps the first `unique_id` it sees
     /// (`write_parse_nodes`).
@@ -195,6 +197,13 @@ pub struct EpochRelation {
 /// declares them. One entry per reader in `cold_ingest`, so a source the ingest
 /// consumes and the view layer does not is visible as an absence here.
 pub const EPOCH_RELATIONS: &[EpochRelation] = &[
+    EpochRelation {
+        view: "epoch_render_traces",
+        dir: "compile/render_traces",
+        single_file: false,
+        supersede: Supersede::LatestTimestamp("unique_id"),
+        backfill: &[],
+    },
     EpochRelation {
         view: "epoch_parse_nodes",
         dir: PARSE_NODES_SUBDIR,
@@ -321,6 +330,12 @@ impl EpochRelation {
                 .display()
                 .to_string()
         };
+        if matches!(self.supersede, Supersede::LatestTimestamp(_)) {
+            return format!(
+                "read_parquet('{}', union_by_name = true, filename = '_epoch_filename', file_row_number = true)",
+                pattern.replace('\'', "''")
+            );
+        }
         let read = format!(
             "read_parquet('{}', union_by_name = true, filename = true)",
             pattern.replace('\'', "''")
@@ -358,13 +373,22 @@ impl EpochRelation {
     /// Includes the
     /// latest-wins wrapper when the relation supersedes by key.
     ///
-    /// Precedence is by epoch number parsed out of the file name, not by
-    /// `ingested_at`: the epoch number is what the ingest orders on
+    /// `LatestTimestamp` orders by ingestion time, then epoch and row number.
+    /// For the other modes, precedence is by epoch number parsed out of the file
+    /// name: the epoch number is what the ingest orders on
     /// (`write_parse_nodes` walks epochs newest-first), and two rows written in
     /// the same second would otherwise tie.
     pub fn create_view_sql(&self, metadata_dir: &Path) -> String {
         let read = self.read_parquet(metadata_dir);
         match self.supersede {
+            Supersede::LatestTimestamp(key) => format!(
+                "CREATE OR REPLACE VIEW dbt_internal.{} AS \
+                 SELECT * EXCLUDE (_epoch_filename, file_row_number) FROM {read} \
+                 QUALIFY row_number() OVER (PARTITION BY {key} ORDER BY ingested_at DESC, \
+                 CAST(regexp_extract(_epoch_filename, '_([0-9]+)\\.parquet$', 1) AS BIGINT) DESC, \
+                 file_row_number DESC) = 1",
+                self.view
+            ),
             Supersede::KeepAll => format!(
                 "CREATE OR REPLACE VIEW dbt_internal.{} AS\n\
                  SELECT * EXCLUDE (filename) FROM {read}",
@@ -592,6 +616,13 @@ pub fn origin(staging_table: &str) -> Option<Origin> {
         "semantic_dimensions" => semantic_sub!("dimensions"),
         // ── other epoch sources ──────────────────────────────────────────
         "node_columns" => Custom,
+        "render_traces" => Relation {
+            view: "epoch_render_traces",
+            keep: None,
+            alive_on: Some("unique_id"),
+            join: None,
+            unnest: None,
+        },
         // Alive-pruned on the *target* node, as `write_compile_cll` does.
         "column_lineage" => Relation {
             view: "epoch_compile_cll",
@@ -1487,6 +1518,12 @@ const METRICS: &[(&str, EpochExpr)] = &[
 /// cover it yet. An uncovered column means the view layer cannot publish that
 /// output table; see [`super::epoch_views::unmappable_tables`].
 pub fn epoch_expr(staging_table: &str, staging_column: &str) -> Option<EpochExpr> {
+    if staging_table == "render_traces" {
+        return dbt_metadata_parquet::render_traces::fields()
+            .iter()
+            .any(|field| field.name() == staging_column)
+            .then_some(EpochExpr::Same);
+    }
     let table = match staging_table {
         "run_results" => RUN_RESULTS,
         "invocations" => INVOCATIONS,

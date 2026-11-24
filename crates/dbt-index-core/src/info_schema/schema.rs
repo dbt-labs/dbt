@@ -72,6 +72,25 @@ macro_rules! node_cols {
 
 /// Every table in the information schema.
 pub const INFO_SCHEMA: &[TableSpec] = &[
+    TableSpec {
+        ns: Ns::Dbt,
+        name: "render_traces",
+        src: Src::Table("render_traces"),
+        filter: Filter::All,
+        cols: &[
+            c("protocol_version"),
+            c("ingested_at"),
+            c("dbt_version"),
+            c("invocation_id"),
+            c("unique_id"),
+            c("filename"),
+            c("source_path"),
+            c("render_stage"),
+            c("source"),
+            c("rendered"),
+            c("events"),
+        ],
+    },
     // ── project metadata ────────────────────────────────────────────────
     TableSpec {
         ns: Ns::Dbt,

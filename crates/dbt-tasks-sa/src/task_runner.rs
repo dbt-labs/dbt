@@ -44,6 +44,7 @@ use tracing::Instrument;
 use tracing::instrument;
 
 use crate::register_seeds;
+use crate::render_trace_parquet::write_collected_render_traces;
 use crate::run_operation::run_operation_on_run_with_ctx;
 use crate::task::effective_unit_test_execute;
 use crate::utils::filter_missing_schemas;
@@ -628,6 +629,10 @@ impl TaskRunner {
         self.hooks
             .did_collect_all_run_task_results(&run_task_args, &mut ctx, &token)
             .await;
+
+        if let Err(error) = write_collected_render_traces(&ctx) {
+            dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error(*error);
+        }
 
         Ok(RunTaskResults {
             stats,

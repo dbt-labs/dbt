@@ -22,7 +22,7 @@ module-name = "dbt._core"
 python-source = "python"
 
 [dependency-groups]
-test = ["pytest>=9.1"]
+test = ["pytest>=9.1", "duckdb>=1.4"]
 lint = ["ruff>=0.16", "mypy>=2.3"]
 
 [tool.pytest.ini_options]

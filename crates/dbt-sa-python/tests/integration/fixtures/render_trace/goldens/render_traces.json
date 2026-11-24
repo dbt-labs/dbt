@@ -1,0 +1,525 @@
+{
+  "model.render_trace.common_patterns": {
+    "dbt_version": "0.0.0-example",
+    "events": [
+      {
+        "kind": "variable",
+        "rendered_end": 0,
+        "rendered_start": 0,
+        "source_end": 113,
+        "source_start": 0
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 0,
+        "rendered_start": 0,
+        "source_end": 113,
+        "source_start": 0
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 0,
+        "rendered_start": 0,
+        "source_end": 113,
+        "source_start": 0
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 2,
+        "rendered_start": 0,
+        "source_end": 115,
+        "source_start": 113
+      },
+      {
+        "kind": "comment",
+        "rendered_end": 2,
+        "rendered_start": 2,
+        "source_end": 195,
+        "source_start": 115
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 2,
+        "rendered_start": 2,
+        "source_end": 195,
+        "source_start": 115
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 3,
+        "rendered_start": 2,
+        "source_end": 196,
+        "source_start": 195
+      },
+      {
+        "kind": "block_standalone",
+        "rendered_end": 3,
+        "rendered_start": 3,
+        "source_end": 262,
+        "source_start": 196
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 3,
+        "rendered_start": 3,
+        "source_end": 262,
+        "source_start": 196
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 4,
+        "rendered_start": 3,
+        "source_end": 263,
+        "source_start": 262
+      },
+      {
+        "kind": "block_standalone",
+        "rendered_end": 4,
+        "rendered_start": 4,
+        "source_end": 324,
+        "source_start": 263
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 4,
+        "rendered_start": 4,
+        "source_end": 324,
+        "source_start": 263
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 52,
+        "rendered_start": 4,
+        "source_end": 372,
+        "source_start": 324
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 52,
+        "rendered_start": 52,
+        "source_end": 401,
+        "source_start": 372
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 66,
+        "rendered_start": 52,
+        "source_end": 401,
+        "source_start": 372
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 66,
+        "rendered_start": 52,
+        "source_end": 401,
+        "source_start": 372
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 71,
+        "rendered_start": 66,
+        "source_end": 406,
+        "source_start": 401
+      },
+      {
+        "kind": "block_start",
+        "rendered_end": 71,
+        "rendered_start": 71,
+        "source_end": 431,
+        "source_start": 406
+      },
+      {
+        "kind": "block_end",
+        "rendered_end": 71,
+        "rendered_start": 71,
+        "source_end": 511,
+        "source_start": 500
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 71,
+        "rendered_start": 71,
+        "source_end": 511,
+        "source_start": 406
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 111,
+        "rendered_start": 71,
+        "source_end": 551,
+        "source_start": 511
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 111,
+        "rendered_start": 111,
+        "source_end": 568,
+        "source_start": 551
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 127,
+        "rendered_start": 111,
+        "source_end": 568,
+        "source_start": 551
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 127,
+        "rendered_start": 111,
+        "source_end": 568,
+        "source_start": 551
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 173,
+        "rendered_start": 127,
+        "source_end": 614,
+        "source_start": 568
+      },
+      {
+        "kind": "block_start",
+        "rendered_end": 173,
+        "rendered_start": 173,
+        "source_end": 654,
+        "source_start": 623
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 182,
+        "rendered_start": 173,
+        "source_end": 663,
+        "source_start": 654
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 182,
+        "rendered_start": 182,
+        "source_end": 725,
+        "source_start": 663
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 194,
+        "rendered_start": 182,
+        "source_end": 725,
+        "source_start": 663
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 194,
+        "rendered_start": 182,
+        "source_end": 725,
+        "source_start": 663
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 198,
+        "rendered_start": 194,
+        "source_end": 729,
+        "source_start": 725
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 198,
+        "rendered_start": 198,
+        "source_end": 741,
+        "source_start": 729
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 208,
+        "rendered_start": 198,
+        "source_end": 741,
+        "source_start": 729
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 208,
+        "rendered_start": 198,
+        "source_end": 741,
+        "source_start": 729
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 209,
+        "rendered_start": 208,
+        "source_end": 742,
+        "source_start": 741
+      },
+      {
+        "kind": "block_end",
+        "rendered_end": 209,
+        "rendered_start": 209,
+        "source_end": 764,
+        "source_start": 751
+      },
+      {
+        "kind": "loop_iteration",
+        "rendered_end": 209,
+        "rendered_start": 209,
+        "source_end": 654,
+        "source_start": 623
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 218,
+        "rendered_start": 209,
+        "source_end": 663,
+        "source_start": 654
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 218,
+        "rendered_start": 218,
+        "source_end": 725,
+        "source_start": 663
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 230,
+        "rendered_start": 218,
+        "source_end": 725,
+        "source_start": 663
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 230,
+        "rendered_start": 218,
+        "source_end": 725,
+        "source_start": 663
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 234,
+        "rendered_start": 230,
+        "source_end": 729,
+        "source_start": 725
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 234,
+        "rendered_start": 234,
+        "source_end": 741,
+        "source_start": 729
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 244,
+        "rendered_start": 234,
+        "source_end": 741,
+        "source_start": 729
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 244,
+        "rendered_start": 234,
+        "source_end": 741,
+        "source_start": 729
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 245,
+        "rendered_start": 244,
+        "source_end": 742,
+        "source_start": 741
+      },
+      {
+        "kind": "block_end",
+        "rendered_end": 245,
+        "rendered_start": 245,
+        "source_end": 764,
+        "source_start": 751
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 245,
+        "rendered_start": 173,
+        "source_end": 764,
+        "source_start": 623
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 269,
+        "rendered_start": 245,
+        "source_end": 788,
+        "source_start": 764
+      },
+      {
+        "kind": "block_start",
+        "rendered_end": 269,
+        "rendered_start": 269,
+        "source_end": 820,
+        "source_start": 797
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 280,
+        "rendered_start": 269,
+        "source_end": 831,
+        "source_start": 820
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 280,
+        "rendered_start": 280,
+        "source_end": 848,
+        "source_start": 831
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 283,
+        "rendered_start": 280,
+        "source_end": 848,
+        "source_start": 831
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 283,
+        "rendered_start": 280,
+        "source_end": 848,
+        "source_start": 831
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 308,
+        "rendered_start": 283,
+        "source_end": 873,
+        "source_start": 848
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 308,
+        "rendered_start": 308,
+        "source_end": 893,
+        "source_start": 873
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 309,
+        "rendered_start": 308,
+        "source_end": 893,
+        "source_start": 873
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 309,
+        "rendered_start": 308,
+        "source_end": 893,
+        "source_start": 873
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 326,
+        "rendered_start": 309,
+        "source_end": 910,
+        "source_start": 893
+      },
+      {
+        "kind": "block_end",
+        "rendered_end": 326,
+        "rendered_start": 326,
+        "source_end": 931,
+        "source_start": 919
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 326,
+        "rendered_start": 269,
+        "source_end": 931,
+        "source_start": 797
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 429,
+        "rendered_start": 326,
+        "source_end": 1034,
+        "source_start": 931
+      }
+    ],
+    "filename": "models/common_patterns.sql",
+    "invocation_id": "00000000-0000-4000-8000-000000000001",
+    "protocol_version": 2,
+    "render_stage": "jinja_before_ephemeral_injection",
+    "rendered": "\n\n\n\n\n\nwith source_events as (\n    select *\n    from \"raw\".\"events\"\n    \n),\n\nbase_values as (\n    select * from __dbt__cte__base\n),\n\nrenamed as (\n    select\n        event_id,\n        \"account_id\" as account_id,\n        \"event_type\" as event_type,\n        event_timestamp,\n        'dev' as dbt_target,\n        7 as trace_version\n    from source_events\n)\n\nselect renamed.*, base_values.base_value\nfrom renamed\ncross join base_values",
+    "source": "{{ config(\n    materialized='incremental',\n    unique_key='event_id',\n    tags=['render-trace', target.name]\n) }}\n\n{# Common package-style setup: project vars, list construction, and dispatch. #}\n{% set dimensions = var('render_trace_columns', ['account_id']) %}\n{% set include_audit = var('include_audit_columns', false) %}\n\nwith source_events as (\n    select *\n    from {{ source('raw', 'events') }}\n    {% if is_incremental() %}\n    where updated_at > (select max(updated_at) from {{ this }})\n    {% endif %}\n),\n\nbase_values as (\n    select * from {{ ref('base') }}\n),\n\nrenamed as (\n    select\n        event_id,\n        {%- for column in dimensions %}\n        {{ adapter.dispatch('trace_column', 'render_trace')(column) }} as {{ column }},\n        {%- endfor %}\n        event_timestamp\n        {%- if include_audit %},\n        '{{ target.name }}' as dbt_target,\n        {{ probe_value(7) }} as trace_version\n        {%- endif %}\n    from source_events\n)\n\nselect renamed.*, base_values.base_value\nfrom renamed\ncross join base_values\n",
+    "source_path": "models/common_patterns.sql",
+    "unique_id": "model.render_trace.common_patterns"
+  },
+  "model.render_trace.star_usage": {
+    "dbt_version": "0.0.0-example",
+    "events": [
+      {
+        "kind": "literal",
+        "rendered_end": 40,
+        "rendered_start": 0,
+        "source_end": 40,
+        "source_start": 0
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 40,
+        "rendered_start": 40,
+        "source_end": 57,
+        "source_start": 40
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 56,
+        "rendered_start": 40,
+        "source_end": 57,
+        "source_start": 40
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 56,
+        "rendered_start": 40,
+        "source_end": 57,
+        "source_start": 40
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 71,
+        "rendered_start": 56,
+        "source_end": 72,
+        "source_start": 57
+      },
+      {
+        "kind": "variable",
+        "rendered_end": 71,
+        "rendered_start": 71,
+        "source_end": 222,
+        "source_start": 72
+      },
+      {
+        "kind": "templated",
+        "rendered_end": 196,
+        "rendered_start": 71,
+        "source_end": 222,
+        "source_start": 72
+      },
+      {
+        "kind": "macro",
+        "rendered_end": 196,
+        "rendered_start": 71,
+        "source_end": 222,
+        "source_start": 72
+      },
+      {
+        "kind": "literal",
+        "rendered_end": 213,
+        "rendered_start": 196,
+        "source_end": 239,
+        "source_start": 222
+      }
+    ],
+    "filename": "models/star_usage.sql",
+    "invocation_id": "00000000-0000-4000-8000-000000000001",
+    "protocol_version": 2,
+    "render_stage": "jinja_before_ephemeral_injection",
+    "rendered": "with base_values as (\n    select * from __dbt__cte__base\n)\n\nselect\n    \n    base_values.\"base_value\"\n        as \"copied_base_value\",\n        base_values.\"created_at\"\n        as \"copied_created_at\"\nfrom base_values",
+    "source": "with base_values as (\n    select * from {{ ref('base') }}\n)\n\nselect\n    {{ dbt_utils.star(\n        from=ref('base'),\n        relation_alias='base_values',\n        except=['internal_note'],\n        prefix='copied_'\n    ) }}\nfrom base_values\n",
+    "source_path": "models/star_usage.sql",
+    "unique_id": "model.render_trace.star_usage"
+  }
+}

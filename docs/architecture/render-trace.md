@@ -12,27 +12,41 @@ a stable public artifact contract. It is disabled by default and uses the flag
 registry's invocation-level CLI/environment handling. It is not a project
 behavior flag and is not read from a project's `flags:` block.
 
-Each rendered SQL node writes a `*.render_trace.json` sidecar next to its
-compiled SQL, under the normal target directory. It contains:
+Rendered SQL nodes are collected into nested Parquet epochs at
+`target/private/metadata/compile/render_traces/v1_<epoch>.parquet`.
+`--target-path` relocates the target root. This flag does not require
+`--generate-info-schema`. It uses the metadata epoch writer directly, even when
+ordinary metadata export is disabled. No `target/render_traces.parquet` or JSON
+sidecar is written.
 
-- `protocol_version`: `1` for this experimental format.
+Each row contains:
+
+- `protocol_version`: signed 64-bit integer `2` for the nested experimental format.
+- `ingested_at`: signed 64-bit microseconds since the Unix epoch, used for latest-wins selection.
 - `dbt_version`, `invocation_id`, and `unique_id`: producer and model identity.
 - `filename`: the path used for Jinja source locations.
 - `source_path`: the actual file used as render input. This may differ from
   `filename`, particularly for generated snapshot SQL.
 - `render_stage`: `jinja_before_ephemeral_injection`.
 - `source`, `rendered`: the exact strings supplied to and returned by Jinja.
-- `events`: observations in execution order, each with a `kind`,
-  `source_start`, `source_end`, `rendered_start`, and `rendered_end`.
+- `events`: an ordered `LIST<STRUCT<kind VARCHAR, source_start BIGINT,
+  source_end BIGINT, rendered_start BIGINT, rendered_end BIGINT>>`. List order
+  preserves execution order, including repeated and zero-width events.
+
+`v1_` versions the storage schema; `protocol_version = 2` versions the trace
+protocol. These are separate contracts. All event offsets are signed 64-bit
+integers in storage.
 
 Offsets are zero-based UTF-8 bytes and end offsets are exclusive. Layout and
 loop events may have zero-width rendered ranges. Repeated loop iterations may
 refer to the same source span with different output spans. Macro boundary events
 can enclose other events; the event list is not a partition of either string.
-Consumers must validate ranges and must not infer missing provenance by matching
-identical output strings. The initial event kinds are `literal`, `templated`,
-`macro`, `block_start`, `block_mid`, `block_end`, `block_standalone`, `variable`,
-`comment`, `loop_iteration`, and `loop_skipped`.
+List position preserves global execution order, including ties at zero-width
+rendered positions. Consumers must validate ranges and
+must not infer missing provenance by matching identical output strings. `kind`
+values include `literal`, `templated`, `macro`, `block_start`, `block_mid`,
+`block_end`, `block_standalone`, `variable`, `comment`, `loop_iteration`, and
+`loop_skipped`.
 
 Layout events describe source tags, not synthetic AST nodes. An if/elif chain
 emits one block_end for its shared endif per execution. Internal macro-span
@@ -80,7 +94,7 @@ Named blocks render into temporary buffers. Their events are rebased when the
 buffer is appended directly, and the enclosing tracker is restored even on an
 error. Captured or transformed block values do not publish intermediate literal
 spans; their final expression output remains generated. Buffer callbacks are
-internal observer hooks and do not add event kinds or change protocol version 1.
+internal observer hooks and do not add event kinds.
 An explicit return replaces that evaluation's output: all events for the
 discarded buffer are removed, and the returned string is generated (`templated`
 with an empty source range at byte zero). Enclosing output remains mapped;
@@ -101,8 +115,19 @@ existing listeners.
 
 Consumers should only use traces from a successful invocation, check the
 invocation/model identity, and compare the source with the file being linted.
-Old sidecars can remain in a reused target directory when tracing is disabled;
-the existence of a file alone does not establish freshness.
+Retained epochs can contain rows from earlier invocations; the existence of a
+file alone does not establish freshness. Select rows matching the successful
+manifest invocation, then select the greatest `ingested_at` per `unique_id`.
+Reject conflicting rows with equal timestamps. Retained old rows must never
+authorize source edits.
+
+Selected compiles append current rows and retain unselected live nodes. Only
+models actually attempted in this invocation count as recomputed. Failed
+attempts remove their prior traces. Compaction keeps the latest row per node
+and prunes deleted nodes using the complete `parse/alive.parquet` snapshot.
+Delta parse saves merge liveness rather than replacing it with the selection.
+If no authoritative liveness snapshot exists, retention does not infer deletion
+from an incomplete resolver state.
 
 Disabled nodes are not rendered and emit no trace or stub. After a successful
 compile, consumers can find them in the same invocation's manifest.disabled
@@ -145,18 +170,20 @@ first-item break and inherited-block cases.
 ## Executable format example
 
 See the six-line [SQL/Jinja input](../../crates/dbt-tasks-sa/tests/fixtures/render_trace/example.sql)
-and its [complete JSON trace](../../crates/dbt-tasks-sa/tests/fixtures/render_trace/example.render_trace.json).
-They demonstrate UTF-8 source offsets, literal and generated output, an inline
-macro, repeated loop spans, a conditional separator and a skipped loop. The
-macro-generated values are mapped to the calling `{{ doubled(n) }}` expressions
-as `templated` output.
+for UTF-8 source offsets, generated output and repeated loop spans. The Rust
+`render_trace_example_matches_fixture` test renders it and checks repeated
+literal ranges and generated output.
 
-The Rust `render_trace_example_matches_fixture` test renders that input and
-compares the entire artifact with the JSON fixture using the production artifact
-type. Producer version, invocation ID and paths are fixed example values so the
-fixture stays stable across releases and machines; execution events are captured
-from the real renderer. The local attributes keep fixture newlines as LF because
-the byte offsets describe those exact input bytes.
+The [semantic Parquet golden](../../crates/dbt-sa-python/tests/integration/fixtures/render_trace/goldens/render_traces.parquet)
+contains the common-pattern and package-macro fixture rows. Integration tests
+query actual epoch rows through DuckDB, choose the latest row per model,
+normalize producer identity and ingestion metadata, and compare decoded nested
+values with this golden. Runtime freshness is checked separately.
+
+The project integration fixture also compiles a representative model combining
+multiline `config()`, `ref()`, `source()`, `var()`, `target`, `this`,
+`is_incremental()`, adapter dispatch, macro returns, list-driven column
+generation, whitespace control, loops, comments, and conditional SQL.
 
 ## Regression coverage
 
@@ -189,35 +216,19 @@ and output coverage across the existing renderer regression examples.
 The existing project integrations continue to check pre-injection offsets for
 an ephemeral dependency, fresh provenance after a macro changes, disabled-node
 manifest identity and absence of successful artifacts after rendering fails.
-The executable JSON fixture above remains the complete format example.
+Additional integrations check retention across selected compiles, with and
+without partial parsing and ordinary metadata export, plus failed attempts and
+deleted nodes.
 
-## Local prototype validation
+## Consumer integration
 
-Checked on Windows x86-64, Python 3.13.5 and Rust stable 1.98.1:
+The [SQLFluff companion PR](https://github.com/alanmcruickshank/sqlfluff/pull/4)
+reads this epoch layout through PyArrow and retains protocol-v1 JSON support for
+the original producer proposal. Its live artifact test checks the producer's
+path, nested schema, invocation identity and ordered events before loading them.
 
-- All 182 `dbt-jinja-utils` and 152 MiniJinja library tests passed, along with
-  82 compiler/render integration tests.
-- All 34 Python exporter integrations passed: the 31-case regression matrix
-  and the three existing project/artifact tests. These use the ABI3 runtime
-  rebuilt from `3116b9498`, including the latest recursion/include/super fixes.
-- All 112 SQLFluff consumer and plugin-generation tests passed against that
-  runtime, including real CLI source fixes and parallel-worker integration.
-- The complete golden JSON example comparison passed.
-- Rust formatting, Python test lint/format and diff whitespace checks passed.
-
-The fallback `render()` follow-up re-ran the 182 renderer-library tests, 152
-MiniJinja library tests, 82 renderer integrations and golden JSON comparison.
-The Python exporter and SQLFluff checks above used the earlier `3116b9498`
-runtime; a wheel was not rebuilt for this final follow-up. dbt's registered
-`render()` path is unchanged, and both default/observer-only fallback paths
-are checked by the native regressions.
-
-This debug build required `RUST_LOG=debug` and `DBT_LOG_LEVEL=debug` to keep
-upstream tracing spans enabled. Without them, the ordinary untraced Python
-invocation also panicked during tracing initialization. The local test results
-use that environment workaround; release-build behaviour was not tested.
-
-These checks do not establish complete dbt/Core templater parity. Live warehouse
-introspection, product-specific factories, cross-platform releases, alternate
-branches and source-rewritten snapshots still need validation. The flag and
-schema remain an upstream design proposal.
+The flag and schema remain experimental. Valid artifact exchange does not
+establish complete templater parity. Live warehouse introspection, all adapters,
+release builds, alternate branch renders and source-rewritten snapshots still
+need validation. The public [nested-loop indentation reproduction](https://github.com/dataders/sqlfluff-dbt2-indent-repro)
+records a separate unresolved SQLFluff mapping/fixing issue.

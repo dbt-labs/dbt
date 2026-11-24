@@ -1,0 +1,7 @@
+kind: Features
+body: Write opt-in Jinja render traces as one nested Parquet artifact per invocation.
+time: 2026-11-18T18:45:00-08:00
+custom:
+    author: dataders
+    issue: "16870"
+    project: dbt-core

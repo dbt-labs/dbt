@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,6 +26,7 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
+use dbt_jinja_utils::render_trace::RenderTrace;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::materialization_resolver::MaterializationResolver;
@@ -164,6 +165,20 @@ pub struct RenderedNodeInfo {
     pub materialization: DbtMaterialization,
 }
 
+/// One model's Jinja provenance, retained until the invocation writes its
+/// nested Parquet epoch.
+#[derive(Debug)]
+pub struct ModelRenderTrace {
+    pub protocol_version: u32,
+    pub dbt_version: &'static str,
+    pub invocation_id: String,
+    pub unique_id: String,
+    pub filename: PathBuf,
+    pub source_path: PathBuf,
+    pub render_stage: &'static str,
+    pub trace: RenderTrace,
+}
+
 pub struct TaskRunnerCtxInner {
     pub arg: Arc<RunTasksArgs>,
     pub worker_id: String,
@@ -178,6 +193,8 @@ pub struct TaskRunnerCtxInner {
     pub microbatch_execution_metrics: SccHashMap<String, ExecutionMetrics>,
     pub node_hashes: SccHashMap<String, String>,
     pub rendered_sql: SccHashMap<String, RenderedNodeInfo>,
+    pub render_trace_attempts: parking_lot::Mutex<HashSet<String>>,
+    pub render_traces: parking_lot::Mutex<Vec<ModelRenderTrace>>,
     pub freshness_seconds: SccHashMap<String, i64>,
     pub updates_on: SccHashMap<String, UpdatesOn>,
     pub execute: dbt_schemas::schemas::profiles::Execute,
@@ -274,6 +291,8 @@ impl TaskRunnerCtxInner {
             microbatch_execution_metrics: SccHashMap::default(),
             node_hashes,
             rendered_sql: SccHashMap::default(),
+            render_trace_attempts: parking_lot::Mutex::new(HashSet::new()),
+            render_traces: parking_lot::Mutex::new(Vec::new()),
             freshness_seconds: SccHashMap::default(),
             updates_on: SccHashMap::default(),
             execute,
