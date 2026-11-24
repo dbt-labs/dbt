@@ -276,7 +276,11 @@ class NodeInfoMixin:
 @dataclass
 class ParsedNode(ParsedResource, NodeInfoMixin, ParsedNodeMandatory, SerializableType):
     def get_target_write_path(
-        self, target_path: str, subdirectory: str, split_suffix: Optional[str] = None
+        self,
+        target_path: str,
+        subdirectory: str,
+        split_suffix: Optional[str] = None,
+        project_root: Optional[str] = None,
     ) -> str:
         # This is called for both the "compiled" subdirectory of "target" and the "run" subdirectory
         if os.path.basename(self.path) == os.path.basename(self.original_file_path):
@@ -296,7 +300,11 @@ class ParsedNode(ParsedResource, NodeInfoMixin, ParsedNodeMandatory, Serializabl
 
         base = os.path.join(target_path, subdirectory, self.package_name)
         return resolve_path_within_base(
-            path, base, "compiled output path", error_cls=CompilationError
+            path,
+            base,
+            "compiled output path",
+            error_cls=CompilationError,
+            project_root=project_root,
         )
 
     def write_node(self, project_root: str, compiled_path: str, compiled_code: str) -> None:
@@ -1261,7 +1269,11 @@ class SnapshotNode(SnapshotResource, CompiledNode):
         return SnapshotResource
 
     def get_target_write_path(
-        self, target_path: str, subdirectory: str, split_suffix: Optional[str] = None
+        self,
+        target_path: str,
+        subdirectory: str,
+        split_suffix: Optional[str] = None,
+        project_root: Optional[str] = None,
     ) -> str:
         # Always use many-to-one path for snapshots. Multiple snapshot blocks
         # can share a single file, and the basename heuristic in the base class
@@ -1282,7 +1294,11 @@ class SnapshotNode(SnapshotResource, CompiledNode):
 
         base = os.path.join(target_path, subdirectory, self.package_name)
         return resolve_path_within_base(
-            path, base, "compiled output path", error_cls=CompilationError
+            path,
+            base,
+            "compiled output path",
+            error_cls=CompilationError,
+            project_root=project_root,
         )
 
 

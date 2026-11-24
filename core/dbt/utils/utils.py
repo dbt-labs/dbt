@@ -422,11 +422,18 @@ def resolve_path_within_base(
     field_name: str,
     *,
     error_cls: Type[Exception],
+    project_root: Optional[str] = None,
 ) -> str:
-    """Join `path` onto `base_dir`; raise `error_cls` if the result resolves outside it."""
+    """Join `path` onto `base_dir`; raise `error_cls` if the result resolves outside it.
+
+    Relative paths are resolved against `project_root` when given (otherwise the current
+    working directory), so the check matches where the file is actually written. The
+    returned path is not anchored to `project_root`.
+    """
     candidate = path if os.path.isabs(path) else os.path.join(base_dir, path)
-    base_resolved = _resolve_path(base_dir)
-    candidate_resolved = _resolve_path(candidate)
+    anchor = project_root or ""
+    base_resolved = _resolve_path(os.path.join(anchor, base_dir))
+    candidate_resolved = _resolve_path(os.path.join(anchor, candidate))
     try:
         common = os.path.commonpath([base_resolved, candidate_resolved])
     except ValueError:

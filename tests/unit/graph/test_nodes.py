@@ -501,6 +501,29 @@ class TestParsedNode:
         with pytest.raises(CompilationError, match="must resolve to a path inside"):
             escaping_node.get_target_write_path("target_path", "subdirectory")
 
+    def test_get_target_write_path_validates_against_project_root(self, parsed_node, tmp_path):
+        project_root = tmp_path / "project"
+        outside = tmp_path / "outside"
+        link_dir = project_root / "target_path" / "subdirectory" / "test_package"
+        link_dir.mkdir(parents=True)
+        outside.mkdir()
+        (link_dir / "linked").symlink_to(outside)
+        escaping_node = dataclasses.replace(parsed_node, original_file_path="linked")
+
+        with pytest.raises(CompilationError, match="must resolve to a path inside"):
+            escaping_node.get_target_write_path(
+                "target_path", "subdirectory", project_root=str(project_root)
+            )
+
+    def test_get_target_write_path_with_project_root_stays_relative(self, parsed_node, tmp_path):
+        write_path = parsed_node.get_target_write_path(
+            "target_path", "subdirectory", project_root=str(tmp_path)
+        )
+        assert (
+            write_path
+            == "target_path/subdirectory/test_package/test_original_file_path/test_path.sql"
+        )
+
 
 class TestSnapshotNode:
     @pytest.fixture

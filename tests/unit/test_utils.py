@@ -124,3 +124,37 @@ class TestResolvePathWithinBase:
             "sub/file.sql", base, "some-field", error_cls=CustomError
         )
         assert result == os.path.join(base, "sub/file.sql")
+
+    def test_relative_path_resolved_against_project_root_not_cwd(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "project"
+        outside = tmp_path / "outside"
+        elsewhere = tmp_path / "elsewhere"
+        for d in (project_root / "target", outside, elsewhere):
+            d.mkdir(parents=True)
+        # the symlink only exists under project_root, not under the cwd
+        (project_root / "target" / "escape_link").symlink_to(outside)
+        monkeypatch.chdir(elsewhere)
+
+        with pytest.raises(CustomError, match="must resolve to a path inside"):
+            dbt.utils.resolve_path_within_base(
+                "escape_link/payload",
+                "target",
+                "some-field",
+                error_cls=CustomError,
+                project_root=str(project_root),
+            )
+
+    def test_relative_path_inside_base_with_project_root_is_unanchored(
+        self, tmp_path, monkeypatch
+    ):
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(tmp_path)
+        result = dbt.utils.resolve_path_within_base(
+            "sub/file.sql",
+            "target",
+            "some-field",
+            error_cls=CustomError,
+            project_root=str(project_root),
+        )
+        assert result == os.path.join("target", "sub/file.sql")
