@@ -74,9 +74,7 @@ create or replace {{ transient_keyword }}dynamic table {{ relation }}{% if custo
     {% if dynamic_table.copy_grants -%} copy grants {%- endif %}
     {{ optional('immutable where', dynamic_table.immutable_where, quote_char='(', equals_char='') }}
     {% if custom_incremental -%}
-    refresh using (
-{{ snowflake__custom_incremental_refresh_using_sql(sql, columns) }}
-    )
+    {{ snowflake__custom_incremental_refresh_using_sql(sql, columns) }}
     {%- else -%}
     as (
         {{ sql }}

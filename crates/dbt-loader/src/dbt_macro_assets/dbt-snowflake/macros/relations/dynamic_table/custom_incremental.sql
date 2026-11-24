@@ -123,10 +123,13 @@
 {% macro snowflake__custom_incremental_refresh_using_sql(sql, columns) -%}
     {%- set strategy = snowflake__custom_incremental_strategy() -%}
     {%- if strategy == 'merge' -%}
-        {{ snowflake__custom_incremental_merge_sql(sql, columns) }}
+        {%- set dml = snowflake__custom_incremental_merge_sql(sql, columns) -%}
     {%- else -%}
         {% do exceptions.raise_compiler_error("Unexpected custom incremental strategy '" ~ strategy ~ "' for " ~ this) %}
     {%- endif -%}
+refresh using (
+{{ dml }}
+    )
 {%- endmacro %}
 
 

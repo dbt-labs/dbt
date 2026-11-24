@@ -61,9 +61,7 @@
         {{ optional('cluster by', dynamic_table.cluster_by, quote_char='(', equals_char='') }}
         {{ optional('immutable where', dynamic_table.immutable_where, quote_char='(', equals_char='') }}
         {%- if custom_incremental %}
-    refresh using (
-{{ snowflake__custom_incremental_refresh_using_sql(sql, columns) }}
-    )
+    {{ snowflake__custom_incremental_refresh_using_sql(sql, columns) }}
         {%- else %}
     as (
         {{ sql }}
