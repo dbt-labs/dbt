@@ -221,6 +221,38 @@ class TestDatabricksConfigKeys:
         assert active_deprecations == {}
 
 
+class TestRedshiftConfigKeys:
+    # dbt-labs/dbt-adapters#2359: `query_group` is a documented dbt-redshift
+    # model config and must not warn as a custom key
+    def test_model_config_no_warning(self):
+        reset_deprecations()
+
+        safe_set_invocation_context()
+        get_invocation_context().uses_adapter("redshift")
+
+        config = {
+            "materialized": "table",
+            "query_group": "highest_priority",
+        }
+        validate_model_config(config, "test.yml")
+        assert active_deprecations == {}
+
+    def test_project_config_no_warning(self):
+        reset_deprecations()
+
+        safe_set_invocation_context()
+        get_invocation_context().uses_adapter("redshift")
+
+        project_dict = {
+            "name": "my_project",
+            "version": "1.0.0",
+            "profile": "my_project",
+            "models": {"my_project": {"+query_group": "highest_priority"}},
+        }
+        jsonschema_validate(project_schema(), project_dict, "dbt_project.yml")
+        assert active_deprecations == {}
+
+
 class TestAdapterConfigKeys:
     """Adapter and resource config keys that are real v1 configs and must not warn."""
 
