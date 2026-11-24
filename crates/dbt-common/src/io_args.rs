@@ -1675,39 +1675,23 @@ pub fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Opts in to selecting the adapter a node runs on: the `+adapter` config and `--adapter`.
+/// Opts in to selecting the adapter a node runs on: the `+adapter` config and `--adapter`. The
+/// environment variable of the `multi_adapter` flag.
 pub const MULTI_ADAPTER_ENV: &str = "DBT_ENGINE_EXPERIMENTAL_MULTI_ADAPTER";
 
 /// Opts in to `+compute: local` (or its `sidecar` spelling) on an individual unit test. The
-/// run-wide `--compute` flag is a separate, older knob and is not covered by this gate.
+/// run-wide `--compute` flag is a separate, older knob and is not covered by this gate. The
+/// environment variable of the `local_unit_tests` flag.
 pub const LOCAL_UNIT_TESTS_ENV: &str = "DBT_ENGINE_EXPERIMENTAL_LOCAL_UNIT_TESTS";
-
-/// Whether an experimental feature's opt-in environment variable is set. Unset or malformed
-/// reads as off; a malformed value also warns.
-///
-/// Names passed here must be registered in `USED_ENGINE_ENV_VARS` (`dbt-main/src/vars.rs`),
-/// or `validate_engine_env_vars` rejects them at startup.
-fn experimental_gate_enabled(name: &str) -> bool {
-    match env_flag_enabled(name) {
-        Ok(enabled) => enabled,
-        Err(e) => {
-            crate::tracing::dbt_emit::emit_warn_log_message(
-                crate::ErrorCode::InvalidConfig,
-                e.to_string(),
-            );
-            false
-        }
-    }
-}
 
 /// Whether multi-adapter support is opted in to. See [`MULTI_ADAPTER_ENV`].
 pub fn multi_adapter_enabled() -> bool {
-    experimental_gate_enabled(MULTI_ADAPTER_ENV)
+    dbt_flags::MULTI_ADAPTER.enabled()
 }
 
 /// Whether per-unit-test local execution is opted in to. See [`LOCAL_UNIT_TESTS_ENV`].
 pub fn local_unit_tests_enabled() -> bool {
-    experimental_gate_enabled(LOCAL_UNIT_TESTS_ENV)
+    dbt_flags::LOCAL_UNIT_TESTS.enabled()
 }
 
 pub const LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV: &str =
@@ -2182,6 +2166,12 @@ mod tests {
             dbt_flags::LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT.legacy_env,
             [LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV]
         );
+    }
+
+    #[test]
+    fn experimental_gate_env_vars_are_the_variables_of_their_flags() {
+        assert_eq!(dbt_flags::MULTI_ADAPTER.env_var(), MULTI_ADAPTER_ENV);
+        assert_eq!(dbt_flags::LOCAL_UNIT_TESTS.env_var(), LOCAL_UNIT_TESTS_ENV);
     }
 
     #[test]

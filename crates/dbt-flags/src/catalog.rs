@@ -127,6 +127,49 @@ pub static METRICFLOW_V2: FlagDef = FlagDef {
     docs_url: None,
 };
 
+/// Selecting the adapter a node runs on: the `+adapter` config and `--adapter`.
+pub static MULTI_ADAPTER: FlagDef = FlagDef {
+    name: "multi_adapter",
+    description: "Select the adapter a node runs on, with the +adapter config and --adapter.",
+    stage: Stage::Experimental,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
+/// `+compute: local` (or its `sidecar` spelling) on an individual unit test. The run-wide
+/// `--compute` flag is a separate, older knob and is not covered by this flag.
+pub static LOCAL_UNIT_TESTS: FlagDef = FlagDef {
+    name: "local_unit_tests",
+    description: "Run an individual unit test on local compute, with +compute: local.",
+    stage: Stage::Experimental,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
+/// Whether static analysis also knows the user-defined functions that the warehouse lists.
+pub static LIST_UDFS: FlagDef = FlagDef {
+    name: "list_udfs",
+    description: "List the warehouse's user-defined functions, so static analysis knows them.",
+    stage: Stage::Experimental,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
 /// Every flag declared in this crate.
 pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
@@ -137,6 +180,9 @@ pub static ALL: &[&FlagDef] = &[
     &LAKECOMPUTE_PROFILE_SETUP,
     &USE_V2_EMPTY_SQL_REWRITE,
     &METRICFLOW_V2,
+    &MULTI_ADAPTER,
+    &LOCAL_UNIT_TESTS,
+    &LIST_UDFS,
 ];
 
 #[cfg(test)]
