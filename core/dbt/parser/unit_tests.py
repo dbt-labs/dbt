@@ -99,6 +99,7 @@ class UnitTestManifestLoader:
             checksum=FileHash.empty(),
             tested_node_unique_id=tested_node.unique_id,
             overrides=test_case.overrides,
+            group=tested_node.group,
         )
 
         ctx = generate_parser_unit_test_context(unit_test_node, self.root_project, self.manifest)
@@ -156,6 +157,8 @@ class UnitTestManifestLoader:
                     defer_relation=original_input_node.defer_relation,
                 )
                 if resource_type == NodeType.Model:
+                    input_node.access = original_input_node.access
+                    input_node.group = original_input_node.group
                     if original_input_node.version:
                         input_node.version = original_input_node.version
                     if original_input_node.latest_version:

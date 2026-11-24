@@ -1,0 +1,6 @@
+kind: Fixes
+body: Apply a model's access and group to its unit test input fixture, so public models from restrict-access packages can be unit test inputs
+time: 2026-11-08T19:28:57.2510957+05:30
+custom:
+    Author: yvaishalirao
+    Issue: "16809"
