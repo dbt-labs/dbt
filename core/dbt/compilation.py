@@ -360,12 +360,13 @@ class Linker:
         # Dictionary mapping nodes with single-dep tests to a list of those tests.
         single_tested_nodes: dict[UniqueID, List[UniqueID]] = defaultdict(list)
         for node_id in graph.nodes:
+            # Sources are graph roots even though they are not executable nodes.
+            if next(graph.predecessors(node_id), None) is None:
+                source_nodes.append(node_id)
+
             manifest_node = manifest.nodes.get(node_id, None)
             if manifest_node is None:
                 continue
-
-            if next(graph.predecessors(node_id), None) is None:
-                source_nodes.append(node_id)
 
             if manifest_node.resource_type != NodeType.Test:
                 executable_nodes.add(node_id)

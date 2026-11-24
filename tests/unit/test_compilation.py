@@ -9,6 +9,12 @@ from dbt.compilation import Graph, Linker
 from dbt.graph.cli import parse_difference
 from dbt.graph.queue import GraphQueue
 from dbt.graph.selector import NodeSelector
+from tests.unit.utils.manifest import (
+    make_manifest,
+    make_model,
+    make_singular_test,
+    make_source,
+)
 
 
 def _mock_manifest(nodes):
@@ -46,6 +52,37 @@ class TestLinker:
             assert node in actual_nodes
 
         assert len(actual_nodes) == len(expected_nodes)
+
+    def test_fast_test_edges_traverse_sources(self, linker: Linker) -> None:
+        source = make_source("pkg", "raw", "items")
+        left = make_model(
+            "pkg", "left", "select id from {{ source('raw', 'items') }}", sources=[source]
+        )
+        right = make_model(
+            "pkg", "right", "select id from {{ source('raw', 'items') }}", sources=[source]
+        )
+        downstream = make_model(
+            "pkg",
+            "downstream",
+            "select id from {{ ref('left') }} join {{ ref('right') }} using (id)",
+            refs=[left, right],
+        )
+        multi_dependency_test = make_singular_test(
+            "pkg",
+            "compare_items",
+            "select id from {{ ref('left') }} except select id from {{ ref('right') }}",
+            refs=[left, right],
+        )
+        manifest = make_manifest(
+            nodes=[left, right, downstream, multi_dependency_test], sources=[source]
+        )
+
+        linker.link_graph(manifest)
+        linker.add_test_edges_2(manifest)
+
+        assert linker.graph.get_edge_data(
+            multi_dependency_test.unique_id, downstream.unique_id
+        ) == {"edge_type": "parent_test"}
 
     def test_linker_write_graph(self, linker: Linker) -> None:
         expected_nodes = ["A", "B", "C"]
