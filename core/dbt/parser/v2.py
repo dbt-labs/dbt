@@ -31,6 +31,7 @@ from dbt.contracts.graph.manifest import Manifest
 from dbt.events.types import V2ParserEnd, V2ParserStart
 from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
 from dbt.flags import get_flags
+from dbt.parser.microbatch_config import validate_and_coerce_microbatch_configs
 from dbt.utils.artifact_upload import add_artifact_produced
 from dbt_common import ui
 from dbt_common.events.base_types import EventLevel
@@ -118,11 +119,7 @@ def parse_with_v2(
     )
 
     manifest = Manifest.from_writable_manifest(writable_manifest)
-    rediscover_adapter_macros(manifest, runtime_config)
-    # build_flat_graph is normally called by ManifestLoader.get_full_manifest;
-    # the v2 path bypasses that loader, so populate flat_graph here to
-    # power the `graph` context variable (graph.nodes, graph.sources, ...).
-    manifest.build_flat_graph()
+    _finalize_v2_manifest(manifest, runtime_config, project_name)
 
     _delete_stale_partial_parse(project_target_path)
 
@@ -136,6 +133,20 @@ def parse_with_v2(
         enrich_manifest_with_plugin_artifacts(manifest, runtime_config.project_name)
 
     return manifest
+
+
+def _finalize_v2_manifest(
+    manifest: Manifest, runtime_config: "RuntimeConfig", project_name: str
+) -> None:
+    """Run the post-processing steps that `ManifestLoader` normally performs after
+    native parsing, which the v2 path bypasses by loading manifest.json directly:
+    rediscovering adapter macros, populating `flat_graph` (which powers the `graph`
+    context variable), and validating/coercing microbatch configs -- see
+    `validate_and_coerce_microbatch_configs`'s docstring (dbt-labs/dbt#16582).
+    """
+    rediscover_adapter_macros(manifest, runtime_config)
+    validate_and_coerce_microbatch_configs(manifest, project_name)
+    manifest.build_flat_graph()
 
 
 def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig") -> None:
