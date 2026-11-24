@@ -1,6 +1,6 @@
 //! Core traits for the extensible telemetry event types and associated system.
 
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value as JsonValue;
 use std::{any::Any, fmt::Debug};
 
@@ -133,6 +133,17 @@ pub trait AnyTelemetryEvent: Debug + Send + Sync + Any {
     /// Serialize the event data to JSON Value.
     fn to_json(&self) -> Result<JsonValue, String>;
 
+    /// Rewrites the strings this event holds. `rewrite` is called with each string and
+    /// returns its replacement, or `None` to keep it. Returns true if a string changed.
+    ///
+    /// Middlewares use this to mask values before any consumer sees the event.
+    ///
+    /// Default implementation changes nothing - internal events that hold text should
+    /// override.
+    fn rewrite_strings(&mut self, _rewrite: &dyn Fn(&str) -> Option<String>) -> bool {
+        false
+    }
+
     /// Convert this event to Arrow attributes if supported.
     ///
     /// Default behavior:
@@ -188,6 +199,7 @@ pub trait StaticTelemetryEvent:
     + Sync
     + Any
     + Serialize
+    + DeserializeOwned
     + PartialEq
     + crate::StaticName
     + ArrowSerializableTelemetryEvent
@@ -346,7 +358,90 @@ impl<T: StaticTelemetryEvent> AnyTelemetryEvent for T {
         serde_json::to_value(self).map_err(|e| format!("Failed to serialize: {e}"))
     }
 
+    fn rewrite_strings(&mut self, rewrite: &dyn Fn(&str) -> Option<String>) -> bool {
+        // An event has no generic way to visit its fields, so go through its JSON form.
+        //
+        // Most events have nothing to rewrite, so check the JSON text first. A string
+        // without escapes is written to it unchanged: if nothing in the text matches, no
+        // string does. With an escape anywhere, only the strings themselves can tell.
+        let Ok(text) = serde_json::to_string(&*self) else {
+            return false;
+        };
+        if !text.contains('\\') && rewrite(&text).is_none() {
+            return false;
+        }
+        let Ok(mut rewritten) = serde_json::to_value(&*self) else {
+            return false;
+        };
+        let mut string_count = 0;
+        if rewrite_json_strings(&mut rewritten, rewrite, None, &mut string_count) == 0 {
+            return false;
+        }
+        if let Ok(event) = Self::deserialize(&rewritten) {
+            *self = event;
+            return true;
+        }
+
+        // A rewritten string no longer parses, so it is a fixed value such as an enum name,
+        // not free text. Rewrite the strings one at a time and keep the ones that parse.
+        let Ok(mut kept) = serde_json::to_value(&*self) else {
+            return false;
+        };
+        let mut changed = false;
+        for index in 0..string_count {
+            let mut candidate = kept.clone();
+            if rewrite_json_strings(&mut candidate, rewrite, Some(index), &mut 0) == 1
+                && Self::deserialize(&candidate).is_ok()
+            {
+                kept = candidate;
+                changed = true;
+            }
+        }
+        match Self::deserialize(&kept) {
+            Ok(event) if changed => {
+                *self = event;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn to_arrow(&self) -> Option<Box<dyn ArrowAttributesSerialize + '_>> {
         Some(Box::new(self.to_arrow_record()))
+    }
+}
+
+/// Applies `rewrite` to the string values in `json`: to all of them, or only to the
+/// `only`-th in visiting order. `visited` counts the strings seen. Returns how many changed.
+fn rewrite_json_strings(
+    json: &mut JsonValue,
+    rewrite: &dyn Fn(&str) -> Option<String>,
+    only: Option<usize>,
+    visited: &mut usize,
+) -> usize {
+    match json {
+        JsonValue::String(text) => {
+            let index = *visited;
+            *visited += 1;
+            if only.is_some_and(|only| only != index) {
+                return 0;
+            }
+            match rewrite(text) {
+                Some(rewritten) => {
+                    *text = rewritten;
+                    1
+                }
+                None => 0,
+            }
+        }
+        JsonValue::Array(items) => items
+            .iter_mut()
+            .map(|item| rewrite_json_strings(item, rewrite, only, visited))
+            .sum(),
+        JsonValue::Object(fields) => fields
+            .values_mut()
+            .map(|field| rewrite_json_strings(field, rewrite, only, visited))
+            .sum(),
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => 0,
     }
 }

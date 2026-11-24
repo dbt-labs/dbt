@@ -93,6 +93,11 @@ impl TelemetryAttributes {
         Some(Self::new(scrubbed))
     }
 
+    /// Rewrites the strings the event holds. See [`AnyTelemetryEvent::rewrite_strings`].
+    pub fn rewrite_strings(&mut self, rewrite: &dyn Fn(&str) -> Option<String>) -> bool {
+        self.inner.rewrite_strings(rewrite)
+    }
+
     /// Attempt to downcast the inner attribute to a concrete type.
     pub fn downcast_ref<T: AnyTelemetryEvent + 'static>(&self) -> Option<&T> {
         self.inner.as_any().downcast_ref::<T>()

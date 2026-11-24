@@ -8,7 +8,12 @@ use std::{
 use dbt_path::normalize;
 use dbt_schemas::schemas::{packages::LocalPackage, project::DbtProjectNameOnly};
 
-use dbt_common::{ErrorCode, FsError, FsResult, constants::DBT_PROJECT_YML, fs_err, tokiofs};
+use dbt_common::{
+    ErrorCode, FsError, FsResult,
+    constants::DBT_PROJECT_YML,
+    env_secrets::{env_secret_values, scrub_secrets, scrub_secrets_from_error},
+    fs_err, tokiofs,
+};
 
 const DEFAULT_DEPS_MAX_CONCURRENCY: usize = 8;
 const MAX_DEPS_CONCURRENCY: usize = 16;
@@ -29,7 +34,6 @@ use dbt_jinja_utils::{
     jinja_environment::JinjaEnv,
     phases::load::LoadContext,
     serde::{into_typed_with_jinja, value_from_file_async},
-    utils::SECRET_ENV_VAR_PREFIX,
 };
 use dbt_schemas::schemas::project::DbtProject;
 
@@ -64,35 +68,10 @@ pub fn get_local_package_full_path(in_dir: &Path, local_package: &LocalPackage) 
     }
 }
 
-/// The non-blank values of the `DBT_ENV_SECRET*` environment variables, which is what
-/// dbt Core's `env_secrets` returns.
-fn secret_env_var_values() -> Vec<String> {
-    std::env::vars()
-        .filter(|(key, value)| key.starts_with(SECRET_ENV_VAR_PREFIX) && !value.trim().is_empty())
-        .map(|(_, value)| value)
-        .collect()
-}
-
-/// Replaces every occurrence of each of `secrets` in `text` with `*****`, as dbt Core's
-/// `scrub_secrets` does. Returns `None` when `text` holds none of them.
-fn scrub_secrets<'a>(text: &'a str, secrets: &[String]) -> Option<Cow<'a, str>> {
-    let mut scrubbed = Cow::Borrowed(text);
-    for secret in secrets {
-        if scrubbed.contains(secret.as_str()) {
-            scrubbed = Cow::Owned(scrubbed.replace(secret.as_str(), "*****"));
-        }
-    }
-
-    match scrubbed {
-        Cow::Borrowed(_) => None,
-        owned @ Cow::Owned(_) => Some(owned),
-    }
-}
-
 /// Replaces the value of every `DBT_ENV_SECRET*` environment variable found in `text` with
 /// `*****`. Returns `None` when `text` holds no secret.
 pub fn scrub_secret_env_vars(text: &str) -> Option<Cow<'_, str>> {
-    scrub_secrets(text, &secret_env_var_values())
+    scrub_secrets(text, &env_secret_values())
 }
 
 /// Scrubs the values of the `DBT_ENV_SECRET*` environment variables from the message of
@@ -103,27 +82,7 @@ pub fn scrub_secret_env_vars(text: &str) -> Option<Cow<'_, str>> {
 /// about that package may repeat the rendered URL. Call this before the error is logged,
 /// recorded on a span or returned.
 pub(crate) fn scrub_secret_env_vars_from_error(err: Box<FsError>) -> Box<FsError> {
-    scrub_secrets_from_error(err, &secret_env_var_values())
-}
-
-fn scrub_secrets_from_error(mut err: Box<FsError>, secrets: &[String]) -> Box<FsError> {
-    let next = err
-        .pop_next()
-        .map(|next| scrub_secrets_from_error(next, secrets));
-    if let Some(context) = scrub_secrets(&err.context, secrets) {
-        err.context = context.into_owned();
-    }
-    // The message also includes the cause, which can't be edited. If a secret is there,
-    // keep the scrubbed message and drop the cause.
-    if let Some(message) = scrub_secrets(&err.to_string(), secrets) {
-        let mut scrubbed = FsError::new(err.code, message);
-        scrubbed.location = err.location.take();
-        *err = scrubbed;
-    }
-    match next {
-        Some(next) => Box::new(err.with_chained_errors(next)),
-        None => err,
-    }
+    scrub_secrets_from_error(err, &env_secret_values())
 }
 
 /// Build the error raised when a package's `dbt_project.yml` cannot be found.
@@ -224,7 +183,7 @@ pub(crate) fn strip_url_credentials(text: &str) -> Cow<'_, str> {
 /// and with the values of the `DBT_ENV_SECRET*` environment variables as `*****`. A secret
 /// can be anywhere in the URL, for example in the query string.
 pub(crate) fn package_url_for_display(url: &str) -> String {
-    package_url_for_display_with_secrets(url, &secret_env_var_values())
+    package_url_for_display_with_secrets(url, &env_secret_values())
 }
 
 fn package_url_for_display_with_secrets(url: &str, secrets: &[String]) -> String {
@@ -319,78 +278,6 @@ mod tests {
 
     fn secrets(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
-    }
-
-    #[test]
-    fn scrub_secrets_replaces_every_secret_with_asterisks() {
-        let scrubbed = scrub_secrets(
-            "Failed to get tarball from https://tok-1@example.com/tok-2.tar.gz: tok-1",
-            &secrets(&["tok-1", "tok-2"]),
-        );
-        assert_eq!(
-            scrubbed.as_deref(),
-            Some("Failed to get tarball from https://*****@example.com/*****.tar.gz: *****")
-        );
-    }
-
-    #[test]
-    fn scrub_secrets_returns_none_without_a_secret() {
-        assert_eq!(
-            scrub_secrets("Package not found", &secrets(&["tok-1"])),
-            None
-        );
-        assert_eq!(scrub_secrets("Package not found", &[]), None);
-    }
-
-    #[test]
-    fn scrub_secrets_from_error_scrubs_the_message_and_keeps_the_code() {
-        let err = fs_err!(
-            ErrorCode::PackageDownloadFailed,
-            "Failed to get tarball from https://tok-1@example.com/pkg.tar.gz"
-        );
-        let scrubbed = scrub_secrets_from_error(err, &secrets(&["tok-1"]));
-        assert_eq!(scrubbed.code, ErrorCode::PackageDownloadFailed);
-        assert_eq!(
-            scrubbed.to_string(),
-            "Failed to get tarball from https://*****@example.com/pkg.tar.gz"
-        );
-    }
-
-    #[test]
-    fn scrub_secrets_from_error_scrubs_a_secret_in_the_cause() {
-        let cause = std::io::Error::other("could not read https://tok-1@example.com");
-        let err = Box::new(FsError::new(ErrorCode::IoError, "Failed to fetch").with_cause(cause));
-        assert!(err.to_string().contains("tok-1"), "got: {err}");
-
-        let scrubbed = scrub_secrets_from_error(err, &secrets(&["tok-1"]));
-        assert_eq!(scrubbed.code, ErrorCode::IoError);
-        assert_eq!(
-            scrubbed.to_string(),
-            "Failed to fetch: could not read https://*****@example.com"
-        );
-    }
-
-    #[test]
-    fn scrub_secrets_from_error_scrubs_chained_errors() {
-        let err = fs_err!(ErrorCode::PackageDownloadFailed, "first: tok-1")
-            .with_chained_errors(fs_err!(ErrorCode::AuthFailed, "second: tok-1"));
-        let mut scrubbed = scrub_secrets_from_error(Box::new(err), &secrets(&["tok-1"]));
-        assert_eq!(scrubbed.to_string(), "first: *****");
-        let next = scrubbed.pop_next().expect("the chained error is kept");
-        assert_eq!(next.code, ErrorCode::AuthFailed);
-        assert_eq!(next.to_string(), "second: *****");
-    }
-
-    #[test]
-    fn scrub_secrets_from_error_leaves_an_error_without_secrets_unchanged() {
-        let cause = std::io::Error::other("connection refused");
-        let err = Box::new(FsError::new(ErrorCode::IoError, "Failed to fetch").with_cause(cause));
-        let scrubbed = scrub_secrets_from_error(err, &secrets(&["tok-1"]));
-        assert_eq!(scrubbed.to_string(), "Failed to fetch: connection refused");
-        assert!(
-            std::error::Error::source(&*scrubbed).is_some(),
-            "the cause is kept when it holds no secret"
-        );
     }
 
     #[test]

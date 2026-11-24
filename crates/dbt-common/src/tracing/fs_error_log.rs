@@ -1,6 +1,8 @@
+use std::cell::Cell;
 use std::sync::{Arc, OnceLock};
 
 use super::future_incompatibility_log::FutureIncompatibilityLog;
+use crate::env_secrets::rewrite_error_text;
 use dbt_error::FsError;
 use dbt_telemetry::LogMessage;
 use dbt_tracing::{
@@ -137,6 +139,23 @@ impl AnyTelemetryEvent for FsErrorLog {
 
     fn with_context(&mut self, context: &TelemetryContext) {
         self.get_log_message_mut().with_context(context);
+    }
+
+    fn rewrite_strings(&mut self, rewrite: &dyn Fn(&str) -> Option<String>) -> bool {
+        let mut changed = self.get_log_message_mut().rewrite_strings(rewrite);
+        // In-process consumers read the retained error, so rewrite its text as well.
+        let error_changes = Cell::new(false);
+        self.fs_error.for_each(|error| {
+            if rewrite(&error.to_string()).is_some() {
+                error_changes.set(true);
+            }
+        });
+        if error_changes.get() {
+            let error = Box::new(self.fs_error.clone_without_backtrace());
+            self.fs_error = Arc::from(rewrite_error_text(error, rewrite));
+            changed = true;
+        }
+        changed
     }
 
     fn has_sensitive_data(&self) -> bool {
