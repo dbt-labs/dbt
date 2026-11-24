@@ -40,3 +40,38 @@ reason = "Use dbt_common::collections::HashSet instead of std::collections::Hash
 [[disallowed-types]]
 path = "scc::HashMap"
 reason = "Use dbt_common::collections::SccHashMap instead of scc::HashMap for deterministic and reproducible test baselines on debug builds."
+
+# sqlparser's tree walk is generic over the visitor, so each call site with a
+# new visitor or closure compiles a copy of the whole walk (~300 KiB per crate).
+# `dbt_sqlparser_compat` compiles it once and takes a `dyn` visitor instead.
+[[disallowed-methods]]
+path = "sqlparser::ast::Visit::visit"
+reason = "Each visitor type compiles its own copy of sqlparser's tree walk. Use `dbt_sqlparser_compat::visit` instead."
+
+[[disallowed-methods]]
+path = "sqlparser::ast::VisitMut::visit"
+reason = "Each visitor type compiles its own copy of sqlparser's tree walk. Use `dbt_sqlparser_compat::visit_mut` instead."
+
+[[disallowed-methods]]
+path = "sqlparser::ast::visit_expressions"
+reason = "Each closure compiles its own copy of sqlparser's tree walk. Use `dbt_sqlparser_compat::exprs` instead."
+
+[[disallowed-methods]]
+path = "sqlparser::ast::visit_expressions_mut"
+reason = "Each closure compiles its own copy of sqlparser's tree walk. Use `dbt_sqlparser_compat::exprs::for_each_mut` instead."
+
+[[disallowed-methods]]
+path = "sqlparser::ast::visit_relations"
+reason = "Each closure compiles its own copy of sqlparser's tree walk. Use `dbt_sqlparser_compat::relations` instead."
+
+[[disallowed-methods]]
+path = "sqlparser::ast::visit_relations_mut"
+reason = "Each closure compiles its own copy of sqlparser's tree walk. Use `dbt_sqlparser_compat::visit_mut` with a `VisitorMut` instead."
+
+[[disallowed-methods]]
+path = "sqlparser::ast::visit_statements"
+reason = "Each closure compiles its own copy of sqlparser's tree walk. Use `dbt_sqlparser_compat::visit` with a `Visitor` instead."
+
+[[disallowed-methods]]
+path = "sqlparser::ast::visit_statements_mut"
+reason = "Each closure compiles its own copy of sqlparser's tree walk. Use `dbt_sqlparser_compat::visit_mut` with a `VisitorMut` instead."
