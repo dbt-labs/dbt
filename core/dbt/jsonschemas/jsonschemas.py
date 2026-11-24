@@ -39,6 +39,9 @@ _HIERARCHICAL_CONFIG_KEYS = {
 
 _ADAPTER_TO_EXTRA_KEYS = {
     "bigquery": ["dataset", "project"],
+    # dbt-labs/dbt-adapters#2359: `query_group` is a documented dbt-redshift
+    # model config consumed by the adapter outside of the resources schema
+    "redshift": ["query_group"],
     # databricks/dbt-databricks#1540, #1302, #1661
     "databricks": [
         "query_tags",
