@@ -70,7 +70,7 @@ use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::selection_override::{
     SAMPLE_CAP, format_sample, reconcile_reported_nodes, resolve_selection_override,
 };
-use dbt_schemas::schemas::{DbtCommandExecutionArtifacts, InvocationFacts};
+use dbt_schemas::schemas::{DbtCommandExecutionArtifacts, InvocationFacts, MetadataFlags};
 use dbt_schemas::{
     man::execute_man_command,
     schemas::legacy_catalog::{DbtCatalog, build_catalog},
@@ -238,7 +238,8 @@ pub async fn setup_and_execute_fs(
 
     // Capture invocation context now — eval_arg.metadata_dir() is correctly resolved here.
     // Written at exit so every path (success / error / warm-parse / Ctrl+C) is covered.
-    let invocation_ctx = if eval_arg.write_metadata {
+    // A retry can turn metadata on after it starts, so capture the context for every retry.
+    let invocation_ctx = if eval_arg.write_metadata || eval_arg.command == FsCommand::Retry {
         let common = cli.common_args();
         Some(
             InvocationContext::new(
@@ -274,8 +275,14 @@ pub async fn setup_and_execute_fs(
     };
     record_span_status(&invocation_span, span_status.as_deref());
 
-    // Write invocation record — one place covers every exit path.
-    if let Some(ctx) = invocation_ctx {
+    // Write invocation record — one place covers every exit path. Gated on the flags the run
+    // used, which a retry can have turned on after it started.
+    let flags = artifacts_sink
+        .metadata_flags
+        .unwrap_or_else(|| metadata_flags(&eval_arg));
+    if let Some(ctx) = invocation_ctx
+        && flags.write_metadata
+    {
         // NoFilesChanged (warm parse, no-op) propagates via `?` as Err rather than Ok —
         // it's a "successful sentinel", not a real failure. exit_status() == Some(0)
         // catches it and ExitRepl; everything else with exit_status() == None is a real error.
@@ -288,7 +295,7 @@ pub async fn setup_and_execute_fs(
         // The row for this invocation only exists now, so any index or
         // information schema written during the command is missing it. Bring
         // that one table up to date.
-        refresh_invocation_artifacts(&eval_arg);
+        refresh_invocation_artifacts(&eval_arg, flags);
     }
 
     // Shutdown must be called to ensure vortex flushes all events.
@@ -355,7 +362,15 @@ fn invocation_facts(resolved_state: &ResolverState) -> InvocationFacts {
     }
 }
 
-/// Re-materialize the invocations table in whichever artifacts were requested,
+fn metadata_flags(arg: &EvalArgs) -> MetadataFlags {
+    MetadataFlags {
+        write_metadata: arg.write_metadata,
+        write_index: arg.write_index,
+        generate_info_schema: arg.generate_info_schema,
+    }
+}
+
+/// Re-materialize the invocations table in whichever artifacts `flags` turned on,
 /// once the current invocation's record has been written.
 ///
 /// `--write-index` and `--generate-info-schema` both produce their output while
@@ -373,13 +388,13 @@ fn invocation_facts(resolved_state: &ResolverState) -> InvocationFacts {
 ///
 /// Advisory, like the writes themselves: a failure here leaves the rest of the
 /// artifact usable and must not fail the command.
-fn refresh_invocation_artifacts(eval_arg: &EvalArgs) {
+fn refresh_invocation_artifacts(eval_arg: &EvalArgs, flags: MetadataFlags) {
     let metadata_dir = eval_arg.metadata_dir();
     if !metadata_dir.exists() {
         return;
     }
 
-    if eval_arg.generate_info_schema
+    if flags.generate_info_schema
         && let Err(err) =
             dbt_index_core::refresh_invocations(&metadata_dir, &eval_arg.info_schema_dir())
     {
@@ -389,7 +404,7 @@ fn refresh_invocation_artifacts(eval_arg: &EvalArgs) {
         );
     }
 
-    if eval_arg.write_index {
+    if flags.write_index {
         let index_dir = eval_arg.index_dir();
         if has_persisted_state(&index_dir)
             && let Err(err) = dbt_index_core::ingest::rewrite_invocations(&metadata_dir, &index_dir)
@@ -1372,6 +1387,8 @@ impl<'a> AllPhasesExecutor<'a> {
             arg.generate_info_schema = true;
             arg.generate_info_schema_implied = true;
         }
+        // The invocation record is written from these, not from the flags the run started with.
+        self.captured_artifacts.metadata_flags = Some(metadata_flags(&self.arg));
 
         let (mut compilation, jinja_env, compilation_cache_changes) =
             self.load_and_resolve_state(token).await?;
