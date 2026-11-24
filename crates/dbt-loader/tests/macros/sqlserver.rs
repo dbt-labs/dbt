@@ -5,7 +5,7 @@ use dbt_adapter_core::AdapterType;
 use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
-use crate::macro_test_harness::MacroTestHarness;
+use crate::macro_test_harness::{MacroTestHarness, executed_sql};
 
 const ADAPTER: AdapterType = AdapterType::SqlServer;
 
@@ -86,5 +86,63 @@ mod snapshot_check_cols {
             err.contains("check_cols column 'missing' is not in the snapshot query"),
             "got: {err}"
         );
+    }
+}
+
+/// A profile's `schema_authorization` is the schema's owner. Both
+/// `sqlserver__create_schema` and `sqlserver__get_test_sql` read it from
+/// `target`, so dropping the argument is silent: the schema is created owned by
+/// the login instead.
+mod create_schema {
+    use super::*;
+
+    fn build_harness() -> MacroTestHarness {
+        let mut harness = MacroTestHarness::for_adapter(ADAPTER)
+            .load_all_macros()
+            .with_stub_functions()
+            .build()
+            .expect("harness should build");
+        harness
+            .env_mut()
+            .env
+            .add_global("execute", Value::from(true));
+        harness.mock().on("quote", |args| {
+            let id = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+            Ok(Value::from(format!("\"{}\"", id.replace('"', "\"\""))))
+        });
+        harness
+    }
+
+    fn render(schema_authorization: Value) -> String {
+        let harness = build_harness();
+        let relation = harness.relation("TestDB", "dbo", "m", None);
+        let target = BTreeMap::from([("schema_authorization", schema_authorization)]);
+        harness
+            .render(
+                "{{ sqlserver__create_schema(relation) }}",
+                BTreeMap::from([
+                    (
+                        "relation".to_string(),
+                        RelationObject::new(relation).into_value(),
+                    ),
+                    ("target".to_string(), Value::from_serialize(target)),
+                ]),
+            )
+            .expect("create_schema should render");
+        executed_sql(harness.mock()).join("\n")
+    }
+
+    #[test]
+    fn schema_authorization_is_applied() {
+        let sql = render(Value::from_serialize(Some("guest")));
+        assert!(sql.contains("CREATE SCHEMA"), "got: {sql}");
+        assert!(sql.contains("AUTHORIZATION \"guest\""), "got: {sql}");
+    }
+
+    #[test]
+    fn absent_schema_authorization_is_not_rendered() {
+        let sql = render(Value::from_serialize(Option::<&str>::None));
+        assert!(sql.contains("CREATE SCHEMA"), "got: {sql}");
+        assert!(!sql.contains("AUTHORIZATION"), "got: {sql}");
     }
 }
