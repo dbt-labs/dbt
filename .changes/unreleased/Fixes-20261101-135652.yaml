@@ -1,0 +1,6 @@
+kind: Fixes
+body: Respect --select and --exclude in dbt docs generate when --no-compile is passed
+time: 2026-11-01T13:56:52.375152+02:00
+custom:
+    Author: yoavyoavk
+    Issue: "16990"
