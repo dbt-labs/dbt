@@ -1,0 +1,6 @@
+kind: Fixes
+body: Include microbatch failure messages in run_results.json
+time: 2026-11-20T18:19:24.059752+05:00
+custom:
+    Author: ViktorBystrov72
+    Issue: "17251"
