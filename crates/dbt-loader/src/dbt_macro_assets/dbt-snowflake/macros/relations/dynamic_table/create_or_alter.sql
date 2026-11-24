@@ -148,7 +148,7 @@
         {%- set columns = snowflake__custom_incremental_discover_columns(relation, sql) -%}
     {%- endif -%}
 
-create or alter {{ transient_keyword }}dynamic table {{ relation }}{% if custom_incremental %} {{ snowflake__custom_incremental_columns_ddl(columns) }}{% endif %}
+create or alter {{ transient_keyword }}dynamic table {{ relation }}{% if custom_incremental %} {{ snowflake__list_columns(columns) }}{% endif %}
     {% if dynamic_table.target_lag is not none %}target_lag = '{{ dynamic_table.target_lag }}'{% endif %}
     warehouse = {{ dynamic_table.snowflake_warehouse }}
     {{ optional('initialization_warehouse', dynamic_table.snowflake_initialization_warehouse) }}

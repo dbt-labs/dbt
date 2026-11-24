@@ -111,14 +111,6 @@
 {%- endmacro %}
 
 
--- funcsign: (list[base_column]) -> string
-{% macro snowflake__custom_incremental_columns_ddl(columns) -%}
-    ({%- for column in columns -%}
-        {{ column.quoted }} {{ column.data_type }}{% if not loop.last %}, {% endif %}
-    {%- endfor -%})
-{%- endmacro %}
-
-
 -- funcsign: (string, list[base_column]) -> string
 {% macro snowflake__custom_incremental_refresh_using_sql(sql, columns) -%}
     {%- set strategy = snowflake__custom_incremental_strategy() -%}
