@@ -159,6 +159,23 @@ pub enum SchemaOwner {
     Deferred(String),
 }
 
+/// What changed in a store since a consumer that keeps a copy of it last
+/// looked; see [`SchemaStoreTrait::changes_since`].
+///
+/// A consumer applies `registered` before `lookup_errors`: an error is listed
+/// only while the store still holds it, so it is newer than any registration
+/// of the same relation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SchemaChanges {
+    /// Pass this back to get only later changes.
+    pub generation: u64,
+    /// Canonical FQNs registered (or re-registered) since. Read each schema
+    /// back with [`SchemaStoreTrait::get_schema`]; one removed since has none.
+    pub registered: Vec<CanonicalFqn>,
+    /// Lookup errors recorded since (see [`SchemaStoreTrait::lookup_error`]).
+    pub lookup_errors: Vec<(CanonicalFqn, String)>,
+}
+
 /// Unified abstraction for reading and writing schemas within the store.
 ///
 /// Implementors manage the backing persistence mechanism (filesystem, mocks,
@@ -248,6 +265,28 @@ pub trait SchemaStoreTrait: std::fmt::Debug + Send + Sync {
         catalog: &CanonicalIdentifier,
         schema: &CanonicalIdentifier,
     ) -> Vec<CanonicalIdentifier>;
+
+    /// The changes a consumer that keeps a copy of this store has not seen:
+    /// those after `generation`, or every entry when `generation` is 0.
+    ///
+    /// The default lists every table with generation 0, so each call returns
+    /// the whole store and no lookup errors. That is correct for any store,
+    /// at the cost of one full listing per call.
+    fn changes_since(&self, _generation: u64) -> SchemaChanges {
+        let mut registered = Vec::new();
+        for catalog in self.catalog_names() {
+            for schema in self.schema_names(&catalog) {
+                for table in self.table_names(&catalog, &schema) {
+                    registered.push(CanonicalFqn::new(&catalog, &schema, &table));
+                }
+            }
+        }
+        SchemaChanges {
+            generation: 0,
+            registered,
+            lookup_errors: Vec::new(),
+        }
+    }
 }
 
 /// Abstraction for reading and writing materialized data maintained alongside
