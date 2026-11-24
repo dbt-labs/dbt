@@ -1,0 +1,7 @@
+kind: Features
+body: Allow exposures to set the `group` config, so they can reference private models in the same group
+time: 2026-11-24T14:24:38.330849+09:00
+custom:
+    author: wxy-zzz
+    issue: "9339"
+    project: dbt-core
