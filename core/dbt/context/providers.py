@@ -1258,7 +1258,10 @@ class ProviderContext(ManifestContext):
             )
 
         self.model.build_path = self.model.get_target_write_path(
-            self.config.target_path, "run", split_suffix=split_suffix
+            self.config.target_path,
+            "run",
+            split_suffix=split_suffix,
+            project_root=self.config.project_root,
         )
         self.model.write_node(self.config.project_root, self.model.build_path, payload)
         return ""
