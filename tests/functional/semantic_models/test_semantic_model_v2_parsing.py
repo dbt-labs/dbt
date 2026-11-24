@@ -11,6 +11,7 @@ from metricflow_semantic_interfaces.type_enums import (
 from core.dbt.contracts.graph.semantic_manifest import SemanticManifest
 from dbt.artifacts.resources import MetricTimeWindow
 from dbt.contracts.graph.manifest import Manifest
+from dbt.tests.fixtures.project import write_project_files
 from tests.functional.assertions.test_runner import dbtTestRunner
 from tests.functional.semantic_models.fixtures import (
     base_schema_yml_v2,
@@ -477,6 +478,37 @@ class TestMetricOnModelParsingWorks:
             == "simple_metric_2"
         )
         assert conversion_metric_pydantic.type_params.metric_aggregation_params is None
+
+
+class TestMetricOnPackagedModel:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {"metricflow_time_spine.sql": metricflow_time_spine_sql}
+
+    @pytest.fixture(scope="class")
+    def packages(self):
+        return {"packages": [{"local": "metric_package"}]}
+
+    def test_metric_depends_on_packaged_semantic_model(self, project) -> None:
+        package_files = {
+            "dbt_project.yml": "name: metric_package",
+            "models": {
+                "schema.yml": base_schema_yml_v2 + schema_yml_v2_simple_metric_on_model_1,
+                "fct_revenue.sql": fct_revenue_sql,
+            },
+        }
+        write_project_files(project.project_root, "metric_package", package_files)
+
+        runner = dbtTestRunner()
+        assert runner.invoke(["deps"]).success
+        result = runner.invoke(["parse"])
+        assert result.success
+        assert isinstance(result.result, Manifest)
+        manifest = result.result
+        assert "semantic_model.metric_package.fct_revenue" in manifest.semantic_models
+        metric = manifest.metrics["metric.metric_package.simple_metric"]
+        assert metric.depends_on.nodes == ["semantic_model.metric_package.fct_revenue"]
+        assert runner.invoke(["ls", "--resource-type", "semantic_model"]).success
 
 
 class TestMetricHiddenMapsToIsPrivate:

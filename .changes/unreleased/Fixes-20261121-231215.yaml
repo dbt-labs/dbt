@@ -1,0 +1,6 @@
+kind: Fixes
+body: Resolve inline metrics in installed packages to their own semantic models.
+time: 2026-11-21T23:12:15.658628+05:00
+custom:
+    Author: ViktorBystrov72
+    Issue: "16142"
