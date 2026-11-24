@@ -610,6 +610,7 @@ def _run_v2(argv: List[str]) -> None:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
             env=_v2_subprocess_env(),
         )
     except FileNotFoundError as e:

@@ -12,6 +12,7 @@ from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionEr
 from dbt.parser.v2 import (
     _build_argv,
     _delete_stale_partial_parse,
+    _run_v2,
     _serialize_vars,
     parse_with_v2,
     rediscover_adapter_macros,
@@ -291,6 +292,21 @@ class TestDeleteStalePartialParse:
 
     def test_noop_when_absent(self, tmp_path: Path):
         _delete_stale_partial_parse(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("system", "expected_flags"),
+    [("Windows", 0x08000000), ("Linux", 0)],
+)
+def test_run_v2_creation_flags(system: str, expected_flags: int) -> None:
+    argv = ["dbt-core-experimental-parser", "parse"]
+    with mock.patch("dbt.parser.v2.platform.system", return_value=system), mock.patch(
+        "dbt.parser.v2.subprocess.CREATE_NO_WINDOW", 0x08000000, create=True
+    ), mock.patch("dbt.parser.v2.subprocess.Popen", return_value=_FakePopen(argv)) as popen:
+        _run_v2(argv)
+
+    creation_flags = popen.call_args.kwargs.get("creationflags", 0)
+    assert creation_flags == expected_flags
 
 
 @pytest.fixture

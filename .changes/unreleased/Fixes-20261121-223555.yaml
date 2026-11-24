@@ -1,0 +1,6 @@
+kind: Fixes
+body: Prevent the v2 parser subprocess from opening a console window on Windows.
+time: 2026-11-21T22:35:55.411796+05:00
+custom:
+    Author: ViktorBystrov72
+    Issue: "17176"
