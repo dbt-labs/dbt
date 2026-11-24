@@ -1,0 +1,7 @@
+kind: Fixes
+body: '`dbt show --output csv/tsv/ndjson/yml` keeps the scale of decimal values instead of printing the unscaled integer.'
+time: 2026-11-24T11:56:46.000000+00:00
+custom:
+    author: onurtashan
+    issue: "17304"
+    project: dbt-core
