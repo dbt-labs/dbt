@@ -132,7 +132,13 @@ impl GraphBuilder {
             .contains(&OptimizeTestsOptions::TestAggregation)
             && command_uses_generic_test_aggregation(self.arg.command)
         {
-            create_generic_test_aggregation(&self.arg.io, schedule, nodes, self.execute)?
+            create_generic_test_aggregation(
+                &self.arg.io,
+                schedule,
+                nodes,
+                self.execute,
+                resolver_state.dbt_profile.default_adapter,
+            )?
         } else {
             None
         };
@@ -193,9 +199,10 @@ impl GraphBuilder {
                         // An experimental's own command runs only that experimental's nodes.
                         let mut task_schedule = schedule.clone();
                         task_schedule.selected_nodes.retain(|unique_id| {
-                            nodes.experimentals.get(unique_id).is_some_and(|node| {
-                                node.__experimental_attr__.experimental_type == experimental_type
-                            })
+                            nodes
+                                .injected
+                                .get(unique_id)
+                                .is_some_and(|node| node.injected_kind() == Some(experimental_type))
                         });
                         Self::build_phased_task_graph(
                             &task_schedule,
@@ -796,7 +803,7 @@ fn initialize_graph(
             analyzeable,
             runnable,
             showable,
-        } = match nodes.experimentals.get(unique_id) {
+        } = match nodes.injected.get(unique_id) {
             // An experimental node has nothing to render or analyze. It runs when it is selected
             // and its experimental is running.
             Some(node) => TasksForNode {

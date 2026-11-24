@@ -1,15 +1,20 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::properties_extensions::{
+    self, ExtensionReader, Extensions, NoExtensions, ReadExtensions,
+};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::{
     RawProjectConfigsByAdapter, err_resource_name_has_spaces, extract_config_map,
-    resolve_node_quoting, select_node_adapter,
+    node_effective_propagation_target, resolve_node_quoting, select_node_adapter,
 };
 use crate::utils::{
     RelationComponents, get_node_fqn, node_starting_database_and_schema,
     register_duplicate_resource, trigger_duplicate_errors, update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
@@ -19,7 +24,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs};
 use dbt_frontend_common::Dialect;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
+use dbt_jinja_utils::phases::AdapterScopes;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::validate_delimiter;
@@ -28,29 +33,77 @@ use dbt_schemas::schemas::dbt_catalogs_deprecated::LoadedCatalogs;
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::project::WarningEmission;
 use dbt_schemas::schemas::properties::SeedProperties;
+use dbt_schemas::schemas::relations::relation_owner_adapter;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtSeed, DbtSeedAttr, NodeBaseAttributes};
-use dbt_schemas::state::resolve_effective_propagation_target;
 use dbt_schemas::state::{DbtPackage, GenericTestAsset};
 use dbt_schemas::state::{ModelStatus, NodeResolverTracker};
 use indexmap::IndexMap;
 use minijinja::value::Value as MinijinjaValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
 
+/// How a package's seeds resolve. `E` names the extensions read beside a seed's properties.
+pub(crate) struct Seeds<E = NoExtensions>(PhantomData<E>);
+
+impl<E> Default for Seeds<E> {
+    fn default() -> Self {
+        Seeds(PhantomData)
+    }
+}
+
+#[async_trait]
+impl<E: Extensions> ResolvableNode for Seeds<E> {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["seeds"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        let extensions = ExtensionReader::of::<E::Seed>(ctx);
+        // Resolve seeds based on the dbt_state, database, schema, and project name
+        let (seeds, disabled_seeds, extensions) = resolve_seeds(
+            ctx.arg,
+            ctx.properties.take_entries("seeds"),
+            ctx.package,
+            &ctx.root_project_configs.adapter_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.database,
+            ctx.schema,
+            &ctx.parse_adapter_scopes,
+            ctx.adapter_type,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            &mut ctx.node_resolver,
+            &extensions,
+        )
+        .await?;
+        ctx.nodes.seeds.extend(seeds);
+        ctx.disabled_nodes.seeds.extend(disabled_seeds);
+        properties_extensions::give_back(ctx, extensions, |ctx, unique_id| {
+            ctx.nodes.seeds.get(unique_id).cloned()
+        })
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_seeds(
     arg: &ResolveArgs,
-    mut seed_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    mut seed_properties: BTreeMap<String, PropertiesEntry>,
     package: &DbtPackage,
     // Authored quoting per declared adapter name. See `resolve_models`.
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
@@ -58,7 +111,7 @@ pub async fn resolve_seeds(
     root_project_configs: &RootProjectConfigs,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &AdapterScopes,
     default_adapter: AdapterType,
     package_name: &str,
     jinja_env: &JinjaEnv,
@@ -67,7 +120,14 @@ pub async fn resolve_seeds(
     test_name_truncations: &mut HashMap<String, String>,
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     node_resolver: &mut NodeResolver,
-) -> FsResult<(HashMap<String, Arc<DbtSeed>>, HashMap<String, Arc<DbtSeed>>)> {
+    extensions: &ExtensionReader,
+) -> FsResult<(
+    HashMap<String, Arc<DbtSeed>>,
+    HashMap<String, Arc<DbtSeed>>,
+    Vec<(String, ReadExtensions)>,
+)> {
+    // The extensions of each seed whose entry has some, by the seed's unique id.
+    let mut read_extensions: Vec<(String, ReadExtensions)> = Vec::new();
     let mut seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let mut disabled_seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let io_args = &arg.io;
@@ -245,6 +305,15 @@ pub async fn resolve_seeds(
                 dependency_package_name,
                 WarningEmission::Emit,
             );
+            // Read before the entry is typed as a seed's.
+            if let Some(read) = extensions.read(
+                &mut mpe.schema_value,
+                jinja_env,
+                base_ctx,
+                dependency_package_name,
+            )? {
+                read_extensions.push((unique_id.clone(), read));
+            }
             (
                 into_typed_with_jinja::<SeedProperties, _>(
                     mpe.schema_value,
@@ -353,12 +422,7 @@ pub async fn resolve_seeds(
         let original_file_path =
             stdfs::diff_paths(seed_file.base_path.join(&path), &io_args.in_dir)?;
 
-        // See `resolve_models`: both remaining layers depend on the node's
-        // `+adapter`, which the config merge cannot know. Written back so
-        // `deprecated_config` carries the resolved value too.
-        // `propagate` comes straight off the node's own config. Unlike
-        // `adapter` there is no target default to fall back to and nothing to
-        // inherit: an unset `+propagate` means "publish nowhere".
+        // An unset `+propagate` leaves target selection to the implicit rules.
         let selected_propagate: Vec<AdapterType> = properties_config
             .propagate
             .clone()
@@ -366,19 +430,20 @@ pub async fn resolve_seeds(
             .unwrap_or_default();
         let catalog_requires_snowflake = catalogs_state
             .catalog_requires_snowflake_propagation(properties_config.catalog_name.as_deref())?;
-        let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
-            .then(|| {
-                arg.profile_adapter_types.as_deref().and_then(|adapters| {
-                    resolve_effective_propagation_target(
-                        &selected_propagate,
-                        adapters,
-                        catalog_requires_snowflake,
-                    )
-                })
-            })
-            .flatten();
-        properties_config.quoting =
-            resolve_node_quoting(properties_config.quoting, adapter_quoting, selected_adapter);
+        let effective_propagation_target = node_effective_propagation_target(
+            arg,
+            selected_adapter,
+            default_adapter,
+            &selected_propagate,
+            catalog_requires_snowflake,
+        );
+        // Resolve quoting against the adapter that owns the relation, as in `resolve_models`.
+        // Write it back so `deprecated_config` carries the resolved value too.
+        properties_config.quoting = resolve_node_quoting(
+            properties_config.quoting,
+            adapter_quoting,
+            relation_owner_adapter(selected_adapter, effective_propagation_target),
+        );
 
         let (node_database, node_schema) = node_starting_database_and_schema(
             Some(parse_adapter_scopes),
@@ -521,5 +586,5 @@ pub async fn resolve_seeds(
     }
 
     trigger_duplicate_errors(&mut duplicate_errors)?;
-    Ok((seeds, disabled_seeds))
+    Ok((seeds, disabled_seeds, read_extensions))
 }

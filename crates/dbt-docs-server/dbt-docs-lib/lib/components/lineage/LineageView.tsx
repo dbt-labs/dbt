@@ -1,14 +1,12 @@
-import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Maximize2 } from 'lucide-react';
 
+import { useNavigation } from '../../context/NavigationProvider';
 import { useLineageData } from '../../hooks/useLineageData';
-import { paths } from '../../routes';
 import { Spinner } from '../ui/Spinner';
 import { UNSUPPORTED_SURFACE_MESSAGE } from '../ui/UnsupportedSurfaceMessage';
-import { NoLineageFallback } from './NoLineageFallback';
 import { Button } from './../ui/Button';
 import { BaseDag } from './BaseDag';
+import { NoLineageFallback } from './NoLineageFallback';
 
 interface LineageViewProps {
   rootUniqueId: string;
@@ -16,7 +14,7 @@ interface LineageViewProps {
 }
 
 export function LineageView({ rootUniqueId, modelName }: LineageViewProps) {
-  const navigate = useNavigate();
+  const { navigate, paths } = useNavigation();
   const { data, error, dagNodes, isSupported } = useLineageData(rootUniqueId, 1);
 
   if (error) {

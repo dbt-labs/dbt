@@ -1,6 +1,6 @@
 use crate::proto::v1::public::events::fusion::{
     node::{
-        MicrobatchBatchSize, MicrobatchEvaluated, NodeCacheDetail, NodeEvaluated,
+        MicrobatchBatchSize, MicrobatchEvaluated, NodeCacheDetail, NodeComputeMode, NodeEvaluated,
         NodeEvaluationDetail, NodeMaterialization, NodeOutcome, NodeProcessed, NodeSkipReason,
         NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome, SourceFreshnessDetail,
         SourceFreshnessOutcome, TestEvaluationDetail, TestOutcome, node_evaluated, node_processed,
@@ -68,6 +68,18 @@ impl NodeType {
             Self::Function => "function",
             Self::Check => "check",
             Self::Experimental => "experimental",
+        }
+    }
+}
+
+impl NodeComputeMode {
+    /// Lowercase name of the compute mode. Empty when unspecified.
+    pub const fn as_static_ref(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "",
+            Self::Remote => "remote",
+            Self::Local => "local",
+            Self::LakeCompute => "lake_compute",
         }
     }
 }
@@ -415,6 +427,8 @@ impl NodeEvaluated {
             None, // idle_time_ms
             None, // state_decision_id
             None, // adapter_response
+            None, // compute_mode
+            None, // catalog_type
             None, // node_outcome_detail
         )
     }
@@ -537,6 +551,16 @@ impl NodeProcessed {
             None, // adapter
             None, // experimental_type
             None, // adapter_response
+            None, // compute_mode
+            None, // catalog_type
+            None, // incremental_strategy
+            None, // snapshot_strategy
+            None, // language
+            None, // contract_enforced
+            None, // access
+            None, // versioned
+            None, // table_format
+            None, // catalog_name
             None, // node_outcome_detail
         )
     }

@@ -49,7 +49,10 @@ pub fn config_aliases(adapter_type: AdapterType) -> &'static [(&'static str, &'s
             ("SQL_ATTR_TRACE", "trace_flag"),
         ],
         // Verified: these adapters' `Credentials` declare no `_ALIASES`.
-        AdapterType::Snowflake | AdapterType::Spark | AdapterType::DuckDB => &[],
+        AdapterType::Snowflake
+        | AdapterType::Spark
+        | AdapterType::DuckDB
+        | AdapterType::MotherDuck => &[],
         // TODO(fs#13424): `_ALIASES` not transcribed for this adapter -- its Python package was
         // not vendored in the local cache used to populate this map.
         AdapterType::Salesforce

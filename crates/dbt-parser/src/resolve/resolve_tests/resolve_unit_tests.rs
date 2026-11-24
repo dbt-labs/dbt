@@ -4,12 +4,17 @@ use crate::dbt_project_config::RootProjectConfigs;
 use crate::dbt_project_config::disallow_plus_prefix_from_flags;
 use crate::dbt_project_config::init_project_config;
 use crate::renderer::strip_warehouse_keys_in_config_block;
-use crate::resolve::resolve_properties::MinimalPropertiesEntry;
+use crate::resolve::properties_index::PropertiesEntry;
+use crate::resolve::properties_index::{
+    IndexCtx, IndexedName, name_value, render_name, validate_resource_name,
+};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::validate_unit_test_compute;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::CodeLocationWithFile;
 use dbt_common::ErrorCode;
@@ -21,6 +26,7 @@ use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
 use dbt_common::stdfs;
+use dbt_yaml::Verbatim;
 
 use dbt_common::path::DbtPath;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -79,10 +85,68 @@ pub(crate) fn unit_test_jinja_join_error(
     )
 }
 
+/// How a package's unit tests resolve.
+pub(crate) struct UnitTests;
+
+#[async_trait]
+impl ResolvableNode for UnitTests {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["unit_tests"]
+    }
+
+    /// The name of a unit test is rendered on the runtime's blocking pool.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        ctx: &IndexCtx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        let name = name_value(item)?;
+        let name_span = name.span().clone();
+        let env = Arc::clone(ctx.jinja_env);
+        let context = Arc::clone(ctx.base_ctx);
+        let dependency_package = ctx.dependency_package_name.map(str::to_owned);
+        let name = dbt_runtime::spawn_blocking(move || {
+            render_name(name, &env, context.as_ref(), dependency_package.as_deref())
+        })
+        .await
+        .map_err(unit_test_jinja_join_error)??;
+        Ok(vec![IndexedName {
+            key,
+            name: validate_resource_name(&name)?,
+            name_span,
+        }])
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        let (unit_tests, disabled_unit_tests) = resolve_unit_tests(
+            ctx.arg,
+            ctx.properties.take_entries("unit_tests"),
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.package_quoting,
+            ctx.root_project_configs,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+            &ctx.model_properties,
+            &ctx.nodes.models,
+            &ctx.dbt_state.packages,
+            ctx.adapter_type,
+            &ctx.node_resolver,
+        )
+        .await?;
+
+        ctx.nodes.unit_tests.extend(unit_tests);
+        ctx.disabled_nodes.unit_tests.extend(disabled_unit_tests);
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_unit_tests(
     arg: &ResolveArgs,
-    unit_test_properties: BTreeMap<String, MinimalPropertiesEntry>,
+    unit_test_properties: BTreeMap<String, PropertiesEntry>,
     package: &DbtPackage,
     root_package: &DbtPackage,
     package_quoting: DbtQuoting,
@@ -90,7 +154,7 @@ pub async fn resolve_unit_tests(
     package_name: &str,
     jinja_env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
-    model_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    model_properties: &BTreeMap<String, PropertiesEntry>,
     models: &BTreeMap<String, Arc<DbtModel>>,
     packages: &[DbtPackage],
     adapter_type: AdapterType,
@@ -255,7 +319,7 @@ pub async fn resolve_unit_tests(
                     continue;
                 } else {
                     return err!(
-                        ErrorCode::Unexpected,
+                        ErrorCode::InvalidConfig,
                         "Invalid given input: {}",
                         input.as_str()
                     );
@@ -436,7 +500,8 @@ pub async fn resolve_unit_tests(
                 model: unit_test.model.to_string(),
                 given,
                 expect,
-                versions: None,
+                // The `include`/`exclude` the YAML declares, as in `manifest.json`.
+                versions: declared_versions(unit_test.versions.as_ref()),
                 version: None,
                 overrides: unit_test.overrides.clone(),
             },
@@ -813,6 +878,13 @@ fn parse_version_numbers_yml(value: &dbt_yaml::Value) -> Option<Vec<String>> {
     }
 }
 
+/// The `versions:` block as the node carries it: `include` and `exclude` as declared.
+fn declared_versions(
+    versions: Option<&dbt_yaml::Value>,
+) -> Option<dbt_schemas::schemas::common::IncludeExclude> {
+    dbt_yaml::from_value(versions?.clone()).ok()
+}
+
 fn should_include_version_for_unit_test(
     include: &Option<Vec<String>>,
     exclude: &Option<Vec<String>>,
@@ -857,6 +929,17 @@ mod tests {
         (Arc::new(JinjaEnv::new(env)), calls)
     }
 
+    #[test]
+    fn declared_versions_keeps_include_and_exclude() {
+        let block: dbt_yaml::Value = dbt_yaml::from_str("include: [1, 2]\nexclude: 3\n").unwrap();
+        let got = declared_versions(Some(&block)).expect("a versions block is kept");
+        assert_eq!(
+            serde_json::to_value(&got).unwrap(),
+            serde_json::json!({"include": ["1", "2"], "exclude": "3"}),
+        );
+        assert!(declared_versions(None).is_none());
+    }
+
     #[dbt_runtime::test]
     async fn unit_test_properties_jinja_uses_runtime_worker() -> FsResult<()> {
         assert!(!dbt_runtime::is_pool_worker());
@@ -871,7 +954,7 @@ mod tests {
             AdapterType::DuckDB,
             true,
         )?;
-        let entry = MinimalPropertiesEntry {
+        let entry = PropertiesEntry {
             name: "runtime_test".to_string(),
             name_span: Default::default(),
             relative_path: "models/unit_tests.yml".into(),
@@ -906,19 +989,18 @@ mod tests {
     #[dbt_runtime::test]
     async fn unit_test_discovery_jinja_uses_runtime_worker() -> FsResult<()> {
         let (env, calls) = runtime_probe_env();
-        let properties = dbt_yaml::from_str(
-            "unit_tests:\n  - name: 'runtime_{{ runtime_probe() }}'\n    model: my_model\n    given: []\n    expect:\n      rows: []\n",
+        let item: dbt_yaml::Value = dbt_yaml::from_str(
+            "name: 'runtime_{{ runtime_probe() }}'\nmodel: my_model\ngiven: []\nexpect:\n  rows: []\n",
         )?;
-        let mut minimal = crate::resolve::resolve_properties::MinimalProperties::default();
-        minimal
-            .extend_from_minimal_properties_file(
-                properties,
-                &env,
-                std::path::Path::new("models/unit_tests.yml"),
-                &BTreeMap::new(),
+        let env = Arc::new(env);
+        let names = UnitTests
+            .index_item(
+                "unit_tests",
+                &item,
+                &IndexCtx::new(&env, &Arc::new(BTreeMap::new())),
             )
             .await?;
-        assert_eq!(minimal.unit_tests.len(), 1);
+        assert_eq!(names.len(), 1);
         assert!(calls.load(Ordering::SeqCst) > 0);
         Ok(())
     }

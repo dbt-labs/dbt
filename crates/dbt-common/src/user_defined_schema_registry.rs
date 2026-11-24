@@ -10,6 +10,7 @@
 //! catalog-lookup path, rather than falling through to placeholder inference.
 
 use crate::collections::{HashSet, SccHashMap};
+use crate::sccmap;
 
 /// The key a relation is recorded under: `catalog.schema.table`, each part
 /// double-quoted (with `"` doubled) unless it is a lowercase identifier,
@@ -67,6 +68,15 @@ impl UserDefinedSchemaRegistry {
     pub fn columns_for(&self, relation: &str) -> Option<HashSet<String>> {
         self.declared_columns.read_sync(relation, |_, c| c.clone())
     }
+
+    /// Every recorded relation with its declared columns, in no particular
+    /// order.
+    pub fn entries(&self) -> Vec<(String, Vec<String>)> {
+        sccmap::to_vec_cloned(&self.declared_columns)
+            .into_iter()
+            .map(|(relation, columns)| (relation, columns.into_iter().collect()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -111,6 +121,26 @@ mod tests {
         let registry = UserDefinedSchemaRegistry::new();
         registry.record_column("a", "c");
         assert!(registry.columns_for("b").is_none());
+    }
+
+    #[test]
+    fn entries_lists_every_relation_and_its_columns() {
+        let registry = UserDefinedSchemaRegistry::new();
+        registry.record_column("a", "c1");
+        registry.record_column("a", "c2");
+        registry.record_column("b", "c");
+        let mut entries = registry.entries();
+        entries.sort();
+        for (_, columns) in &mut entries {
+            columns.sort();
+        }
+        assert_eq!(
+            entries,
+            vec![
+                ("a".to_string(), vec!["c1".to_string(), "c2".to_string()]),
+                ("b".to_string(), vec!["c".to_string()]),
+            ]
+        );
     }
 
     #[test]

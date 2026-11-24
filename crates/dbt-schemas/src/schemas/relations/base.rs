@@ -1,11 +1,12 @@
 //! Reference: dbt-adapters/src/dbt/adapters/contracts/relation.py
 use crate::dbt_types::RelationType;
-use crate::filter::RunFilter;
+use crate::filter::{EMPTY_TABLE_MARKER, RunFilter};
 use crate::schemas::common::ResolvedQuoting;
 pub use crate::schemas::dbt_catalogs::TableFormat;
 
 use chrono::format::SecondsFormat;
 use dbt_adapter_core::{AdapterType, quote_char};
+use dbt_adapter_sql::ident::escaped_identifier;
 use dbt_common::FsResult;
 use dbt_common::constants::DBT_CTE_PREFIX;
 use dbt_schema_store::CanonicalFqn;
@@ -409,8 +410,11 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     }
 
     /// Quote a relation component (database, schema, or identifier)
-    fn quoted(&self, s: &str) -> String {
-        format!("{}{}{}", self.quote_character(), s, self.quote_character())
+    fn quoted(&self, id: &str) -> String {
+        let adapter_type = self.adapter_type();
+        let quote = quote_char(adapter_type);
+        let escaped = escaped_identifier(id.into(), adapter_type, quote);
+        format!("{quote}{escaped}{quote}")
     }
 
     /// Get the semantic name fully qualified for a Relation
@@ -521,10 +525,12 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     ) -> String {
         let rendered = self.render_self_as_str();
 
-        let rendered = if run_filter.empty {
-            format!("(select * from {rendered} where false limit 0)")
-        } else {
+        let rendered = if !run_filter.empty {
             rendered
+        } else if run_filter.empty_marker {
+            format!("{EMPTY_TABLE_MARKER}{rendered}")
+        } else {
+            format!("(select * from {rendered} where false limit 0)")
         };
 
         // no event_time? no filter
@@ -568,7 +574,8 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
             | AdapterType::DuckDB
             | AdapterType::LakeCompute
             | AdapterType::Fabric
-            | AdapterType::SqlServer => (
+            | AdapterType::SqlServer
+            | AdapterType::MotherDuck => (
                 start.map(|start| format!("{event_time} >= '{start}'")),
                 end.map(|end| format!("{event_time} < '{end}'")),
             ),

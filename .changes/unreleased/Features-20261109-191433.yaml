@@ -1,0 +1,7 @@
+kind: Features
+body: Accept dbt-trino profile fields for Trino targets.
+time: 2026-11-09T19:14:33.949961+01:00
+custom:
+    author: lucargir
+    issue: "17101"
+    project: dbt-core

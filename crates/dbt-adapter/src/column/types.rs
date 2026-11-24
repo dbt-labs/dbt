@@ -613,7 +613,7 @@ impl Column {
         }
     }
 
-    #[cold]
+    #[inline(never)]
     pub fn new_boxed(
         adapter_type: AdapterType,
         name: String,
@@ -687,7 +687,7 @@ impl Column {
     /// Create a new BigQuery column
     ///
     /// `mode` ias a field is seen in BQ (https://cloud.google.com/bigquery/docs/schemas#modes)
-    #[cold]
+    #[inline(never)]
     pub fn new_bigquery(
         name: String,
         original_sql_str: String,
@@ -1239,7 +1239,7 @@ impl Column {
             // otherwise ALTER them to `character varying(256)`.
             // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L169-L172
             AdapterType::Databricks => return Ok(false),
-            AdapterType::DuckDB => {
+            AdapterType::DuckDB | AdapterType::MotherDuck => {
                 let same_type = DefaultTypeOps::new(AdapterType::DuckDB)
                     .normalize_and_compare_sql_types(&self.data_type(), &other.data_type())
                     .map_err(|error| {

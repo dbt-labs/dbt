@@ -83,7 +83,8 @@ pub fn is_update_statement(sql: &str, adapter_type: AdapterType) -> bool {
         | AdapterType::Datafusion
         | AdapterType::Dremio
         | AdapterType::Oracle
-        | AdapterType::LakeCompute => false,
+        | AdapterType::LakeCompute
+        | AdapterType::MotherDuck => false,
     }
 }
 
@@ -129,6 +130,18 @@ mod tests {
                 "expected update statement: {sql}"
             );
         }
+    }
+
+    #[test]
+    fn update_detection_with_comments() {
+        let sql = "-- c\nUPDATE t SET a = 1";
+        assert!(is_update_statement(sql, AdapterType::Bigquery));
+        assert!(!is_update_statement(sql, AdapterType::Snowflake));
+        // The default tokenizer does not split a word at `--`.
+        assert!(!is_update_statement(
+            "UPDATE-- c\nt SET a = 1",
+            AdapterType::Bigquery
+        ));
     }
 
     #[test]
@@ -225,6 +238,7 @@ mod tests {
             AdapterType::Databricks,
             AdapterType::Postgres,
             AdapterType::DuckDB,
+            AdapterType::MotherDuck,
         ] {
             assert!(!is_update_statement(
                 "CREATE TABLE foo (id int)",

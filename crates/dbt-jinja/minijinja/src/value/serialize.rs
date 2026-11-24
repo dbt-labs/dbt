@@ -41,8 +41,14 @@ impl serde::ser::Error for InvalidValue {
 pub fn transform<T: Serialize>(value: T) -> Value {
     match value.serialize(ValueSerializer) {
         Ok(rv) => rv,
-        Err(invalid) => Value::from(Error::new(ErrorKind::BadSerialization, invalid.0)),
+        Err(invalid) => bad_serialization(invalid),
     }
+}
+
+#[cold]
+#[inline(never)]
+fn bad_serialization(invalid: InvalidValue) -> Value {
+    Value::from(Error::new(ErrorKind::BadSerialization, invalid.0))
 }
 
 pub struct ValueSerializer;

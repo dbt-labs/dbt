@@ -11,7 +11,7 @@
    Parsing models/test_evens.sql
    Parsing functions/hide_cool_and_finance.sql
    Running ../scratch/target/run/test/seeds/base_model_seed.sql
- Succeeded seed  adapters_databricks_row_filters.base_model_seed (table) [1 of 8 in duration]
+ Succeeded seed  adapters_databricks_row_filters.base_model_seed (table) [1 of 8 in duration, 5 rows]
  Rendering models/test_evens.sql
    Running models/test_evens.sql
  Succeeded model adapters_databricks_row_filters.test_evens (mat_view) [2 of 8 in duration]

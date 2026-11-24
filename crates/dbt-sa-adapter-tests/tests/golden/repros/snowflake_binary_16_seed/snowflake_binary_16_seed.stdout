@@ -2,7 +2,7 @@
    Loading profiles.yml
    Parsing seeds/seeds.yml
    Running ../scratch/target/run/hello_world/seeds/binseed.sql
- Succeeded seed  snowflake_binary_16_seed.binseed (table) [1 of 1 in duration]
+ Succeeded seed  snowflake_binary_16_seed.binseed (table) [1 of 1 in duration, 4 rows]
 ==================== Execution Summary =====================
 Finished 'seed' successfully for target 'snowflake' [duration]
 Processed: 1 seed

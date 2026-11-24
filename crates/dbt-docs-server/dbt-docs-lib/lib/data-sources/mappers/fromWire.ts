@@ -53,7 +53,10 @@ import type { AssetCounts } from '../../shared/typings/domain/counts';
 import type { Distribution } from '../../shared/typings/domain/distribution';
 import type { Facets, FacetValue } from '../../shared/typings/domain/facets';
 import type { FileEntry } from '../../shared/typings/domain/files';
-import type { ColumnLineageGraph, LineageGraph } from '../../shared/typings/domain/lineage';
+import type {
+  ColumnLineageGraph,
+  LineageGraph,
+} from '../../shared/typings/domain/lineage';
 import type { ProjectOverview } from '../../shared/typings/domain/overview';
 import type { Project } from '../../shared/typings/domain/project';
 import type {

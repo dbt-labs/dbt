@@ -1,4 +1,4 @@
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient } from 'dbt-docs-lib';
 
 /** Shared QueryClient: never refetch on window focus, and retry up to three times.
  *

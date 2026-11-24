@@ -219,6 +219,21 @@ impl TypeOps for DefaultTypeOps {
             Fabric => fabric::try_format_type(data_type, nullable, out),
             SqlServer => sqlserver::try_format_type(data_type, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
+            // The dbt convert functions have no nested types. DuckDB rejects the
+            // `ARRAY<T>` and `STRUCT<..>` forms of the default path.
+            // https://duckdb.org/docs/stable/sql/data_types/overview
+            DuckDB
+                if matches!(
+                    data_type,
+                    DataType::List(_)
+                        | DataType::LargeList(_)
+                        | DataType::ListView(_)
+                        | DataType::LargeListView(_)
+                        | DataType::Struct(_)
+                ) =>
+            {
+                self.format_sql_type(SqlType::from_arrow_type(adapter_type, data_type), out)
+            }
             _ => {
                 // Logical types without native Arrow encodings use
                 // FixedSizeList(field, 1). Render the logical field name (for
@@ -592,7 +607,7 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Postgres => todo!(),
         AdapterType::Salesforce => todo!(),
         AdapterType::Spark => todo!(),
-        AdapterType::DuckDB | AdapterType::LakeCompute => todo!(),
+        AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => todo!(),
         AdapterType::Fabric => FABRIC_METADATA_SQL_TYPE_KEY,
         AdapterType::SqlServer => todo!(),
         AdapterType::ClickHouse => CLICKHOUSE_METADATA_SQL_TYPE_KEY,
@@ -645,7 +660,7 @@ impl SdfSchemaBuilder {
         let metadata = field.metadata();
         let comment = match self.adapter_type {
             Bigquery => metadata.get("Description"),
-            Redshift | Databricks | Spark | DuckDB | LakeCompute => {
+            Redshift | Databricks | Spark | DuckDB | LakeCompute | MotherDuck => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
             // no evidence that these drivers store comments in metadata, but just in case
@@ -691,8 +706,8 @@ impl SdfSchemaBuilder {
         use AdapterType::*;
         match self.adapter_type {
             Bigquery | Redshift | Databricks | Spark | DuckDB | LakeCompute | Fabric
-            | SqlServer | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
-            | Datafusion => {
+            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+            | MotherDuck | SqlServer => {
                 let original_fields = self.original.fields();
                 let mut sdf_fields = Vec::with_capacity(original_fields.len());
                 for field in original_fields {
@@ -739,7 +754,7 @@ pub mod bigquery {
     // XXX: make private once all tests are moved to here
     use arrow_schema::{DataType, Field};
     use dbt_adapter_core::AdapterType;
-    use dbt_adapter_sql::ident::Ident;
+    use dbt_adapter_sql::ident::bigquery::Ident;
 
     use crate::AdapterResult;
     use crate::sql_types::{DefaultTypeOps, get_field_sql_type_metadata_key};
@@ -788,11 +803,7 @@ pub mod bigquery {
                     .map(|field| {
                         let mut field_type = String::new();
                         try_format_type(field.data_type(), field.is_nullable(), &mut field_type)?;
-                        Ok(format!(
-                            "{} {field_type}",
-                            Ident::new(field.name(), AdapterType::Bigquery)
-                                .display(AdapterType::Bigquery)
-                        ))
+                        Ok(format!("{} {field_type}", Ident::new(field.name())))
                     })
                     .collect::<AdapterResult<Vec<_>>>()?;
 
@@ -1181,8 +1192,8 @@ pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
         Snowflake => Some(16_777_216),
         Redshift => Some(256),
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | SqlServer | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
-        | Datafusion => None,
+        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+        | MotherDuck | SqlServer => None,
     }
 }
 
@@ -1193,8 +1204,8 @@ pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
         Redshift => Some(65_535),
         // TODO: define limits for more systems
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | SqlServer | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
-        | Datafusion => None,
+        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+        | MotherDuck | SqlServer => None,
     }
 }
 
@@ -2151,5 +2162,63 @@ mod tests {
         );
         assert_eq!(convert_type(&DataType::Boolean, Spark), "boolean");
         assert_eq!(convert_type(&DataType::Date64, Spark), "date");
+    }
+
+    #[test]
+    fn duckdb_formats_nested_arrow_types_as_duckdb_types() {
+        use arrow_schema::Fields;
+
+        let ops = DefaultTypeOps::new(DuckDB);
+        let format = |data_type: DataType| {
+            let mut out = String::new();
+            ops.format_arrow_type_as_sql(&data_type, true, &mut out)
+                .unwrap();
+            out
+        };
+        let item = |data_type| Arc::new(Field::new("item", data_type, true));
+        let fields = || {
+            Fields::from(vec![
+                Field::new("a", DataType::Int64, false),
+                Field::new("b", DataType::Utf8, true),
+            ])
+        };
+
+        assert_eq!(format(DataType::List(item(DataType::Int64))), "BIGINT[]");
+        assert_eq!(
+            format(DataType::LargeList(item(DataType::Utf8))),
+            "VARCHAR[]"
+        );
+        assert_eq!(
+            format(DataType::ListView(item(DataType::Boolean))),
+            "BOOLEAN[]"
+        );
+        assert_eq!(
+            format(DataType::LargeListView(item(DataType::Date32))),
+            "DATE[]"
+        );
+        assert_eq!(
+            format(DataType::Struct(fields())),
+            "STRUCT(a BIGINT, b VARCHAR)"
+        );
+        assert_eq!(
+            format(DataType::List(item(DataType::Struct(fields())))),
+            "STRUCT(a BIGINT, b VARCHAR)[]"
+        );
+    }
+
+    /// DuckDB scalar types keep the types of the dbt convert functions.
+    #[test]
+    fn duckdb_formats_scalar_arrow_types_with_convert_types() {
+        let ops = DefaultTypeOps::new(DuckDB);
+        for (data_type, expected) in [
+            (DataType::Int64, "integer"),
+            (DataType::Utf8, "text"),
+            (DataType::Float64, "float8"),
+        ] {
+            let mut out = String::new();
+            ops.format_arrow_type_as_sql(&data_type, false, &mut out)
+                .unwrap();
+            assert_eq!(out, expected);
+        }
     }
 }

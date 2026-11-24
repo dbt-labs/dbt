@@ -83,7 +83,7 @@ use dbt_common::{
 };
 use dbt_schemas::schemas::serde::yaml_to_fs_error;
 use dbt_yaml::Value;
-use minijinja::{constants::CURRENT_SPAN, listener::RenderingEventListener};
+use minijinja::{constants::CURRENT_SPAN, listener::RenderingEventListener, value::OverlayMap};
 use regex::Regex;
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -135,21 +135,30 @@ pub trait MinijinjaContext: Serialize {
     fn with_yaml_span(&self, span: &dbt_yaml::Span) -> Option<Box<Self>>;
 }
 
+fn current_span_value(span: &dbt_yaml::Span) -> minijinja::Value {
+    minijinja::Value::from_serialize(minijinja::compiler::tokens::Span {
+        start_line: span.start.line() as u32,
+        start_col: span.start.column() as u32,
+        start_offset: span.start.index() as u32,
+        end_line: span.end.line() as u32,
+        end_col: span.end.column() as u32,
+        end_offset: span.end.index() as u32,
+    })
+}
+
 impl MinijinjaContext for BTreeMap<String, minijinja::Value> {
     fn with_yaml_span(&self, span: &dbt_yaml::Span) -> Option<Box<Self>> {
         let mut ctx = self.clone();
-        let minijinja_span = minijinja::compiler::tokens::Span {
-            start_line: span.start.line() as u32,
-            start_col: span.start.column() as u32,
-            start_offset: span.start.index() as u32,
-            end_line: span.end.line() as u32,
-            end_col: span.end.column() as u32,
-            end_offset: span.end.index() as u32,
-        };
-        ctx.insert(
-            CURRENT_SPAN.to_string(),
-            minijinja::Value::from_serialize(minijinja_span),
-        );
+        ctx.insert(CURRENT_SPAN.to_string(), current_span_value(span));
+        Some(Box::new(ctx))
+    }
+}
+
+/// Layers the span over the overlay's base instead of copying the base.
+impl MinijinjaContext for OverlayMap {
+    fn with_yaml_span(&self, span: &dbt_yaml::Span) -> Option<Box<Self>> {
+        let mut ctx = self.clone();
+        ctx.insert(CURRENT_SPAN, current_span_value(span));
         Some(Box::new(ctx))
     }
 }
@@ -376,17 +385,11 @@ where
     let mut typechecking = Vec::new();
     let jinja_renderer = |value: &Value| match value {
         Value::String(s, yaml_span) => {
-            let updated_ctx = ctx.with_yaml_span(yaml_span);
-            let ctx = if let Some(ctx) = &updated_ctx {
-                ctx
-            } else {
-                ctx
-            };
-            let (expanded, diagnostics) =
+            let (rendered, diagnostics) =
                 render_jinja_str(s, should_render_secrets, env, ctx, listeners, yaml_span)
                     .map_err(|e| e.with_location(yaml_span.clone()))?;
             typechecking.extend(diagnostics);
-            Ok(Some(expanded.with_span(yaml_span.clone())))
+            Ok(rendered.map(|rendered| rendered.with_span(yaml_span.clone())))
         }
         _ => Ok(None),
     };
@@ -413,19 +416,24 @@ where
 {
     let mut warnings: Vec<FsError> = Vec::new();
     let warn_unused_keys = |path: dbt_yaml::path::Path, key: &Value, _: &Value| {
-        let key_repr = dbt_yaml::to_string(key).unwrap_or_else(|_| "<opaque>".to_string());
-        let path = strip_dunder_fields_from_path(&path.to_string());
-        warnings.push(*fs_err!(
-            code => ErrorCode::UnusedConfigKey,
-            loc => key.span().clone(),
-            "Ignored unexpected key `{:?}`. YAML path: `{}`.", key_repr.trim(), path
-        ))
+        warnings.push(*unused_key_error(key, &path.to_string()))
     };
 
     let res = value
         .into_typed(warn_unused_keys, transform)
         .map_err(|e| yaml_to_fs_error(e, None))?;
     Ok((res, warnings))
+}
+
+/// The error for the key `key` at the YAML path `path`, which nothing reads.
+pub fn unused_key_error(key: &Value, path: &str) -> Box<FsError> {
+    let key_repr = dbt_yaml::to_string(key).unwrap_or_else(|_| "<opaque>".to_string());
+    let path = strip_dunder_fields_from_path(path);
+    fs_err!(
+        code => ErrorCode::UnusedConfigKey,
+        loc => key.span().clone(),
+        "Ignored unexpected key `{:?}`. YAML path: `{}`.", key_repr.trim(), path
+    )
 }
 
 /// Strips any dunder fields (fields of the form `__<something>__`) from a dot-separated path string.
@@ -441,24 +449,29 @@ pub fn strip_dunder_fields_from_path(path: &str) -> String {
 }
 
 /// Render a Jinja expression to a Value
-fn render_jinja_str<S: Serialize>(
+///
+/// Returns `None` if the string renders to itself, so the caller can keep the original value.
+fn render_jinja_str<S: MinijinjaContext>(
     s: &str,
     should_render_secrets: bool,
     env: &JinjaEnv,
     ctx: &S,
     listeners: &[Rc<dyn RenderingEventListener>],
     yaml_span: &dbt_yaml::Span,
-) -> FsResult<(Value, Vec<FsError>)> {
-    // Fast path: if string contains no Jinja control characters, return as-is
+) -> FsResult<(Option<Value>, Vec<FsError>)> {
+    // Fast path: a string without Jinja control characters needs no context and has no
+    // diagnostics, so only its secrets are rendered.
     // Reference: https://github.com/dbt-labs/dbt-mantle/blob/main/core/dbt/clients/jinja.py#L139
     if !RE_HAS_RENDER_CHARS.is_match(s) {
-        let result = if should_render_secrets {
-            render_secrets(s.to_string())?
+        let rendered = if should_render_secrets {
+            render_secrets(s)?.map(Value::string)
         } else {
-            s.to_string()
+            None
         };
-        return Ok((Value::string(result), Vec::new()));
+        return Ok((rendered, Vec::new()));
     }
+    let ctx_with_span = ctx.with_yaml_span(yaml_span);
+    let ctx = ctx_with_span.as_deref().unwrap_or(ctx);
     if let Some(body) = single_expression_body(s) {
         let compiled = env.compile_expression(body)?;
 
@@ -477,12 +490,13 @@ fn render_jinja_str<S: Serialize>(
             )
         })?;
         let val = match val {
-            Value::String(s, span) if should_render_secrets => {
-                Value::string(render_secrets(s)?).with_span(span)
-            }
+            Value::String(s, span) if should_render_secrets => match render_secrets(&s)? {
+                Some(rendered) => Value::string(rendered).with_span(span),
+                None => Value::String(s, span),
+            },
             _ => val,
         };
-        Ok((val, diagnostics))
+        Ok((Some(val), diagnostics))
     // Otherwise, process the entire string through Jinja
     } else {
         // Compile template and perform typechecking
@@ -495,12 +509,12 @@ fn render_jinja_str<S: Serialize>(
 
         let compiled = env.render_str(s, ctx, listeners)?;
         let compiled = if should_render_secrets {
-            render_secrets(compiled)?
+            render_secrets(&compiled)?.unwrap_or(compiled)
         } else {
             compiled
         };
 
-        Ok((Value::string(compiled), diagnostics))
+        Ok((Some(Value::string(compiled)), diagnostics))
     }
 }
 

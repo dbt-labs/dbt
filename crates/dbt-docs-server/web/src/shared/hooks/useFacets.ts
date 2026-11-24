@@ -1,5 +1,6 @@
-import { useMetadataDataSource } from '../context/MetadataDataProvider';
-import type { ResourceType } from '../typings/domain/asset';
+import { useMetadataDataSource } from 'dbt-docs-lib';
+import type { ResourceType } from 'dbt-docs-lib/domain';
+
 import { facetsKey } from '../util/queryKeys';
 import { useSourceQuery } from './useSourceQuery';
 

@@ -38,5 +38,9 @@ pub fn compute_from_state(state: &State) -> Option<String> {
             return None;
         }
     };
-    probe.__adapter_attr__.databricks_attr?.databricks_compute
+    probe
+        .__adapter_attr__
+        .databricks_attr?
+        .databricks_compute
+        .clone()
 }

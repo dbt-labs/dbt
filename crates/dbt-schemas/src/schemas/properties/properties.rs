@@ -27,32 +27,6 @@ use super::SnapshotProperties;
 use super::SourceProperties;
 use super::unit_test_properties::UnitTestProperties;
 
-#[derive(Deserialize, Debug, Clone)]
-pub struct DbtPropertiesFileValues {
-    pub version: Option<FloatOrString>,
-    pub analyses: Option<Vec<dbt_yaml::Value>>,
-    pub checks: Option<Vec<dbt_yaml::Value>>,
-    pub exposures: Option<Vec<dbt_yaml::Value>>,
-    pub groups: Option<Vec<dbt_yaml::Value>>,
-    pub macros: Option<Vec<dbt_yaml::Value>>,
-    pub metrics: Option<Vec<dbt_yaml::Value>>,
-    pub models: Option<Vec<dbt_yaml::Value>>,
-    pub functions: Option<Vec<dbt_yaml::Value>>,
-    pub saved_queries: Option<Vec<dbt_yaml::Value>>,
-    pub seeds: Option<Vec<dbt_yaml::Value>>,
-    // semantic_models cannot be removed for backward compatibility
-    // removal would result in many regression tests failing
-    pub semantic_models: Option<Vec<dbt_yaml::Value>>,
-    pub snapshots: Option<Vec<dbt_yaml::Value>>,
-    pub sources: Option<Vec<dbt_yaml::Value>>,
-    pub unit_tests: Option<Vec<dbt_yaml::Value>>,
-    pub tests: Option<Vec<dbt_yaml::Value>>,
-    pub data_tests: Option<Vec<dbt_yaml::Value>>,
-    /// Entries for experimentals, by experimental type. Each experimental reads its own.
-    pub experimental: Option<BTreeMap<String, dbt_yaml::Value>>,
-    pub anchors: Verbatim<Option<dbt_yaml::Value>>,
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct MinimalSchemaValue {
     pub name: String,
@@ -64,27 +38,10 @@ pub struct MinimalSchemaValue {
     pub __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
 }
 
-/// An entry under `experimental:`, read only for its name. The experimental reads the rest.
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct MinimalExperimentalEntryValue {
-    pub name: String,
-    pub __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
-}
-
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct MinimalTableValue {
     pub name: Spanned<String>,
-    pub __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct MinimalUnitTestValue {
-    pub name: Spanned<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub versions: Option<dbt_yaml::Value>,
     pub __additional_properties__: Verbatim<BTreeMap<String, dbt_yaml::Value>>,
 }
 
@@ -109,9 +66,6 @@ pub struct DbtPropertiesFile {
     // semantic_models cannot be removed for backward compatibility
     // removal would result in many regression tests failing
     pub semantic_models: Option<Vec<dbt_yaml::Value>>,
-    /// Entries for experimentals, by experimental type. Experimentals are features in testing, off
-    /// unless their feature flag is on; each reads the entries under its own type.
-    pub experimental: Option<BTreeMap<String, Vec<dbt_yaml::Value>>>,
     pub version: Option<FloatOrString>,
     pub anchors: Verbatim<Option<dbt_yaml::Value>>,
 }

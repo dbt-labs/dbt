@@ -61,7 +61,7 @@ impl VersionsHttpClient for ReqwestClient {
 /// `determine_version`:
 ///   1. No version requested  -> use `stable.tag`
 ///   2. Version is an alias key (e.g. "canary") -> resolve `versions[alias].tag`
-///   3. Version is a literal semver -> use as-is
+///   3. Version is a literal semver -> use it without a leading `v`
 fn resolve_version_from_manifest(
     versions: &serde_json::Value,
     requested: Option<&str>,
@@ -86,7 +86,7 @@ fn resolve_version_from_manifest(
             {
                 Ok(tag.trim_start_matches('v').to_string())
             } else {
-                Ok(v.to_string())
+                Ok(v.strip_prefix('v').unwrap_or(v).to_string())
             }
         }
     }
@@ -224,6 +224,13 @@ mod tests {
         let versions = test_versions_json();
         let version = resolve_version_from_manifest(&versions, Some("2.0.0-preview.100")).unwrap();
         assert_eq!(version, "2.0.0-preview.100");
+    }
+
+    #[test]
+    fn resolve_version_literal_strips_v_prefix() {
+        let versions = test_versions_json();
+        let version = resolve_version_from_manifest(&versions, Some("v2.0.12")).unwrap();
+        assert_eq!(version, "2.0.12");
     }
 
     #[test]

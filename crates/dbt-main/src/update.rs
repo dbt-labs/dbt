@@ -7,8 +7,6 @@ use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_dist::packages::InstallLocation;
 use dbt_telemetry::PackageUpdate;
 use rand::Rng as _;
-#[cfg(not(target_os = "windows"))]
-use run_script::ScriptOptions;
 use std::env;
 use std::path::Path;
 use std::process::Command;
@@ -36,14 +34,20 @@ use std::time::{Duration, Instant};
 // Retry policy for CDN fetches
 // ---------------------------------------------------------------------------
 
-/// Total attempts (1 initial + 4 retries) for transient CDN failures.
-const CDN_MAX_ATTEMPTS: u32 = 5;
-/// Initial backoff; doubles each retry with ≤25% random jitter (500ms, ~1s, ~2s, ~4s).
+/// Total attempts (1 initial + 6 retries) for transient CDN failures. CDN 5xx
+/// bursts can last about 10s, so the last attempt starts at least 23.5s after
+/// the first.
+const CDN_MAX_ATTEMPTS: u32 = 7;
+/// Initial backoff; doubles each retry up to `CDN_BACKOFF_MAX`, plus up to 50%
+/// random jitter (500ms, 1s, 2s, 4s, 8s, 8s before jitter).
 const CDN_BACKOFF_INITIAL: Duration = Duration::from_millis(500);
+const CDN_BACKOFF_MAX: Duration = Duration::from_secs(8);
 /// Per-attempt time budget: caps hung TLS handshakes / stuck body reads so the
 /// "bounded retries" guarantee actually holds. Total worst-case wall time is
-/// `CDN_MAX_ATTEMPTS * CDN_REQUEST_TIMEOUT` plus backoff (~157s in the extreme).
-const CDN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// `CDN_MAX_ATTEMPTS` times the timeout plus backoff: ~105s for text, ~245s
+/// for archives.
+const CDN_TEXT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const CDN_BYTES_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
@@ -73,7 +77,8 @@ fn fmt_duration(d: Duration) -> String {
 /// Run `fetch` up to `max_attempts` times with a per-attempt `request_timeout`,
 /// retrying only on transient failures. The inner closure returns
 /// `Err((retryable, code, message))` — `retryable=false` short-circuits the loop.
-/// Backoff doubles each retry with up to 25% random jitter.
+/// Backoff doubles each retry up to `CDN_BACKOFF_MAX`, with up to 50% random
+/// jitter so clients that failed together do not retry together.
 async fn fetch_with_retries<T, F, Fut>(
     url: &str,
     max_attempts: u32,
@@ -106,8 +111,7 @@ where
                         "HTTP GET {url} failed after {attempt} attempt(s): {msg}"
                     );
                 }
-                let jitter_ms = rand::rng().random_range(0u64..=(delay.as_millis() / 4) as u64);
-                let sleep_dur = delay + Duration::from_millis(jitter_ms);
+                let sleep_dur = with_jitter(delay);
                 emit_warn_log_message(
                     ErrorCode::IoError,
                     format!(
@@ -116,11 +120,20 @@ where
                     ),
                 );
                 tokio::time::sleep(sleep_dur).await;
-                delay = delay.saturating_mul(2);
+                delay = next_backoff(delay);
             }
         }
     }
     unreachable!("loop always returns once max_attempts >= 1")
+}
+
+fn next_backoff(delay: Duration) -> Duration {
+    delay.saturating_mul(2).min(CDN_BACKOFF_MAX)
+}
+
+fn with_jitter(delay: Duration) -> Duration {
+    let jitter_ms = rand::rng().random_range(0u64..=(delay.as_millis() / 2) as u64);
+    delay + Duration::from_millis(jitter_ms)
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +269,7 @@ impl ReqwestUpdateClient {
             url,
             CDN_MAX_ATTEMPTS,
             CDN_BACKOFF_INITIAL,
-            CDN_REQUEST_TIMEOUT,
+            CDN_TEXT_REQUEST_TIMEOUT,
             || async {
                 let response = reqwest::get(url).await.map_err(|e| {
                     (
@@ -299,7 +312,7 @@ impl ReqwestUpdateClient {
             url,
             CDN_MAX_ATTEMPTS,
             CDN_BACKOFF_INITIAL,
-            CDN_REQUEST_TIMEOUT,
+            CDN_BYTES_REQUEST_TIMEOUT,
             || async {
                 let response = reqwest::get(url).await.map_err(|e| {
                     (
@@ -775,8 +788,6 @@ async fn exec_update_legacy(
     let script_url = format!("{}/install/install.sh", cdn_base_url());
     let script = client.get_text(&script_url).await?;
 
-    let options = ScriptOptions::new();
-
     let (option, path) = script_option(location)?;
     let mut script_args = vec![
         String::from("--update"),
@@ -794,17 +805,26 @@ async fn exec_update_legacy(
         script_args.push(package.to_string());
     }
 
-    let (code, output, error) = match run_script::run(&script, &script_args, &options) {
+    let result = match Command::new("sh")
+        .arg("-c")
+        .arg(&script)
+        .arg("sh")
+        .args(&script_args)
+        .stdin(std::process::Stdio::inherit())
+        .output()
+    {
         Ok(result) => result,
         Err(e) => {
             return err!(ErrorCode::IoError, "Failed to run install script: {}", e);
         }
     };
 
+    let output = String::from_utf8_lossy(&result.stdout);
+    let error = String::from_utf8_lossy(&result.stderr);
     let output = output.trim();
     let error = error.trim();
 
-    if code != 0 {
+    if !result.status.success() {
         let err_msg = if !error.is_empty() {
             format!("{error}\nFailed to update dbt: {output}")
         } else {
@@ -1843,6 +1863,22 @@ mod tests {
         let msg = format!("{}", result.unwrap_err());
         assert!(msg.contains("timed out"), "got: {msg}");
         assert_eq!(attempts, 3, "timeout should be retried up to max_attempts");
+    }
+
+    #[test]
+    fn test_retry_backoff_outlasts_cdn_burst() {
+        let mut delay = CDN_BACKOFF_INITIAL;
+        let mut delays = Vec::new();
+        for _ in 1..CDN_MAX_ATTEMPTS {
+            delays.push(delay);
+            delay = next_backoff(delay);
+        }
+        assert_eq!(
+            delays,
+            [500, 1000, 2000, 4000, 8000, 8000].map(Duration::from_millis)
+        );
+        let sleep = with_jitter(CDN_BACKOFF_MAX);
+        assert!(sleep >= CDN_BACKOFF_MAX && sleep <= CDN_BACKOFF_MAX * 3 / 2);
     }
 
     #[test]

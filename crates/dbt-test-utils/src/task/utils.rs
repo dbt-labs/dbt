@@ -29,6 +29,11 @@ use dbt_common::{
     tokiofs, unexpected_err,
 };
 use dbt_features::feature_stack::FeatureStack;
+use dbt_telemetry::{CallTrace, LogMessage};
+use dbt_tracing::{
+    LogRecordInfo, SeverityNumber, SpanStartInfo, data_provider::DataProvider,
+    layer::TelemetryMiddleware,
+};
 
 // Pre-compiled regex patterns for optimal performance
 static SCHEMA_PATTERN: LazyLock<Regex> =
@@ -149,8 +154,7 @@ pub fn redirect_buffer_to_stdin(buffer_content: &str) -> TestResult<File> {
     use std::io::{Seek, Write};
     use std::os::windows::io::AsRawHandle;
 
-    use winapi::um::processenv::SetStdHandle;
-    use winapi::um::winbase::STD_INPUT_HANDLE;
+    use windows_sys::Win32::System::Console::{STD_INPUT_HANDLE, SetStdHandle};
 
     // Create a temporary file and write the buffer content to it
     let mut temp_file = tempfile::tempfile()?;
@@ -418,6 +422,45 @@ where
     )
 }
 
+/// Drops telemetry that tests cannot pin, before any consumer sees it. The
+/// data layer gives children of a dropped span the nearest kept ancestor as
+/// parent.
+struct NoiseFilter;
+
+impl TelemetryMiddleware for NoiseFilter {
+    fn on_span_start(
+        &self,
+        span: SpanStartInfo,
+        _data_provider: &mut DataProvider<'_>,
+    ) -> Option<SpanStartInfo> {
+        // The name, file and line of a CallTrace come from the instrumented fn,
+        // so a rename or move of that fn would change the goldens.
+        if span.attributes.is::<CallTrace>() {
+            return None;
+        }
+        Some(span)
+    }
+
+    fn on_log_record(
+        &self,
+        record: LogRecordInfo,
+        _data_provider: &mut DataProvider<'_>,
+    ) -> Option<LogRecordInfo> {
+        // The ADBC driver's debug line carries its version, so every driver bump would change
+        // the goldens. A DuckDB found on the system skips the line altogether.
+        let driver_resolved = record.severity_number == SeverityNumber::Debug
+            && record
+                .attributes
+                .downcast_ref::<LogMessage>()
+                .is_some_and(|log| log.code.is_none())
+            && record.body.contains(" driver resolved: ");
+        if driver_resolved {
+            return None;
+        }
+        Some(record)
+    }
+}
+
 // Util function to execute fusion commands in tests from an already-parsed
 // `Cli`. This is everything `exec_fs` does *after* argv parsing; `exec_fs`
 // delegates to it. It exists so callers whose argv does not parse into the
@@ -457,13 +500,14 @@ where
         .with_quiet(cli.common_args.get_quiet())
         .build();
     let tracing_config_provider = trace_config.create_config_provider();
-    let (middlewares, consumer_layers, mut shutdown_items) =
+    let (mut middlewares, consumer_layers, mut shutdown_items) =
         match trace_config.build_layers(Arc::clone(&tracing_config_provider)) {
             Ok(layers) => layers.into_parts(),
             Err(err) => {
                 return Box::pin(async move { Err(err) });
             }
         };
+    middlewares.push(Box::new(NoiseFilter));
 
     tracing_handle.with_tracing_consumer(middlewares, consumer_layers);
 
@@ -590,7 +634,7 @@ impl Drop for FdRedirectionGuard {
         }
         #[cfg(target_os = "windows")]
         unsafe {
-            use winapi::um::processenv::SetStdHandle;
+            use windows_sys::Win32::System::Console::SetStdHandle;
 
             // Restore the original stdout
             SetStdHandle(self.target_fd as _, self.original_fd as _);
@@ -603,10 +647,10 @@ impl Drop for FdRedirectionGuard {
 /// stdout on drop.
 fn with_redirected_stdout(file: File) -> FdRedirectionGuard {
     use std::os::windows::io::AsRawHandle as _;
-    use winapi::um::processenv::SetStdHandle;
-    use winapi::um::winbase::STD_OUTPUT_HANDLE;
+    use windows_sys::Win32::System::Console::{STD_OUTPUT_HANDLE, SetStdHandle};
 
-    let original_fd = unsafe { winapi::um::processenv::GetStdHandle(STD_OUTPUT_HANDLE) as usize };
+    let original_fd =
+        unsafe { windows_sys::Win32::System::Console::GetStdHandle(STD_OUTPUT_HANDLE) as usize };
 
     let raw_handle = file.as_raw_handle();
 
@@ -627,10 +671,10 @@ fn with_redirected_stdout(file: File) -> FdRedirectionGuard {
 /// stderr on drop.
 fn with_redirected_stderr(file: File) -> FdRedirectionGuard {
     use std::os::windows::io::AsRawHandle as _;
-    use winapi::um::processenv::SetStdHandle;
-    use winapi::um::winbase::STD_ERROR_HANDLE;
+    use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
 
-    let original_fd = unsafe { winapi::um::processenv::GetStdHandle(STD_ERROR_HANDLE) as usize };
+    let original_fd =
+        unsafe { windows_sys::Win32::System::Console::GetStdHandle(STD_ERROR_HANDLE) as usize };
 
     let raw_handle = file.as_raw_handle();
 

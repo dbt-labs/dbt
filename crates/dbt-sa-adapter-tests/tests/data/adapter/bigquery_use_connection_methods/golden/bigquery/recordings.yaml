@@ -13,10 +13,7 @@ model.test.a:
   sql: CREATE MATERIALIZED VIEW IF NOT EXISTS adapters_bigquery_use_connection_methods.a_materialized_view AS SELECT * FROM adapters_bigquery_use_connection_methods.a
 - sequence: 4
   type: execute
-  sql: |-
-    SELECT
-    location
-    FROM `dbt-test-env.INFORMATION_SCHEMA.SCHEMATA` WHERE schema_name = 'adapters_bigquery_use_connection_methods'
+  sql: -- adapter.get_dataset_location via BigQuery REST API on `dbt-test-env.adapters_bigquery_use_connection_methods`
 - sequence: 5
   type: execute
   sql: ''

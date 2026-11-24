@@ -15,28 +15,30 @@
  * line up when a story wires several fixtures into the same graph.
  */
 
-import type { NodeSummary } from '../../types';
-import type { BootstrapData } from '../data-sources/duckdb/bootstrap';
 import type {
   AssetColumn,
+  AssetCounts,
+  Capabilities,
+  ColumnLineageGraph,
+  ExecutionInfo,
   ExposureAsset,
+  Facets,
+  FileEntry,
   GroupAsset,
+  LineageGraph,
   MacroAsset,
   MetricAsset,
   ModelAsset,
+  ProjectOverview,
   SavedQueryAsset,
+  SearchHit,
   SemanticModelAsset,
   SourceAsset,
   TestAsset,
-} from '../typings/domain/asset';
-import type { Capabilities } from '../typings/domain/capabilities';
-import type { AssetCounts } from '../typings/domain/counts';
-import type { ExecutionInfo } from '../typings/domain/executionInfo';
-import type { Facets } from '../typings/domain/facets';
-import type { FileEntry } from '../typings/domain/files';
-import type { ColumnLineageGraph, LineageGraph } from '../typings/domain/lineage';
-import type { ProjectOverview } from '../typings/domain/overview';
-import type { SearchHit } from '../typings/domain/search';
+} from 'dbt-docs-lib/domain';
+
+import type { NodeSummary } from '../../types';
+import type { BootstrapData } from '../data-sources/duckdb/bootstrap';
 import { makeFakeModelAsset } from './createFakeDataSource';
 
 /** A fixed "now" so a story never renders a relative timestamp that drifts between

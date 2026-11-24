@@ -2,11 +2,13 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use dbt_common::ErrorCode;
-use dbt_common::tracing::dbt_emit::{emit_info_log_message, emit_warn_log_message};
+use dbt_common::tracing::dbt_emit::{
+    emit_future_change, emit_info_log_message, emit_warn_log_message,
+};
 use dbt_schemas::schemas::packages::{DbtPackageEntry, DbtPackages, DbtPackagesLock};
 
 use crate::types::HubPinnedPackage;
-use crate::utils::scrub_package_name_secret_env_vars;
+use crate::utils::scrub_secret_env_vars;
 
 const NEXTEST_ENV: &str = "NEXTEST";
 const TEST_DEPS_LATEST_VERSION_ENV: &str = "TEST_DEPS_LATEST_VERSION";
@@ -141,11 +143,10 @@ impl PackageNotice {
                 );
             }
             PackageNoticeKind::DuplicatePackageName => {
-                emit_warn_log_message(
+                emit_future_change(
                     ErrorCode::DepsDuplicatePackage,
                     format!(
-                        "Duplicate package name '{package}' found in dependencies. Keeping the first occurrence. \
-                     This will be an error in a future version of dbt."
+                        "Duplicate package name '{package}' found in dependencies. Keeping the first occurrence."
                     ),
                 );
             }
@@ -256,7 +257,7 @@ impl NoticeSource for DbtPackages {
                 _ => None,
             };
             if let Some(url) = url
-                && let Some(scrubbed) = scrub_package_name_secret_env_vars(url)
+                && let Some(scrubbed) = scrub_secret_env_vars(url)
             {
                 buffer.record(PackageNotice {
                     key: scrubbed.into_owned(),

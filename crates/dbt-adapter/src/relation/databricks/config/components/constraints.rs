@@ -420,7 +420,7 @@ impl Constraints {
             .into_iter()
             .map(|constraint| {
                 let synthesized_name = match constraint.name() {
-                    None => constraint.synthesized_name(&identifier),
+                    None => constraint.synthesized_name(identifier),
                     Some(_) => None,
                 };
                 constraint.with_name(synthesized_name)

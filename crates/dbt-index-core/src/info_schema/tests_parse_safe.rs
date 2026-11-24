@@ -28,8 +28,8 @@ const DEAD_AT_PARSE: &[(&str, &[&str])] = &[
             "extra_ctes",
             "search_text",
             "raw_code_hash",
-            // `raw_code` is deliberately not listed: it is dead for *model* rows only, which a
-            // table-keyed list cannot express. See `raw_code_is_exposed_only_where_a_node_has_sql`.
+            // `raw_code` is not listed: it is left out per resource type, which a table-keyed
+            // list cannot express. See `raw_code_is_exposed_only_where_a_node_has_sql`.
             "grain",
             "grain_declared",
             "grain_tested",
@@ -215,6 +215,7 @@ fn projected_view_sql() {
             r#"t."deprecation_date" AS "deprecation_date", t."primary_key" AS "primary_key", "#,
             r#"t."patch_path" AS "properties_yml_file_path", t."tags" AS "tags", "#,
             r#"t."meta" AS "meta", t."node_constraints" AS "constraints", "#,
+            r#"t."raw_code" AS "raw_code", "#,
             r#"t."ingested_at" AS "ingested_at" "#,
             r#"FROM dbt_internal."nodes" AS t WHERE t."resource_type" IN ('model')"#,
         ),
@@ -285,13 +286,9 @@ fn every_view_mirrors_an_information_schema_table() {
 /// `raw_code` is per resource type, not per table, so it cannot be settled by
 /// [`DEAD_AT_PARSE`] or by `node_cols!`.
 ///
-/// `trim_model_payload` drops it from model payloads only, so it is NULL for `models` and
-/// real SQL for every other node type that has any. Seeds and sources have no SQL at all
-/// and arrive as an empty string, which reads to a check exactly like the NULL does -- a
-/// `like` never matches, so the rule passes -- so they do not carry it either.
-///
-/// Measured per type against the index: model NULL; snapshot, check, analysis, operation
-/// and function populated; seed and source empty.
+/// Seeds and sources have no SQL at all and arrive as an empty string, which reads to a check
+/// exactly like NULL does -- a `like` never matches, so the rule passes -- so they do not carry
+/// it. Every other node type has SQL, models included (dbt-labs/dbt#16802).
 #[test]
 fn raw_code_is_exposed_only_where_a_node_has_sql() {
     let exposes = |name: &str| {
@@ -303,13 +300,20 @@ fn raw_code_is_exposed_only_where_a_node_has_sql() {
             .contains(&"raw_code")
     };
 
-    for view in ["snapshots", "checks", "analyses", "hooks", "functions"] {
+    for view in [
+        "models",
+        "snapshots",
+        "checks",
+        "analyses",
+        "hooks",
+        "functions",
+    ] {
         assert!(
             exposes(view),
             "{view} nodes carry their SQL, so a rule about that SQL must be writable",
         );
     }
-    for view in ["models", "seeds", "sources"] {
+    for view in ["seeds", "sources"] {
         assert!(
             !exposes(view),
             "{view}.raw_code is NULL or empty for every row, which only reports false passes",

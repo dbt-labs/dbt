@@ -12,8 +12,7 @@
  * button in a story actually loads more instead of being a dead control.
  */
 
-import type { MetadataDataSource } from '../data-sources/MetadataDataSource';
-import type { AssetFilter, ListArgs } from '../typings/args';
+import type { MetadataDataSource } from 'dbt-docs-lib';
 import type {
   AssetSummary,
   ExposureSummary,
@@ -23,13 +22,15 @@ import type {
   ModelSummary,
   ResourceType,
   SavedQuerySummary,
+  SearchFacets,
   SeedSummary,
   SemanticModelSummary,
   SnapshotSummary,
   SourceSummary,
   TestSummary,
-} from '../typings/domain/asset';
-import type { SearchFacets } from '../typings/domain/search';
+} from 'dbt-docs-lib/domain';
+
+import type { AssetFilter, ListArgs } from '../typings/args';
 import type { Page } from '../typings/page';
 import { createFakeDataSource, makeFakeSummary } from './createFakeDataSource';
 import {

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use dbt_adapter::Adapter;
 use dbt_adapter::relation::create_relation_from_node;
-use dbt_adapter::{Adapter, AdapterStore};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
 use dbt_common::collections::SccHashMap;
@@ -13,6 +13,7 @@ use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::RenderingEventListenerFactory;
+use dbt_jinja_utils::phases::NodeAdapterGlobals;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::state::{DbtProfile, ResolverState};
@@ -31,6 +32,7 @@ use crate::RunTasksArgs;
 use crate::context::{ExtendedCtx, RunCacheCtx, TaskRunnerCtx, TaskRunnerCtxInner};
 use crate::run_cache_lifecycle::{RunCacheLifecycle, RunCacheServiceLifecycle};
 use crate::span_manager::SpanManager;
+use crate::sql_rewriter::SqlRewriter;
 use crate::static_analysis_buckets::StaticAnalysisBuckets;
 use crate::task::Task;
 use crate::task_spans::populate_span_manager;
@@ -40,6 +42,7 @@ use crate::test_aggregation::GenericTestRelationships;
 pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
     fn rendering_listener_factory(&self) -> Arc<dyn RenderingEventListenerFactory>;
     fn sources_extractor(&self) -> Arc<dyn SourcesExtractor>;
+    fn sql_rewriter(&self) -> Arc<dyn SqlRewriter>;
 
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn build(
@@ -59,7 +62,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         freshness_results: Option<Box<dyn PreTaskRunData>>,
         static_analysis_buckets: Arc<dyn StaticAnalysisBuckets>,
         adapter: Arc<Adapter>,
-        adapter_store: Arc<AdapterStore>,
+        adapter_globals: NodeAdapterGlobals,
         run_cache_lifecycle: Arc<RunCacheLifecycle>,
         shared_event_order: Option<SharedEventOrder>,
     ) -> Pin<Box<dyn Future<Output = Result<TaskRunnerCtx, Box<FsError>>> + Send>> {
@@ -153,6 +156,9 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 }),
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
+                schema_prefetch: Default::default(),
+                dependency_kinds: std::sync::OnceLock::new(),
+                selected_target_fqns: std::sync::OnceLock::new(),
                 shared_event_order: shared_event_order.unwrap_or_default(),
                 telemetry_session_start: std::sync::OnceLock::new(),
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
@@ -174,8 +180,9 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                     generic_test_relationships,
                     span_manager,
                     execute,
-                    adapter_store,
+                    adapter_globals,
                     sources_extractor,
+                    self.sql_rewriter(),
                     run_cache_ctx,
                 )),
                 schema_cache,

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      // A cache hit prints one line instead of replaying the whole build log. Turbo
+      // replays dbt-docs-lib's build each time a script in `web/` builds the lib first,
+      // and under `turbo watch` on every change to `web/`.
+      "outputLogs": "new-only"
+    },
+    "build:watch": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "lint": {
+      // Not cached: the rules live in the root configs, and Prettier sorts classes by
+      // web's Tailwind config, so a package's own files do not capture its inputs.
+      "cache": false
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      // Opts the web tests into a real information schema. Hashed, so a run against
+      // real artifacts never replays the cached result of a run without them.
+      "env": ["DBT_DOCS_REAL_ARTIFACTS"]
+    },
+    "test:stories": {
+      "dependsOn": ["^build"]
+    },
+    "test:all": {
+      "dependsOn": ["^build"],
+      "env": ["DBT_DOCS_REAL_ARTIFACTS"]
+    },
+    "test:watch": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true,
+      // As for `test`, but never cached, so passed through rather than hashed.
+      "passThroughEnv": ["DBT_DOCS_REAL_ARTIFACTS"]
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true,
+      // The generated site the web dev server reads data from (`web/vite-dev-site.ts`).
+      "passThroughEnv": ["DBT_DOCS_DEV_SITE"]
+    },
+    "storybook": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true
+    },
+    "build-storybook": {
+      "dependsOn": ["^build"],
+      "outputs": ["storybook-static/**"]
+    }
+  }
+}

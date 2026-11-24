@@ -1,6 +1,6 @@
 //! This module contains the logic for rendering secrets in the dbt project.
 
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use minijinja::State;
@@ -21,7 +21,9 @@ pub fn secret_context_env_var(
 }
 
 /// Renders actual secrets that have been rendered with placeholders
-pub fn render_secrets(rendered_str: String) -> FsResult<String> {
+///
+/// Returns `None` if no placeholder was replaced, so the string stays as it is.
+pub fn render_secrets(rendered_str: &str) -> FsResult<Option<String>> {
     if rendered_str.contains(SECRET_ENV_VAR_PREFIX) {
         // Create a regex that matches the entire placeholder pattern
         static RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -30,9 +32,10 @@ pub fn render_secrets(rendered_str: String) -> FsResult<String> {
                 .replace("$", r"\$");
             Regex::new(&pattern).unwrap()
         });
-        let mut result = rendered_str.clone();
+        // Copy the string only once a placeholder is replaced.
+        let mut result = Cow::Borrowed(rendered_str);
         // Find all matches
-        for caps in RE.captures_iter(&rendered_str) {
+        for caps in RE.captures_iter(rendered_str) {
             let var_name = &caps[1]; // This captures the full env var name
             let full_match = &caps[0]; // This is the entire placeholder
 
@@ -40,7 +43,7 @@ pub fn render_secrets(rendered_str: String) -> FsResult<String> {
             match std::env::var(var_name) {
                 Ok(value) => {
                     // Replace the entire placeholder with the value
-                    result = result.replace(full_match, &value);
+                    result = Cow::Owned(result.replace(full_match, &value));
                 }
                 Err(_) => {
                     return Err(fs_err!(
@@ -52,7 +55,9 @@ pub fn render_secrets(rendered_str: String) -> FsResult<String> {
             }
         }
 
-        return Ok(result);
+        if let Cow::Owned(result) = result {
+            return Ok(Some(result));
+        }
     }
-    Ok(rendered_str)
+    Ok(None)
 }

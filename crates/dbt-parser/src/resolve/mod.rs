@@ -1,11 +1,15 @@
 /// Utilities for inferring model primary keys from constraints and tests
 pub(crate) mod primary_key_inference;
+/// Fields that a build of dbt reads beside a node's own properties
+pub mod properties_extensions;
+/// The properties files of one package
+pub(crate) mod properties_index;
+/// The kinds of node a project resolves with, and what they resolve with
+pub mod resolvable_node;
 /// Functions for resolving analyses
 pub mod resolve_analyses;
 /// Functions for resolving checks
 pub mod resolve_checks;
-/// Functions for resolving experimental nodes
-pub(crate) mod resolve_experimentals;
 /// Functions for resolving exposures
 pub(crate) mod resolve_exposures;
 /// Functions for resolving functions
@@ -20,8 +24,6 @@ pub(crate) mod resolve_metrics;
 pub(crate) mod resolve_models;
 /// Functions for resolving operations
 pub(crate) mod resolve_operations;
-/// Functions for resolving properties
-pub(crate) mod resolve_properties;
 /// Functions for resolving query comments
 pub(crate) mod resolve_query_comment;
 /// Functions for resolving saved queries

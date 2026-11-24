@@ -10,8 +10,8 @@ import { readBootstrap } from './bootstrap';
  * The fixtures are the actual output of `dbt compile --generate-info-schema` on a
  * three-model duckdb project, copied verbatim. Two reasons they are not
  * hand-written. First, ZSTD: hyparquet has no built-in decoder, so the read goes
- * through `hyparquet-compressors`, and a mocked reader would prove nothing about
- * whether the browser can open what dbt actually writes. Second, the empty tables:
+ * through the `fzstd` decoder that `bootstrap.ts` supplies, and a mocked reader
+ * would prove nothing about whether the browser can open what dbt actually writes. Second, the empty tables:
  * this project has no seeds, snapshots or sources, and the information schema
  * still writes a file for each — schema-only, zero rows — which is the shape first
  * paint has to tolerate on nearly every real project.

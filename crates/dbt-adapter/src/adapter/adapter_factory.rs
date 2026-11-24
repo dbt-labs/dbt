@@ -47,10 +47,11 @@ pub fn backend_of(adapter_type: AdapterType) -> Backend {
         AdapterType::Exasol => Backend::Exasol,
         AdapterType::Starburst => todo!("Starburst"),
         AdapterType::Athena => Backend::Athena,
-        AdapterType::Trino => todo!("Trino"),
+        AdapterType::Trino => Backend::Trino,
         AdapterType::Dremio => todo!("Dremio"),
         AdapterType::Oracle => todo!("Oracle"),
         AdapterType::Datafusion => todo!("Datafusion"),
+        AdapterType::MotherDuck => Backend::MotherDuck,
     }
 }
 
@@ -209,8 +210,8 @@ impl AdapterFactory for DefaultAdapterFactory {
         node: &dyn InternalDbtNodeAttributes,
         adapter_type: AdapterType,
     ) -> Result<Box<dyn BaseRelation>, minijinja::Error> {
-        let database = node.database();
-        let schema = node.schema();
+        let database = node.database().to_string();
+        let schema = node.schema().to_string();
         let identifier = node.base().alias.clone();
         let relation_type = RelationType::from(node.materialized());
         let custom_quoting = node.quoting();

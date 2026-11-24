@@ -102,10 +102,7 @@ model.test.test_show_grants:
     (1, 'test', CURRENT_TIMESTAMP())
 - sequence: 3
   type: execute
-  sql: |-
-    SELECT
-    location
-    FROM `dbt-test-env.INFORMATION_SCHEMA.SCHEMATA` WHERE schema_name = 'adapters_bigquery_information_schema'
+  sql: -- adapter.get_dataset_location via BigQuery REST API on `dbt-test-env.adapters_bigquery_information_schema`
 - sequence: 4
   type: execute
   sql: |-

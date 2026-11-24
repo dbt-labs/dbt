@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: An experimental's templates get `this` as a relation object, so a generic data test's macro can test a relation the experimental writes
+time: 2026-11-11T19:10:44.957234-08:00
+custom:
+    author: eliasdefaria
+    issue: ""
+    project: dbt-core

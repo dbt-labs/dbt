@@ -1,3 +1,5 @@
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -22,9 +24,8 @@ use dbt_schemas::{
     },
     state::{DbtPackage, DbtRuntimeConfig},
 };
-use minijinja::MacroSpans;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
@@ -35,6 +36,41 @@ use crate::{
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
 
+/// How a package's checks resolve.
+pub(crate) struct Checks;
+
+#[async_trait]
+impl ResolvableNode for Checks {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["checks"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        // Resolve checks
+        let (checks, disabled_checks) = resolve_checks(
+            ctx.arg,
+            ctx.package,
+            ctx.package_quoting,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            &mut ctx.properties.take_entries("checks"),
+            ctx.database,
+            ctx.schema,
+            ctx.adapter_type,
+            ctx.package_name,
+            ctx.jinja_env.clone(),
+            &ctx.base_ctx,
+            ctx.runtime_config.clone(),
+            ctx.root_runtime_config.clone(),
+            ctx.token,
+        )
+        .await?;
+        ctx.nodes.checks.extend(checks);
+        ctx.disabled_nodes.checks.extend(disabled_checks);
+        Ok(())
+    }
+}
+
 /// Resolve check resources for a package into [`DbtCheck`] nodes and rendered SQL.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_checks(
@@ -43,24 +79,22 @@ pub async fn resolve_checks(
     package_quoting: DbtQuoting,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    check_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    check_properties: &mut BTreeMap<String, PropertiesEntry>,
     database: &str,
     schema: &str,
     adapter_type: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
+    base_ctx: &Arc<BTreeMap<String, minijinja::Value>>,
     runtime_config: Arc<DbtRuntimeConfig>,
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
 ) -> FsResult<(
     HashMap<String, Arc<DbtCheck>>,
     HashMap<String, Arc<DbtCheck>>,
-    HashMap<String, (String, MacroSpans)>,
 )> {
     let mut checks: HashMap<String, Arc<DbtCheck>> = HashMap::new();
     let mut disabled_checks: HashMap<String, Arc<DbtCheck>> = HashMap::new();
-    let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let jinja_type_checking_event_listener_factory =
         Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
 
@@ -87,12 +121,13 @@ pub async fn resolve_checks(
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
             adapter_hint: None,
+            adapter_layer: None,
             // A check's adapter is always the default (`adapter` below), even under `--adapter`.
             parse_adapter_scopes: None,
             adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
-            base_ctx: base_ctx.clone(),
+            base_ctx: Arc::clone(base_ctx),
             package_name: package_name.to_string(),
             adapter_type,
             database: database.to_string(),
@@ -158,7 +193,6 @@ pub async fn resolve_checks(
         config: check_config,
         raw_code,
         rendered_sql,
-        macro_spans,
         properties: maybe_properties,
         status,
         patch_path,
@@ -249,17 +283,13 @@ pub async fn resolve_checks(
             __check_attr__: DbtCheckAttr {
                 // Carried to execution: the parse-time runner executes exactly this text.
                 // inferred from; checks have no render task to compile them later.
-                compiled_sql: Some(rendered_sql.clone()),
+                compiled_sql: Some(rendered_sql),
             },
             deprecated_config: check_config.into(),
         };
 
         if is_enabled {
             checks.insert(unique_id.to_owned(), Arc::new(dbt_check));
-            rendering_results.insert(
-                unique_id.to_owned(),
-                (rendered_sql.clone(), macro_spans.clone()),
-            );
         } else {
             // Recorded rather than dropped so callers can tell "this check is turned off" from
             // "no such check" — `dbt check <name>` must stay a no-op success for the former and
@@ -280,7 +310,7 @@ pub async fn resolve_checks(
         }
     }
 
-    Ok((checks, disabled_checks, rendering_results))
+    Ok((checks, disabled_checks))
 }
 
 /// `info_schema.version` has no default (see `InfoSchemaConfig`), so a package with checks but no

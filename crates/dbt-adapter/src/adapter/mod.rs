@@ -54,6 +54,7 @@ use std::sync::Arc;
 
 pub mod adapter_factory;
 pub mod adapter_impl;
+pub mod fixture_columns;
 pub mod store;
 pub use adapter_factory::*;
 pub use adapter_impl::{AdapterImpl, alias_types_from_state, quote_component, quote_ident};
@@ -80,6 +81,9 @@ enum InnerAdapter {
 }
 
 use InnerAdapter::*;
+
+/// Per-render column metadata for mocked unit-test relations.
+pub const UNIT_TEST_FIXTURE_COLUMNS: &str = "__dbt_unit_test_fixture_columns";
 
 /// Per-node connection state that must be reset after materialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,10 +237,17 @@ impl Adapter {
     /// ```python
     /// def commit(self) -> None
     /// ```
-    pub fn commit(&self) -> Result<Value, minijinja::Error> {
-        // No-op: Fusion connections are shared across nodes, so we never mutate
-        // their transaction state from this Jinja hook. DuckDB autocommits each
-        // statement; macros that need statement isolation use `auto_begin=False`.
+    pub fn commit(&self, state: &State) -> Result<Value, minijinja::Error> {
+        // No-op except for Redshift, which ends the transaction opened by `auto_begin`.
+        // Fusion connections are shared across nodes, so everywhere else we never mutate their
+        // transaction state from this Jinja hook. DuckDB autocommits each statement; macros that
+        // need statement isolation use `auto_begin=False`.
+        if let Typed { adapter, .. } = &self.inner
+            && adapter.manages_transactions()
+            && crate::connection::open_transaction().is_some()
+        {
+            self.exec_stmt(state, "commit", false)?;
+        }
         Ok(Value::from(true))
     }
 
@@ -703,7 +714,8 @@ impl Adapter {
                 | AdapterType::Spark
                 | AdapterType::Databricks
                 | AdapterType::DuckDB
-                | AdapterType::LakeCompute => {
+                | AdapterType::LakeCompute
+                | AdapterType::MotherDuck => {
                     format!("({expr1} IS NOT DISTINCT FROM {expr2})")
                 }
                 _ => format!(
@@ -1648,6 +1660,15 @@ impl Adapter {
     ) -> Result<Value, minijinja::Error> {
         match &self.inner {
             Typed { adapter, .. } => {
+                if let Some(fixtures) = state.lookup(UNIT_TEST_FIXTURE_COLUMNS, &[]) {
+                    let lookup = fixtures.get_item(&Value::from(relation.semantic_fqn()))?;
+                    if !lookup.is_undefined() {
+                        let columns = lookup.call(state, &[], &[])?;
+                        if !columns.is_undefined() {
+                            return Ok(columns);
+                        }
+                    }
+                }
                 // Replay Mode: Re-use recordings and compare with cache result
                 if let Some(replay_adapter) = adapter.as_replay() {
                     let cached = adapter.get_columns_in_relation_via_cache(state, relation)?;
@@ -2558,7 +2579,8 @@ impl Adapter {
                     | AdapterType::Datafusion
                     | AdapterType::Dremio
                     | AdapterType::Oracle
-                    | AdapterType::LakeCompute => Err(AdapterError::new(
+                    | AdapterType::LakeCompute
+                    | AdapterType::MotherDuck => Err(AdapterError::new(
                         AdapterErrorKind::NotSupported,
                         format!("has_dbr_capability is only supported by the Databricks adapter. Use the portable adapter.has_feature(\"{}\") instead.", capability_name),
                     )
@@ -2589,7 +2611,8 @@ impl Adapter {
                 | AdapterType::Datafusion
                 | AdapterType::Dremio
                 | AdapterType::Oracle
-                | AdapterType::LakeCompute => Ok(Value::from(false)),
+                | AdapterType::LakeCompute
+                | AdapterType::MotherDuck => Ok(Value::from(false)),
             },
         }
     }
@@ -2665,6 +2688,7 @@ impl Adapter {
     #[tracing::instrument(skip(self, state), level = "trace")]
     pub fn is_motherduck(&self, state: &State) -> AdapterResult<Value> {
         match self.adapter_type() {
+            AdapterType::MotherDuck => Ok(Value::from(true)),
             AdapterType::DuckDB => self
                 .has_feature(state, &[Value::from("motherduck")])
                 .map_err(|e| AdapterError::new(AdapterErrorKind::UnexpectedResult, e.to_string())),
@@ -2681,7 +2705,7 @@ impl Adapter {
     pub fn disable_transactions(&self, state: &State) -> AdapterResult<Value> {
         let result = match &self.inner {
             Typed { adapter, .. } => match adapter.adapter_type() {
-                AdapterType::DuckDB => {
+                AdapterType::DuckDB | AdapterType::MotherDuck => {
                     let transactions_enabled = adapter.has_feature(
                         state,
                         "transactions",
@@ -2913,9 +2937,11 @@ impl Adapter {
                     _ => config
                         .__warehouse_specific_config__
                         .tblproperties
-                        .iter()
-                        .flat_map(|tp| tp.0.iter())
-                        .map(|(k, v)| (k.to_string(), yml_value_to_minijinja(v)))
+                        .clone()
+                        .unwrap_or_default()
+                        .0
+                        .into_iter()
+                        .map(|(k, v)| (k, yml_value_to_minijinja(v)))
                         .collect(),
                 };
 
@@ -3750,6 +3776,29 @@ impl Adapter {
         }
     }
 
+    /// Ends the transaction a node left open, if transactions are managed. Call it when the
+    /// node finishes, so its locks are not held until the next node on this thread.
+    #[tracing::instrument(skip(self), level = "trace")]
+    pub fn end_node_transaction(&self, node_id: &str) -> FsResult<()> {
+        if let Some(tm) = self.time_machine()
+            && tm.is_replaying()
+        {
+            return Ok(());
+        }
+
+        match &self.inner {
+            Typed { adapter, .. } if adapter.has_open_transaction() => {
+                let mut conn = adapter.borrow_tlocal_connection(None, Some(node_id.to_string()))?;
+                adapter.rollback_open_transaction(
+                    &mut conn,
+                    node_id,
+                    self.cancellation_token.clone(),
+                )
+            }
+            _ => Ok(()),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(self, state), level = "trace")]
     pub fn load_dataframe(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
@@ -4048,7 +4097,7 @@ impl Adapter {
             "render_raw_columns_constraints" => self.render_raw_columns_constraints(state, args),
             // database: str
             "verify_database" => self.verify_database(state, args),
-            "commit" => self.commit(),
+            "commit" => self.commit(state),
             // context: dict, strategy: str
             "get_incremental_strategy_macro" => self.get_incremental_strategy_macro(state, args),
             // database: str, schema: str
@@ -4279,9 +4328,7 @@ impl Adapter {
                             )
                         })?;
 
-                let full_path = seed
-                    .file_path_from_root()
-                    .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
+                let full_path = seed.resolve_file_path(std::path::Path::new(""));
                 Ok(Value::from(full_path.display().to_string()))
             }
             "external_root" => {
@@ -4360,6 +4407,16 @@ impl Adapter {
                         rel_type,
                         self.cancellation_token.clone(),
                     ))),
+                    Parse(_) => Ok(Value::from(false)),
+                }
+            }
+            "supports_atomic_exchange" => {
+                // (no args) -> bool (server passed the EXCHANGE TABLES probe)
+                ArgsIter::new("supports_atomic_exchange", &[], args).finish()?;
+                match &self.inner {
+                    Typed { adapter, .. } => Ok(Value::from(
+                        adapter.supports_atomic_exchange(state, self.cancellation_token.clone()),
+                    )),
                     Parse(_) => Ok(Value::from(false)),
                 }
             }
@@ -4696,7 +4753,6 @@ impl Adapter {
             None
         }
     }
-
     /// (state change) Lists the schema's routines and inserts each into
     /// the relation cache. Returns `temp_relation` if it turns out to
     /// be one of them
@@ -4711,7 +4767,8 @@ impl Adapter {
         if adapter.adapter_type() != AdapterType::Bigquery {
             return Ok(None);
         }
-        if !adapter.engine().relation_cache().project_has_functions() {
+        let relation_cache = adapter.engine().relation_cache();
+        if !relation_cache.project_has_functions() {
             return Ok(None);
         }
         if temp_relation
@@ -4727,25 +4784,25 @@ impl Adapter {
         }
 
         let db_schema = CatalogAndSchema::from(temp_relation);
-        let mut conn = adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-        let query_ctx = query_ctx_from_state(state)?.with_desc("get_relation > list_routines call");
-        let routines = match bigquery::list_routines(
-            adapter.engine().as_ref(),
-            &query_ctx,
-            &mut conn,
-            &db_schema,
-            self.cancellation_token.clone(),
-        ) {
-            Ok(routines) => routines,
-            Err(e) => {
-                tracing::warn!("relation_cache: list_routines failed: {e}");
-                return Ok(None);
-            }
-        };
-
-        let relation_cache = adapter.engine().relation_cache();
-        for routine in routines {
-            relation_cache.insert_relation(routine, None);
+        if !relation_cache.contains_routines(&db_schema) {
+            let mut conn =
+                adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+            let query_ctx =
+                query_ctx_from_state(state)?.with_desc("get_relation > list_routines call");
+            let routines = match bigquery::list_routines(
+                adapter.engine().as_ref(),
+                &query_ctx,
+                &mut conn,
+                &db_schema,
+                self.cancellation_token.clone(),
+            ) {
+                Ok(routines) => routines,
+                Err(e) => {
+                    tracing::warn!("relation_cache: list_routines failed: {e}");
+                    return Ok(None);
+                }
+            };
+            relation_cache.insert_routines(&db_schema, routines);
         }
 
         Ok(relation_cache

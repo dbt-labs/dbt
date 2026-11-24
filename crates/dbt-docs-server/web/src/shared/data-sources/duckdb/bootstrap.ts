@@ -23,12 +23,26 @@
  * through DuckDB.
  */
 
-import type { AsyncBuffer } from 'hyparquet';
+import { decompress as decompressZstd } from 'fzstd';
+import type { AsyncBuffer, Compressors } from 'hyparquet';
 import { parquetReadObjects } from 'hyparquet';
-import { compressors } from 'hyparquet-compressors';
 
 import type { NodeSummary } from '../../../types';
 import type { RestProject } from '../mappers/fromWire';
+
+/**
+ * The decoders first paint gives hyparquet: ZSTD only.
+ *
+ * dbt writes every information-schema artifact with ZSTD
+ * (`dbt-index-core/src/info_schema/`), and hyparquet has no built-in ZSTD decoder.
+ * `hyparquet-compressors` would add one, but it also bundles Brotli, gzip and LZ4,
+ * and its Brotli dictionary alone is ~79 KB of minified critical-path JS. Snappy and
+ * uncompressed pages still work through hyparquet's built-ins. Any other codec
+ * makes the read throw, and first paint shows what the other artifacts give it.
+ */
+const compressors: Compressors = {
+  ZSTD: (input) => decompressZstd(input),
+};
 
 /**
  * The artifacts holding the shell's resource list, in the order they are listed.
@@ -56,11 +70,10 @@ const RESOURCE_TABLES = [
  * Parquet is columnar, so naming them keeps the code blobs from being decompressed
  * here even though they arrive in the same file.
  *
- * `dbt.data_tests` and `dbt.unit_tests` do not carry all nine — a unit test has no
- * `materialized`, `database_name` or `schema_name`, and neither table declares
- * `resource_type`, since the table *is* the type. hyparquet fails a read that names
- * an absent column, so each artifact is read with the columns it actually has and
- * the rest are filled in.
+ * Not every table carries all nine; {@link ABSENT_COLUMNS} lists the gaps, and each
+ * artifact is read with only the columns it has. hyparquet's object reader skips a named
+ * column the file lacks, but its array reader throws on one, so the read does not rely
+ * on the skip.
  */
 const NODE_SUMMARY_COLUMNS = [
   'unique_id',
@@ -127,14 +140,25 @@ const IMPLIED_RESOURCE_TYPE: Record<string, string> = {
   'dbt.unit_tests': 'unit_test',
 };
 
+/**
+ * The {@link NODE_SUMMARY_COLUMNS} each artifact does not declare. Only models have
+ * `materialized`: on every other node table it repeated `resource_type`. Analyses and
+ * hooks build no relation, and a hook has no description.
+ */
+const ABSENT_COLUMNS: Record<string, string[]> = {
+  'dbt.seeds': ['materialized'],
+  'dbt.snapshots': ['materialized'],
+  'dbt.sources': ['materialized'],
+  'dbt.functions': ['materialized'],
+  'dbt.analyses': ['materialized', 'database_name', 'schema_name'],
+  'dbt.hooks': ['materialized', 'description', 'database_name', 'schema_name'],
+  'dbt.data_tests': ['resource_type'],
+  'dbt.unit_tests': ['resource_type', 'materialized', 'database_name', 'schema_name'],
+};
+
 /** The subset of {@link NODE_SUMMARY_COLUMNS} one artifact actually declares. */
 function columnsFor(table: string): string[] {
-  const implied = IMPLIED_RESOURCE_TYPE[table];
-  if (!implied) return NODE_SUMMARY_COLUMNS;
-  const absent =
-    table === 'dbt.unit_tests'
-      ? ['resource_type', 'materialized', 'database_name', 'schema_name']
-      : ['resource_type'];
+  const absent = ABSENT_COLUMNS[table] ?? [];
   return NODE_SUMMARY_COLUMNS.filter((c) => !absent.includes(c));
 }
 
@@ -187,7 +211,6 @@ async function readRows(
   const file = await wholeFile(url);
   return parquetReadObjects({
     file,
-    // The index is written with ZSTD, which is not one of hyparquet's built-ins.
     compressors,
     rowFormat: 'object',
     ...(columns ? { columns } : {}),

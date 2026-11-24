@@ -15,7 +15,7 @@ use dbt_index_core::column_impact::UnavailableColumnImpact;
 use dbt_index_core::column_lineage::UnavailableColumnLineage;
 use dbt_lineage_core::{CllEdge, PlanGrainInfo};
 use dbt_schema_store::SchemaStoreTrait;
-use dbt_schemas::schemas::manifest::{DbtManifest, DbtNode};
+use dbt_schemas::schemas::manifest::{DbtManifest, DbtNode, ManifestDataTest};
 use dbt_schemas::state::ResolverState;
 use dbt_tasks_core::RunTaskResults;
 
@@ -119,6 +119,24 @@ fn unique_key_to_grain(uk: &Option<dbt_schemas::schemas::common::DbtUniqueKey>) 
         Some(DbtUniqueKey::Single(s)) => vec![s.clone()],
         Some(DbtUniqueKey::Multiple(v)) => v.clone(),
         None => vec![],
+    }
+}
+
+/// The node a generic test is on. A source test has no `attached_node`, as in dbt-core, so its
+/// subject is the one source it depends on.
+fn test_subject<'a>(test: &'a ManifestDataTest, manifest: &DbtManifest) -> Option<&'a str> {
+    if let Some(attached) = test.attached_node.as_deref() {
+        return Some(attached);
+    }
+    let mut sources = test
+        .__base_attr__
+        .depends_on
+        .nodes
+        .iter()
+        .filter(|uid| manifest.sources.contains_key(*uid));
+    match (sources.next(), sources.next()) {
+        (Some(only), None) => Some(only.as_str()),
+        _ => None,
     }
 }
 
@@ -250,7 +268,7 @@ fn write_metadata_parquet_impl(
         match node {
             DbtNode::Test(t) => {
                 if let Some(tm) = &t.test_metadata {
-                    if let Some(attached) = t.attached_node.as_deref() {
+                    if let Some(attached) = test_subject(t, manifest) {
                         match tm.name.as_str() {
                             "unique_combination_of_columns" => {
                                 if let Some(cols) =
@@ -479,6 +497,54 @@ fn write_metadata_parquet_impl(
         }
     }
 
+    // Functions and sources live in their own manifest maps, so the loop above never sees them.
+    // Functions compile SQL of their own; write it with the strict-analysis rows when there is
+    // any. A source has no SQL and no primary key, so only its tests give it a grain.
+    if arg.write_metadata
+        && (arg.static_analysis.is_some_and(is_strict_static_analysis)
+            || arg.infer_schemas_and_typeless)
+    {
+        for (uid, function) in &manifest.functions {
+            let compiled_code = function.__base_attr__.compiled_code.clone();
+            compiled_node_rows.push(dbt_metadata_parquet::compiled_node::CompiledNodeRow {
+                unique_id: uid.to_string(),
+                compiled_code_hash: compiled_code.as_deref().map(hash_str),
+                compiled_code,
+                compiled_path: function.__base_attr__.compiled_path.clone(),
+                grain: "[]".to_string(),
+                grain_declared: "[]".to_string(),
+                grain_tested: "[]".to_string(),
+                grain_inferred: "[]".to_string(),
+                classifiers: merge_classifiers_json(
+                    &function.__common_attr__.classifiers,
+                    node_classifiers.get(uid.as_str()),
+                ),
+                table_role: None,
+                ingested_at,
+            });
+        }
+        for (uid, source) in &manifest.sources {
+            let tested = grain_tested.get(uid.as_str()).cloned().unwrap_or_default();
+            let tested = serde_json::to_string(&tested).unwrap_or_default();
+            compiled_node_rows.push(dbt_metadata_parquet::compiled_node::CompiledNodeRow {
+                unique_id: uid.to_string(),
+                compiled_code: None,
+                compiled_code_hash: None,
+                compiled_path: None,
+                grain: tested.clone(),
+                grain_declared: "[]".to_string(),
+                grain_tested: tested,
+                grain_inferred: "[]".to_string(),
+                classifiers: merge_classifiers_json(
+                    &source.__common_attr__.classifiers,
+                    node_classifiers.get(uid.as_str()),
+                ),
+                table_role: None,
+                ingested_at,
+            });
+        }
+    }
+
     // sources: compile/columns (parse/columns now written by parse_state::save)
     for (uid, src) in &manifest.sources {
         // compile/columns — src.columns is already merged with schema types by update_manifest
@@ -511,7 +577,33 @@ fn write_metadata_parquet_impl(
     } else {
         Some(recomputed_column_lineage_targets)
     };
-    let compiled_nodes_targets = targets_opt;
+    // Column lineage is recomputed for models, so the recomputed set holds nothing else, yet
+    // functions, hooks, analyses and snapshots compile and carry compiled SQL of their own, and
+    // seeds and sources carry the grain their tests give them. Left out of the set their rows
+    // were never written, so those columns stayed unset whenever the set was not empty. Only
+    // those types are added: tests keep their own rows.
+    let compiled_nodes_scope: Option<HashSet<String>> = targets_opt.map(|targets| {
+        let mut scope = targets.clone();
+        scope.extend(
+            manifest
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    matches!(
+                        node,
+                        DbtNode::Operation(_)
+                            | DbtNode::Analysis(_)
+                            | DbtNode::Snapshot(_)
+                            | DbtNode::Seed(_)
+                    )
+                })
+                .map(|(uid, _)| uid.to_string()),
+        );
+        scope.extend(manifest.functions.keys().map(|uid| uid.to_string()));
+        scope.extend(manifest.sources.keys().map(|uid| uid.to_string()));
+        scope
+    });
+    let compiled_nodes_targets = compiled_nodes_scope.as_ref();
     let compile_columns_targets = targets_opt;
 
     let cll_dir = arg.metadata_dir().join("compile").join("column_lineage");

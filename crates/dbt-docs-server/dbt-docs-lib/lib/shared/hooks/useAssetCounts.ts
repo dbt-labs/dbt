@@ -1,6 +1,6 @@
 import { useMetadataDataSource } from '../../context/MetadataDataProvider';
-import { assetCountsKey } from '../../utils/queryKeys';
 import { useSourceQuery } from '../../hooks/useSourceQuery';
+import { assetCountsKey } from '../../utils/queryKeys';
 
 /**
  * Fetch project-wide per-resource-type asset counts from the active

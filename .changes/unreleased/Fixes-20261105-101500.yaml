@@ -1,0 +1,7 @@
+kind: Fixes
+body: Ensure column-level foreign_key constraints on versioned models create DAG dependencies
+time: 2026-11-05T10:15:00.000000+05:30
+custom:
+    author: ansh-rohilla
+    issue: "17023"
+    project: dbt-core

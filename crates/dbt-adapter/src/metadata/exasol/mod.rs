@@ -17,8 +17,9 @@ use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
 use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::{AdapterError, AdapterErrorKind, AsyncAdapterResult, Cancellable};
-use crate::{AdapterResult, metadata::*, record_batch::RecordBatchExt};
+use crate::{AdapterResult, metadata::*};
 use arrow_schema::Schema;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 

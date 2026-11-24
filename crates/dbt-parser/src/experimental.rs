@@ -1,120 +1,82 @@
-//! Experimentals that add their own kind of node to a project.
+//! What a kind of node that a feature adds to dbt resolves with.
 //!
-//! An experimental reads its definitions under its keys: its type, and any other keys it reads for
-//! definitions that aren't nodes. Each key works in both of two places:
+//! The kind is a [`ResolvableNode`](crate::resolve::resolvable_node::ResolvableNode), as dbt's
+//! own kinds are. It owns top-level keys of properties files, and its feature flag turns it on:
 //!
-//! - **`experimental:` in properties files.** Entries under the key:
+//! ```yaml
+//! widget:
+//!   - name: orders_widget
+//!     depends_on: [ref('orders')]
+//!     part: bolt
+//! part:
+//!   - name: bolt
+//! ```
 //!
-//!   ```yaml
-//!   experimental:
-//!     widget:
-//!       - name: orders_widget
-//!         depends_on: [ref('orders')]
-//!         part: bolt
-//!     part:
-//!       - name: bolt
-//!   ```
-//! - **Experimental paths.** Directories a project names for the key in its `dbt_project.yml`,
-//!   whose files hold definitions of that key's kind:
-//!
-//!   ```yaml
-//!   experimental-paths:
-//!     widget: ["widgets"]
-//!     part: ["parts"]
-//!   ```
-//!
-//! The experimental resolves one package at a time, seeing all of the package's entries and files
-//! at once. It decides what each one deserializes to, its `config:` included, and returns the nodes
-//! they define. dbt resolves each node's `depends_on` with the project's own `ref()`, `source()`
-//! and `metric()` rules. The experimental's own data for a node is opaque to dbt.
-//!
-//! An experimental is off unless its feature flag is on. A reserved key is never released: entries
-//! or `experimental-paths` for an experimental that is off, or no longer exists, are ignored with a
-//! warning, never treated as an error.
+//! When it resolves a package, it takes the entries under its keys
+//! ([`ResolveCtx::take_entries`]), decides what each one deserializes to, its `config:`
+//! included, and gives back the nodes they define ([`ResolveCtx::add_injected_nodes`]). dbt
+//! resolves each node's `depends_on` with the project's own `ref()`, `source()` and `metric()`
+//! rules. The nodes are of the kind's own type
+//! ([`InjectedNodeType`](dbt_schemas::schemas::InjectedNodeType)): dbt reads only their common
+//! and base attributes.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use dbt_common::io_args::project_flag_bool;
-use dbt_common::{CodeLocationWithFile, ErrorCode, FsError, fs_err};
-use dbt_flags::FlagDef;
+use dbt_common::path::DbtPath;
+use dbt_common::stdfs;
+use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
+use dbt_common::{CodeLocationWithFile, ErrorCode, FsError, FsResult, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
-use dbt_jinja_utils::serde::{from_yaml_raw, into_typed_with_jinja};
+use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
-use dbt_schemas::schemas::ExperimentalData;
+use dbt_schemas::schemas::common::DbtChecksum;
+use dbt_schemas::schemas::project::{ExperimentalNodeConfig, Tags};
+use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
+use dbt_schemas::schemas::{CommonAttributes, InjectedNodeType, NodeBaseAttributes};
 use dbt_yaml::Spanned;
 use indexmap::IndexMap;
 use minijinja::value::Value as MinijinjaValue;
 use serde::de::DeserializeOwned;
 
-/// Adds nodes of its own kind to a project.
-pub trait ResolveExperimental: Send + Sync {
-    /// The kind of node the experimental adds, e.g. `widget`: its key under `experimental:` and
-    /// `experimental-paths:`, the prefix of its nodes' unique ids
-    /// (`<experimental type>.<package>.<name>`), and a value `resource_type:` selects. It must be
-    /// among the reserved keys the experimental is registered with.
-    fn experimental_type(&self) -> &'static str;
+use crate::resolve::properties_index::PropertiesEntry;
+use crate::resolve::resolvable_node::ResolveCtx;
+use crate::resolve::resolve_exposures::resolve_yaml_depends_on;
+use crate::utils::get_node_fqn;
 
-    /// Other keys the experimental reads, under `experimental:` and `experimental-paths:`, for
-    /// definitions that aren't nodes of their own but that its nodes name (e.g. `part`). Each must
-    /// be reserved, like an experimental type.
-    fn definition_keys(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// The feature flag that turns the experimental on. It defaults to off.
-    fn flag(&self) -> &'static FlagDef;
-
-    /// Turns one package's entries and files into node definitions.
-    ///
-    /// A definition the experimental rejects should be reported with
-    /// [`ExperimentalDiagnostics::error`] and get no node; an error returned here rejects the whole
-    /// package's.
-    fn resolve(
-        &self,
-        package: &ExperimentalPackage<'_>,
-        diagnostics: &mut ExperimentalDiagnostics,
-    ) -> Result<Vec<ExperimentalNodeDef>, ExperimentalError>;
-}
-
-/// What one package gives an experimental, by key: its entries under `experimental: <key>:` in
-/// properties files, and its files under `experimental-paths: {<key>: [...]}`.
-pub struct ExperimentalPackage<'a> {
+/// What one package gives a kind of node, by key: the entries under each of the kind's top-level
+/// keys in the package's properties files.
+pub struct KindEntries<'a> {
     /// The package's name.
     pub package_name: &'a str,
-    pub(crate) entries: BTreeMap<&'static str, Vec<ExperimentalEntry>>,
-    pub(crate) files: BTreeMap<&'static str, Vec<ExperimentalFile>>,
-    /// What entries and files are rendered with; `None` reads them as written.
+    /// The package's root directory, which the paths of its entries are relative to. Empty for
+    /// an [unrendered](Self::unrendered) package.
+    pub package_root: &'a Path,
+    pub(crate) entries: BTreeMap<&'static str, Vec<KindEntry>>,
+    /// What entries are rendered with; `None` reads them as written.
     pub(crate) jinja: Option<(&'a JinjaEnv, &'a BTreeMap<String, MinijinjaValue>)>,
 }
 
-impl<'a> ExperimentalPackage<'a> {
-    /// A package whose entries and files are read as written, without rendering Jinja: for a
-    /// experimental's unit tests.
+impl<'a> KindEntries<'a> {
+    /// A package whose entries are read as written, without rendering Jinja: for the unit tests
+    /// of a kind of node.
     pub fn unrendered(
         package_name: &'a str,
-        entries: BTreeMap<&'static str, Vec<ExperimentalEntry>>,
-        files: BTreeMap<&'static str, Vec<ExperimentalFile>>,
+        entries: BTreeMap<&'static str, Vec<KindEntry>>,
     ) -> Self {
         Self {
             package_name,
+            package_root: Path::new(""),
             entries,
-            files,
             jinja: None,
         }
     }
 
-    /// The entries under `experimental: <key>:`, one per name, ordered by name. `key` is the
-    /// experimental's type or one of its definition keys.
-    pub fn entries(&self, key: &str) -> &[ExperimentalEntry] {
+    /// The entries under the top-level key `key`, one per name, ordered by name. `key` is one of
+    /// the kind's keys.
+    pub fn entries(&self, key: &str) -> &[KindEntry] {
         self.entries.get(key).map_or(&[], Vec::as_slice)
-    }
-
-    /// The files under `experimental-paths: {<key>: [...]}`, in path order, hidden ones skipped.
-    /// `key` is the experimental's type or one of its definition keys.
-    pub fn files(&self, key: &str) -> &[ExperimentalFile] {
-        self.files.get(key).map_or(&[], Vec::as_slice)
     }
 
     /// `entry` as a `T`, rendered as dbt renders properties: fields typed `Verbatim<_>` stay as
@@ -127,12 +89,12 @@ impl<'a> ExperimentalPackage<'a> {
     /// with [`Self::deserialize_value`] once its variant is known.
     pub fn deserialize<T: DeserializeOwned>(
         &self,
-        entry: &ExperimentalEntry,
+        entry: &KindEntry,
     ) -> Result<T, ExperimentalError> {
         self.render(entry.value.clone(), &entry.path)
     }
 
-    /// `value`, part of an entry or file at `path`, as a `T`, rendered as [`Self::deserialize`]
+    /// `value`, part of an entry in the file `path`, as a `T`, rendered as [`Self::deserialize`]
     /// renders an entry.
     pub fn deserialize_value<T: DeserializeOwned>(
         &self,
@@ -142,23 +104,15 @@ impl<'a> ExperimentalPackage<'a> {
         self.render(value.clone(), path)
     }
 
-    /// The YAML in `file` as a `T`, rendered as [`Self::deserialize`] renders an entry.
-    pub fn read_file<T: DeserializeOwned>(
-        &self,
-        file: &ExperimentalFile,
-    ) -> Result<T, ExperimentalError> {
-        let text = std::fs::read_to_string(&file.absolute_path).map_err(|e| {
-            ExperimentalError::new(format!("Couldn't read {}: {e}", file.path.display()))
-        })?;
-        let value: dbt_yaml::Value = from_yaml_raw(
-            &text,
-            Some(&file.path),
-            true,
-            self.jinja
-                .and_then(|(env, base_ctx)| dependency_package_name_from_ctx(env, base_ctx)),
-        )
-        .map_err(|e| ExperimentalError::from_fs_error(*e, &file.path))?;
-        self.render(value, &file.path)
+    /// `text`, the contents of the file `path` that an entry names, with Jinja rendered as it is
+    /// in the package's properties files: with the package's macros, `doc()`, `var()` and
+    /// `target`. An [unrendered](Self::unrendered) package gives it as written.
+    pub fn render_text(&self, text: &str, path: &Path) -> Result<String, ExperimentalError> {
+        let Some((env, base_ctx)) = self.jinja else {
+            return Ok(text.to_string());
+        };
+        env.render_str(text, base_ctx, &[])
+            .map_err(|e| ExperimentalError::from_fs_error(*e, path))
     }
 
     fn render<T: DeserializeOwned>(
@@ -193,9 +147,9 @@ impl<'a> ExperimentalPackage<'a> {
     }
 }
 
-/// One entry under one of an experimental's keys in a properties file.
+/// One entry under one of a kind's top-level keys in a properties file.
 #[derive(Debug, Clone)]
-pub struct ExperimentalEntry {
+pub struct KindEntry {
     /// The entry's `name`.
     pub name: String,
     /// The properties file, relative to its package's root.
@@ -204,7 +158,7 @@ pub struct ExperimentalEntry {
     pub value: dbt_yaml::Value,
 }
 
-impl ExperimentalEntry {
+impl KindEntry {
     /// Where `value`, the entry or a value in it, is in its file.
     pub fn location_of(&self, value: &dbt_yaml::Value) -> CodeLocationWithFile {
         let start = &value.span().start;
@@ -217,22 +171,12 @@ impl ExperimentalEntry {
     }
 }
 
-/// A file under one of a package's `experimental-paths` for one of an experimental's keys.
-#[derive(Debug, Clone)]
-pub struct ExperimentalFile {
-    /// The file, relative to its package's root.
-    pub path: PathBuf,
-    /// The file on disk.
-    pub absolute_path: PathBuf,
-}
-
-/// A node an experimental defines.
+/// A node that a kind defines: an injected node.
 #[derive(Debug, Default)]
-pub struct ExperimentalNodeDef {
-    /// The node's name. Its unique id is `<experimental type>.<package>.<name>`.
+pub struct InjectedNodeDef {
+    /// The node's name. Its unique id is `<kind>.<package>.<name>`.
     pub name: String,
-    /// The file that defines the node, relative to its package's root: a properties file or a
-    /// file under `experimental-paths`.
+    /// The properties file that defines the node, relative to its package's root.
     pub path: PathBuf,
     /// The node's description.
     pub description: Option<String>,
@@ -244,8 +188,6 @@ pub struct ExperimentalNodeDef {
     pub meta: IndexMap<String, dbt_yaml::Value>,
     /// `ref()`, `source()` and `metric()` calls the node depends on.
     pub depends_on: Vec<Spanned<String>>,
-    /// The experimental's own data for the node.
-    pub data: ExperimentalData,
 }
 
 /// A problem an experimental reports. dbt reports it under the experimental codes
@@ -327,148 +269,195 @@ impl ExperimentalDiagnostics {
     }
 }
 
-/// The experimentals a project is resolved with, and every experimental type ever reserved.
-#[derive(Clone, Default)]
-pub struct ResolveExperimentals {
-    /// The registered experimentals, on or off.
-    pub experimentals: Vec<Arc<dyn ResolveExperimental>>,
-    /// Every reserved experimental type, including those of experimentals that are not registered.
-    pub reserved: Vec<&'static str>,
+impl ResolveCtx<'_> {
+    /// Takes the entries under each of `keys`, the top-level keys of a kind of node, out of the
+    /// package's properties.
+    ///
+    /// Two entries under the same key with the same name are reported, and neither is given.
+    pub fn take_entries(&mut self, keys: &[&'static str]) -> KindEntries<'_> {
+        let package_name = self.package_name;
+        let entries = keys
+            .iter()
+            .map(|key| {
+                let by_name = self.properties.take_entries(key);
+                (*key, kind_entries(key, package_name, by_name))
+            })
+            .collect();
+        KindEntries {
+            package_name,
+            package_root: &self.package.package_root_path,
+            entries,
+            jinja: Some((&self.jinja_env, &self.base_ctx)),
+        }
+    }
+
+    /// Adds the nodes that `defs` define to the package's nodes, and reports `diagnostics`.
+    ///
+    /// Each definition comes with what the kind keeps for its node. `node` builds the node, of
+    /// the kind's own type, from that and from the attributes that dbt resolves for the
+    /// definition.
+    ///
+    /// `defs` that are an error give no node, and the error is reported. A node that is defined
+    /// twice is reported and gets no second node.
+    pub fn add_injected_nodes<T: InjectedNodeType, D>(
+        &mut self,
+        kind: &str,
+        defs: Result<Vec<(InjectedNodeDef, D)>, ExperimentalError>,
+        diagnostics: ExperimentalDiagnostics,
+        node: impl Fn(CommonAttributes, NodeBaseAttributes, D) -> T,
+    ) -> FsResult<()> {
+        report(kind, diagnostics);
+        let defs = match defs {
+            Ok(defs) => defs,
+            Err(error) => {
+                emit_error_log_from_fs_error(
+                    *error.into_fs_error(kind, ErrorCode::ExperimentalError),
+                );
+                return Ok(());
+            }
+        };
+        let package_name = self.package_name;
+        for (def, data) in defs {
+            let unique_id = format!("{kind}.{package_name}.{}", def.name);
+            if self.nodes.injected.contains_key(&unique_id)
+                || self.disabled_nodes.injected.contains_key(&unique_id)
+            {
+                emit_error_log_from_fs_error(*fs_err!(
+                    code => ErrorCode::InvalidConfig,
+                    loc => def.path.clone(),
+                    "There is more than one {kind} named '{}' in package \
+                     '{package_name}'",
+                    def.name
+                ));
+                continue;
+            }
+            // The checksum covers the file that defines the node.
+            let checksum = DbtChecksum::hash(
+                &stdfs::read(self.package.package_root_path.join(&def.path)).unwrap_or_default(),
+            );
+            let (common, base) = self.node_attributes(kind, def, checksum)?;
+            let nodes = if base.enabled {
+                &mut self.nodes
+            } else {
+                &mut self.disabled_nodes
+            };
+            nodes
+                .injected
+                .insert(unique_id, Arc::new(node(common, base, data)));
+        }
+        Ok(())
+    }
+
+    /// The attributes of a node from its definition, its `depends_on` resolved with the
+    /// project's own rules.
+    fn node_attributes(
+        &self,
+        kind: &str,
+        def: InjectedNodeDef,
+        checksum: DbtChecksum,
+    ) -> FsResult<(CommonAttributes, NodeBaseAttributes)> {
+        let package_name = self.package_name;
+        let unique_id = format!("{kind}.{package_name}.{}", def.name);
+        let fqn = get_node_fqn(
+            package_name,
+            def.path.clone(),
+            vec![def.name.clone()],
+            &self.package.dbt_project.all_source_paths(),
+        );
+        let config = ExperimentalNodeConfig {
+            enabled: Some(def.enabled),
+            meta: Some(def.meta.clone()),
+            tags: Tags(Some(StringOrArrayOfStrings::ArrayOfStrings(
+                def.tags.clone(),
+            ))),
+        };
+        let (refs, sources, metrics) = resolve_yaml_depends_on(
+            &def.depends_on,
+            &self.jinja_env,
+            &self.base_ctx,
+            &config,
+            self.database,
+            self.schema,
+            self.adapter_type,
+            package_name,
+            &self.dbt_state.root_package().dbt_project.name,
+            fqn.clone(),
+            &def.path.to_string_lossy(),
+            self.arg.static_analysis,
+        )?;
+        Ok((
+            CommonAttributes {
+                name: def.name,
+                package_name: package_name.to_string(),
+                path: DbtPath::from(&def.path),
+                original_file_path: DbtPath::from(&def.path),
+                unique_id,
+                fqn,
+                description: def.description,
+                checksum,
+                tags: def.tags,
+                meta: def.meta,
+                ..Default::default()
+            },
+            NodeBaseAttributes {
+                adapter: self.adapter_type,
+                enabled: def.enabled,
+                refs,
+                sources,
+                metrics,
+                ..Default::default()
+            },
+        ))
+    }
 }
 
-impl ResolveExperimentals {
-    /// Sorts the experimentals by whether their flag is on, reading the root project's `flags:`.
-    pub(crate) fn turned_on(self, project_flags: Option<&dbt_yaml::Value>) -> ActiveExperimentals {
-        let (on, off) = self.experimentals.into_iter().partition(|experimental| {
-            experimental
-                .flag()
-                .resolve_with_project(&project_flag_bool(project_flags))
-                .value
+/// The entries under one key, reporting names that appear more than once.
+fn kind_entries(
+    key: &str,
+    package_name: &str,
+    by_name: BTreeMap<String, PropertiesEntry>,
+) -> Vec<KindEntry> {
+    let mut entries = Vec::new();
+    for (name, mpe) in by_name {
+        if mpe.schema_value.is_null() {
+            continue;
+        }
+        if !mpe.duplicate_paths.is_empty() {
+            let paths = std::iter::once(&mpe.relative_path)
+                .chain(&mpe.duplicate_paths)
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            emit_error_log_from_fs_error(*fs_err!(
+                code => ErrorCode::InvalidConfig,
+                loc => mpe.relative_path.clone(),
+                "There is more than one entry named '{name}' under `{key}:` in package \
+                 '{package_name}': {paths}"
+            ));
+            continue;
+        }
+        entries.push(KindEntry {
+            name,
+            path: mpe.relative_path,
+            value: mpe.schema_value,
         });
-        ActiveExperimentals {
-            on,
-            off,
-            reserved: self.reserved,
-        }
     }
+    entries
 }
 
-/// One invocation's experimentals: the ones whose flag is on, and every reserved experimental type.
-pub struct ActiveExperimentals {
-    pub(crate) on: Vec<Arc<dyn ResolveExperimental>>,
-    off: Vec<Arc<dyn ResolveExperimental>>,
-    reserved: Vec<&'static str>,
-}
-
-impl ActiveExperimentals {
-    /// The experimental that is on and reads `key`, under `experimental:` and
-    /// `experimental-paths:`: its type or a definition key.
-    pub(crate) fn reading(&self, key: &str) -> Option<&Arc<dyn ResolveExperimental>> {
-        self.on
-            .iter()
-            .find(|experimental| reads(experimental.as_ref(), key))
+/// Reports what a kind of node reported, under the experimental codes.
+fn report(kind: &str, diagnostics: ExperimentalDiagnostics) {
+    for error in diagnostics.errors {
+        emit_error_log_from_fs_error(*error.into_fs_error(kind, ErrorCode::ExperimentalError));
     }
-
-    /// Whether `key` is reserved.
-    pub(crate) fn is_reserved(&self, key: &str) -> bool {
-        self.reserved.contains(&key)
+    for warning in diagnostics.warnings {
+        emit_warn_log_from_fs_error(*warning.into_fs_error(kind, ErrorCode::ExperimentalWarning));
     }
-
-    /// Why what a project gives a reserved `key` isn't read.
-    pub(crate) fn why_ignored(&self, key: &str) -> String {
-        match self
-            .off
-            .iter()
-            .find(|experimental| reads(experimental.as_ref(), key))
-        {
-            Some(experimental) => format!(
-                "the `{}` experimental is off; turn it on with the `{}` feature flag",
-                experimental.experimental_type(),
-                experimental.flag().name
-            ),
-            None => format!("this dbt has no `{key}` experimental"),
-        }
-    }
-}
-
-/// Whether `experimental` reads `key`.
-fn reads(experimental: &dyn ResolveExperimental, key: &str) -> bool {
-    keys(experimental).any(|own| own == key)
-}
-
-/// The keys `experimental` reads: its type, then its definition keys.
-pub(crate) fn keys(experimental: &dyn ResolveExperimental) -> impl Iterator<Item = &'static str> {
-    std::iter::once(experimental.experimental_type())
-        .chain(experimental.definition_keys().iter().copied())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_flags::{Remote, Stage};
-
-    static WIDGETS_FLAG: FlagDef = FlagDef {
-        name: "test_widgets",
-        description: "Widgets, for testing experimentals.",
-        stage: Stage::Preview,
-        default: false,
-        remote: Remote::Never,
-        aliases: &[],
-        legacy_env: &[],
-        tracking: None,
-        remove_by: None,
-        docs_url: None,
-    };
-
-    struct Widgets;
-
-    impl ResolveExperimental for Widgets {
-        fn experimental_type(&self) -> &'static str {
-            "widget"
-        }
-        fn definition_keys(&self) -> &'static [&'static str] {
-            &["part"]
-        }
-        fn flag(&self) -> &'static FlagDef {
-            &WIDGETS_FLAG
-        }
-        fn resolve(
-            &self,
-            _package: &ExperimentalPackage<'_>,
-            _diagnostics: &mut ExperimentalDiagnostics,
-        ) -> Result<Vec<ExperimentalNodeDef>, ExperimentalError> {
-            Ok(vec![])
-        }
-    }
-
-    fn experimentals(project_flags: &str) -> ActiveExperimentals {
-        let project_flags: dbt_yaml::Value = dbt_yaml::from_str(project_flags).unwrap();
-        ResolveExperimentals {
-            experimentals: vec![Arc::new(Widgets)],
-            reserved: vec!["widget", "part", "gadget"],
-        }
-        .turned_on(Some(&project_flags))
-    }
-
-    /// An experimental is off unless its flag is on, here in the project's `flags:`.
-    #[test]
-    fn experimentals_are_on_only_when_their_flag_is() {
-        assert!(experimentals("{}").reading("widget").is_none());
-        assert!(
-            experimentals("test_widgets: true")
-                .reading("widget")
-                .is_some()
-        );
-    }
-
-    /// An experimental reads its type and its definition keys, and nothing else.
-    #[test]
-    fn experimentals_read_their_definition_keys() {
-        let experimentals = experimentals("test_widgets: true");
-        assert!(experimentals.reading("widget").is_some());
-        assert!(experimentals.reading("part").is_some());
-        assert!(experimentals.reading("gadget").is_none());
-    }
 
     /// An unrendered package reads entries, and parts of them, as written.
     #[test]
@@ -479,16 +468,13 @@ mod tests {
             size: dbt_yaml::Value,
         }
         let value: dbt_yaml::Value = dbt_yaml::from_str("name: bolt\nsize: \"{{ 3 }}\"\n").unwrap();
-        let entry = ExperimentalEntry {
+        let entry = KindEntry {
             name: "bolt".to_string(),
             path: PathBuf::from("models/parts.yml"),
             value,
         };
-        let package = ExperimentalPackage::unrendered(
-            "widgets",
-            BTreeMap::from([("part", vec![entry.clone()])]),
-            BTreeMap::new(),
-        );
+        let package =
+            KindEntries::unrendered("widgets", BTreeMap::from([("part", vec![entry.clone()])]));
         let part: Part = package.deserialize(&package.entries("part")[0]).unwrap();
         assert_eq!(part.name, "bolt");
         let size: String = package.deserialize_value(&part.size, &entry.path).unwrap();
@@ -500,27 +486,6 @@ mod tests {
             error.message().contains("invalid type"),
             "{}",
             error.message()
-        );
-    }
-
-    /// The reason a reserved experimental type is ignored names what to do.
-    #[test]
-    fn ignored_experimental_types_say_why() {
-        let experimentals = experimentals("{}");
-        assert!(experimentals.is_reserved("gadget"));
-        assert!(!experimentals.is_reserved("gizmo"));
-        assert_eq!(
-            experimentals.why_ignored("widget"),
-            "the `widget` experimental is off; turn it on with the `test_widgets` feature flag"
-        );
-        // A definition key names the experimental that reads it.
-        assert_eq!(
-            experimentals.why_ignored("part"),
-            "the `widget` experimental is off; turn it on with the `test_widgets` feature flag"
-        );
-        assert_eq!(
-            experimentals.why_ignored("gadget"),
-            "this dbt has no `gadget` experimental"
         );
     }
 }

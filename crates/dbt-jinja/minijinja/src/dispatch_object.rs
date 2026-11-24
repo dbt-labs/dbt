@@ -347,6 +347,7 @@ pub fn get_adapter_prefixes(dialect: &str) -> Vec<String> {
         // `AdapterType::LakeCompute` renders as `lakecompute`; lake compute defines no
         // macros of its own and inherits DuckDB's.
         "lakecompute" => prefixes.push("duckdb".to_string()),
+        "motherduck" => prefixes.push("duckdb".to_string()),
         // Add other adapter hierarchies as needed
         _ => {}
     }
@@ -413,6 +414,7 @@ pub fn get_internal_packages(dialect: &str) -> Vec<String> {
         "databricks" => internal_packages.push("dbt_spark".to_string()),
         // See `get_adapter_prefixes`: lake compute has no macro package of its own.
         "lakecompute" => internal_packages.push("dbt_duckdb".to_string()),
+        "motherduck" => internal_packages.push("dbt_duckdb".to_string()),
         // Add other adapter hierarchies as needed
         _ => {}
     }

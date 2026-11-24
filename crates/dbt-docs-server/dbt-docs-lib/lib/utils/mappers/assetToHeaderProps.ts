@@ -1,6 +1,6 @@
-import type { ResourceTypeExplorer } from '../resourceType';
 import type { AssetHeaderProps } from '../../shared//components/AssetHeader';
 import type { Asset, Relation } from '../../shared/typings/domain/asset';
+import type { ResourceTypeExplorer } from '../resourceType';
 
 function relationOf(asset: Asset): Relation | null {
   return 'relation' in asset ? (asset.relation ?? null) : null;

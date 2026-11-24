@@ -196,7 +196,8 @@ pub fn infer_seed_column_name_strategy(
             | AdapterType::Salesforce
             | AdapterType::Redshift
             | AdapterType::DuckDB
-            | AdapterType::LakeCompute,
+            | AdapterType::LakeCompute
+            | AdapterType::MotherDuck,
         ) => InferColumnNameStrategy::Lowercase,
         (false, AdapterType::Snowflake) => InferColumnNameStrategy::Uppercase,
         (

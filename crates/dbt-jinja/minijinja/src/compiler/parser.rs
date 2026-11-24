@@ -19,7 +19,6 @@ const RESERVED_NAMES: [&str; 10] = [
     "true", "True", "TRUE", "false", "False", "FALSE", "none", "None", "loop", "self",
 ];
 
-#[allow(clippy::incompatible_msrv)]
 static ENDBLOCK_IDENT: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let mut m = HashSet::new();
     m.insert("endfor");

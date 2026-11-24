@@ -19,7 +19,7 @@ impl CatalogRelation {
             // Lake compute is DuckDB-backed for relation-building purposes;
             // the deprecated catalogs.yml shape never supported per-catalog DuckDB
             // selection either, so this mirrors the DuckDB arm exactly.
-            AdapterType::DuckDB | AdapterType::LakeCompute => {
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => {
                 Ok(Self::default_catalog_relation_duckdb())
             }
             AdapterType::Spark => Ok(Self::default_catalog_relation_spark()),
@@ -59,10 +59,7 @@ impl CatalogRelation {
 
         match (model_catalog_name.as_deref(), catalogs.as_ref()) {
             (None, _) if !wants_iceberg => Ok(Self::default_catalog_relation_bigquery()),
-            (None, _) => Err(AdapterError::new(
-                AdapterErrorKind::Configuration,
-                "On Bigquery, table_format=iceberg requires catalogs.yml and a `catalog_name` that selects a write integration.",
-            )),
+            (None, _) => Self::build_bigquery_without_catalogs_yml(model),
             (Some(catalog_name), None) => Err(AdapterError::new(
                 AdapterErrorKind::Configuration,
                 format!(

@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use clap::{
     ArgAction, Parser, ValueEnum, ValueHint,
-    builder::{BoolishValueParser, TypedValueParser},
+    builder::{BoolishValueParser, PossibleValuesParser, TypedValueParser},
 };
 use clap_complete::Shell;
 use dbt_common::constants::{
@@ -59,6 +59,26 @@ use self::commands::{CommandParser, ExtensionCommandParser};
 
 pub const DEFAULT_LIMIT: &str = "10";
 pub const DEFAULT_FORMAT: DisplayFormat = DisplayFormat::Table;
+
+/// Parser for `--exclude-resource-type` values.
+///
+/// `all` and `default` describe a selection, so excluding by them is
+/// meaningless.
+fn exclude_resource_type_parser() -> impl TypedValueParser<Value = ClapResourceType> {
+    let values = ClapResourceType::value_variants()
+        .iter()
+        .filter(|resource_type| {
+            !matches!(
+                resource_type,
+                ClapResourceType::All | ClapResourceType::Default
+            )
+        })
+        .filter_map(|resource_type| resource_type.to_possible_value());
+    PossibleValuesParser::new(values).map(|value| {
+        ClapResourceType::from_str(&value, true)
+            .expect("value comes from ClapResourceType::to_possible_value")
+    })
+}
 
 /// `--help` heading labels used to group flags into sections.
 ///
@@ -317,6 +337,11 @@ pub struct Cli {
     pub common_args: CommonArgs,
 }
 
+/// Commands that write the information schema unless told not to.
+pub fn info_schema_is_default_for(command: FsCommand) -> bool {
+    matches!(command, FsCommand::Run | FsCommand::Build)
+}
+
 /// The output directory `in_out_dir` will choose, computed before project setup
 /// and without touching the filesystem beyond the `dbt_project.yml` search.
 /// Falls back to the current directory when no project is found.
@@ -495,6 +520,13 @@ got {:?}, expected an instance of {}",
             arg.write_metadata = true;
             arg.write_index = true;
             arg.write_index_implied = true;
+        }
+        // `build` and `run` write the information schema by default. Placed and scoped like
+        // the index default above: after the lineage block, on `EvalArgs` only.
+        if info_schema_is_default_for(arg.command) && common_args.defaults_info_schema() {
+            arg.write_metadata = true;
+            arg.generate_info_schema = true;
+            arg.generate_info_schema_implied = true;
         }
         Ok(arg)
     }
@@ -710,7 +742,14 @@ pub struct CompileArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Limiting number of shown rows. Run with --limit -1 to remove limit [default: 10]
@@ -757,7 +796,7 @@ impl CompileArgs {
         eval_args.full_refresh = self.full_refresh;
         eval_args.format = self.output.unwrap_or(DEFAULT_FORMAT);
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(resource_type, &[]);
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -916,7 +955,14 @@ pub struct FreshnessArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 }
 
@@ -925,7 +971,7 @@ impl FreshnessArgs {
         let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
         eval_args.phase = Phases::Freshness;
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(resource_type, &[]);
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -962,7 +1008,14 @@ pub struct ShowArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Limiting number of shown rows. Run with --limit -1 to remove limit [default: 10]
@@ -1014,7 +1067,17 @@ impl ShowArgs {
         eval_args.adapter_override = self.adapter.clone();
         eval_args.query_id = self.query_id.clone();
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(
+                resource_type,
+                &[
+                    ClapResourceType::Model,
+                    ClapResourceType::Snapshot,
+                    ClapResourceType::Seed,
+                    ClapResourceType::Source,
+                    ClapResourceType::Analysis,
+                    ClapResourceType::Test,
+                ],
+            );
         } else {
             eval_args.resource_types = vec![
                 ClapResourceType::Model,
@@ -1104,7 +1167,14 @@ pub struct TestArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Force node selection
@@ -1154,7 +1224,10 @@ impl TestArgs {
                 .insert(OptimizeTestsOptions::TestAggregation);
         }
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(
+                resource_type,
+                &[ClapResourceType::Test, ClapResourceType::UnitTest],
+            );
         } else {
             eval_args.resource_types = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
         }
@@ -1185,7 +1258,14 @@ pub struct BuildArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
     /// Batch compatible generic tests.
@@ -1262,24 +1342,26 @@ impl BuildArgs {
         }
         eval_args.phase = Phases::All;
         // Enable task cache
+        let mut default_resource_types = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::Check,
+            // Experimental nodes are never selected by default, so this only keeps the ones
+            // selected directly.
+            ClapResourceType::Experimental,
+        ];
+        if eval_args.export_saved_queries {
+            default_resource_types.push(ClapResourceType::SavedQuery);
+        }
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types =
+                ClapResourceType::resolve(resource_type, &default_resource_types);
         } else {
-            eval_args.resource_types = vec![
-                ClapResourceType::Model,
-                ClapResourceType::Seed,
-                ClapResourceType::Snapshot,
-                ClapResourceType::Test,
-                ClapResourceType::UnitTest,
-                ClapResourceType::Function,
-                ClapResourceType::Check,
-                // Experimental nodes are never selected by default, so this only keeps the ones
-                // selected directly.
-                ClapResourceType::Experimental,
-            ];
-            if eval_args.export_saved_queries {
-                eval_args.resource_types.push(ClapResourceType::SavedQuery);
-            }
+            eval_args.resource_types = default_resource_types;
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -1324,7 +1406,14 @@ pub struct ListArgs {
     pub resource_type: Option<Vec<ClapResourceType>>,
 
     /// Exclude nodes of a specific type;
-    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    #[arg(
+        long,
+        num_args(1..),
+        value_delimiter = ' ',
+        value_parser = exclude_resource_type_parser(),
+        aliases = ["exclude-resource-types"],
+        env = "DBT_EXCLUDE_RESOURCE_TYPES"
+    )]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 }
 
@@ -1334,9 +1423,27 @@ impl ListArgs {
         eval_args.phase = Phases::List;
         eval_args.io.show.insert(ShowOptions::Nodes);
         eval_args.output_keys = self.output_keys.clone();
-        if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
-        }
+        let default_resource_types = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Experimental,
+        ];
+        eval_args.resource_types = match &self.resource_type {
+            Some(resource_type) => {
+                ClapResourceType::resolve(resource_type, &default_resource_types)
+            }
+            None => default_resource_types,
+        };
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
         }
@@ -2073,10 +2180,14 @@ pub struct CommonArgs {
     pub index_dir: Option<PathBuf>,
 
     /// Write the dbt information schema to target/info_schema/: a queryable
-    /// parquet layer over your project's metadata. With --static-analysis strict,
-    /// also writes column types and column-level lineage.
+    /// parquet layer over your project's metadata. Written by default by build
+    /// and run. With --static-analysis strict, also writes column types and
+    /// column-level lineage.
     #[arg(global = true, long = "generate-info-schema", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_ENGINE_GENERATE_INFO_SCHEMA", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS)]
     pub generate_info_schema: bool,
+    /// Skip the information schema that build and run write by default.
+    #[arg(global = true, long, action = ArgAction::SetTrue, default_value_t=false, value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS, hide_short_help = true)]
+    pub no_generate_info_schema: bool,
 
     /// Directory for information schema parquet output (default: <target>/info_schema/)
     #[arg(
@@ -2095,7 +2206,7 @@ pub struct CommonArgs {
         long,
         env = "DBT_ENGINE_DEFAULT_STATIC_ANALYSIS",
         // Leave out the deprecated `on` and `unsafe`.
-        value_parser = clap::builder::PossibleValuesParser::new(["off", "baseline", "strict"])
+        value_parser = PossibleValuesParser::new(["off", "baseline", "strict"])
             .map(|s| s.parse::<StaticAnalysisKind>().expect("restricted to valid kinds")),
         hide = true
     )]
@@ -2613,15 +2724,29 @@ pub struct CommonArgs {
     pub antlr_parser_recursion_limit: Option<u32>,
 }
 
-fn resolve_show_arg(show_arg: &[ShowOptions], quiet: bool) -> HashSet<ShowOptions> {
+/// What an empty `--show` shows: progress and each completed node, except for a
+/// command whose output is a report of its own (`init <mode>`), where node
+/// results would bury it: progress only.
+fn default_show(cli: &Cli) -> &'static [ShowOptions] {
+    match &cli.command {
+        Command::Core(CoreCommand::Init(InitArgs { mode: Some(_), .. })) => {
+            &[ShowOptions::Progress]
+        }
+        _ => &[ShowOptions::Progress, ShowOptions::Completed],
+    }
+}
+
+fn resolve_show_arg(
+    show_arg: &[ShowOptions],
+    default: &[ShowOptions],
+    quiet: bool,
+) -> HashSet<ShowOptions> {
     let mut show = if show_arg.contains(&ShowOptions::All) {
         ShowOptions::iter().collect()
     } else if show_arg.contains(&ShowOptions::None) {
         HashSet::default()
     } else if show_arg.is_empty() {
-        [ShowOptions::Progress, ShowOptions::Completed]
-            .into_iter()
-            .collect()
+        default.iter().copied().collect()
     } else {
         show_arg
             .iter()
@@ -2783,7 +2908,7 @@ impl CommonArgs {
     pub fn effective_partial_parse(&self) -> bool {
         self.write_metadata
             || self.effective_write_index()
-            || self.generate_info_schema
+            || self.effective_generate_info_schema()
             || self.partial_parse
             || self.partial_load
             || self.verify_partial_load
@@ -2801,7 +2926,7 @@ impl CommonArgs {
         !self.no_partial_load
             && (self.write_metadata
                 || self.effective_write_index()
-                || self.generate_info_schema
+                || self.effective_generate_info_schema()
                 || self.partial_load
                 || self.verify_partial_load)
     }
@@ -2817,6 +2942,23 @@ impl CommonArgs {
     /// above regardless of `--no-write-index`.)
     pub fn effective_write_index(&self) -> bool {
         self.write_index && !self.no_write_index
+    }
+
+    /// `--generate-info-schema` after `--no-generate-info-schema` cancels it, the same way
+    /// `--no-write-index` cancels `--write-index`.
+    pub fn effective_generate_info_schema(&self) -> bool {
+        self.generate_info_schema && !self.no_generate_info_schema
+    }
+
+    /// Whether a command's default information schema applies. Not when the flag was passed
+    /// (it is already on) or opted out of, and not under `--no-write-index`, which keeps
+    /// meaning no default metadata artifacts. Not under `--write-metadata` either, so that
+    /// flag stays epochs without derived artifacts.
+    pub fn defaults_info_schema(&self) -> bool {
+        !self.generate_info_schema
+            && !self.no_generate_info_schema
+            && !self.no_write_index
+            && !self.write_metadata
     }
 
     /// Resolve the effective value of `--quiet` / `--no-quiet`.
@@ -2845,8 +2987,13 @@ impl CommonArgs {
             }
             expr
         });
-        let show = resolve_show_arg(self.show.as_slice(), self.get_quiet());
+        let show = resolve_show_arg(
+            self.show.as_slice(),
+            &[ShowOptions::Progress, ShowOptions::Completed],
+            self.get_quiet(),
+        );
         let replay = pick_replay_mode(self, arg.io.invocation_id, out_dir);
+        let send_anonymous_usage_stats = self.get_send_anonymous_usage_stats();
         EvalArgs {
             command: arg.command,
             io: IoArgs {
@@ -2858,7 +3005,7 @@ impl CommonArgs {
                 in_dir: in_dir.to_path_buf(),
                 out_dir: out_dir.to_path_buf(),
                 db_root: None,
-                send_anonymous_usage_stats: self.get_send_anonymous_usage_stats(),
+                send_anonymous_usage_stats,
                 status_reporter: arg.io.status_reporter.clone(),
                 log_format: self.log_format,
                 log_format_file: self.log_format_file,
@@ -2957,7 +3104,7 @@ impl CommonArgs {
             log_path: self.log_path.clone(),
             project_dir: self.project_dir.clone(),
             quiet: self.get_quiet(),
-            send_anonymous_usage_stats: self.get_send_anonymous_usage_stats(),
+            send_anonymous_usage_stats,
             write_json: if (self.write_metadata && !self.write_index) || self.no_write_json {
                 false
             } else {
@@ -2970,14 +3117,15 @@ impl CommonArgs {
             // `--generate-info-schema` implies `--write-metadata` on its own.
             write_metadata: self.write_metadata
                 || self.effective_write_index()
-                || self.generate_info_schema,
+                || self.effective_generate_info_schema(),
             write_index: self.effective_write_index(),
             // Set by `Cli::to_eval_args` for the commands that default the index on; a
             // per-command conversion cannot know it was a default rather than a request.
             write_index_implied: false,
             check_names: Vec::new(),
             skip_checks: false,
-            generate_info_schema: self.generate_info_schema,
+            generate_info_schema: self.effective_generate_info_schema(),
+            generate_info_schema_implied: false,
             info_schema_dir: self.info_schema_dir.clone(),
             classify_with_warehouse_tags: self.classify_with_warehouse_tags,
             index_dir: self.index_dir.clone(),
@@ -3007,12 +3155,14 @@ impl CommonArgs {
             optimize_tests: Default::default(),
             local_execution_backend: self.compute.into(),
             skip_checkpoints: false,
+            command_options: BTreeMap::new(),
             skip_private_deps: self.skip_private_deps,
             no_deps: self.no_deps,
             event_time_end: self.event_time_end.clone(),
             event_time_start: self.event_time_start.clone(),
             internal_package_mode: self.internal_package_mode.clone(),
             skip_post_hooks: false,
+            skip_on_run_start_hooks: false,
             skip_creating_generic_tests: false,
             write_lineage: self.write_lineage,
             force_enable_linter: false,
@@ -3022,31 +3172,41 @@ impl CommonArgs {
         }
     }
 
-    pub fn get_send_anonymous_usage_stats(&self) -> bool {
-        if self.no_send_anonymous_usage_stats {
-            false
-        } else {
-            self.send_anonymous_usage_stats
-        }
-    }
-
-    /// Resolve send_anonymous_usage_stats with precedence:
-    /// `--no-send-anonymous-usage-stats` > DBT_SEND_ANONYMOUS_USAGE_STATS env > project yaml flags > true
+    /// Resolve send_anonymous_usage_stats like dbt Core, with precedence:
+    /// `DO_NOT_TRACK` > `--no-send-anonymous-usage-stats` > DBT_SEND_ANONYMOUS_USAGE_STATS env
+    /// > project yaml flags > true
+    ///
+    /// Finds `dbt_project.yml` like [`in_out_dir`], so callers that run before the project
+    /// directory is resolved get the same answer.
     ///
     /// Note: the clap flag has `default_value_t = true`, so an explicit
     /// `--send-anonymous-usage-stats=true` is indistinguishable from the default and will
     /// NOT override a YAML `false`. Only the explicit opt-out (`--no-`) and the env var are
     /// detectable here.
-    pub fn get_send_anonymous_usage_stats_for_project(&self, project_dir: &Path) -> bool {
-        if self.no_send_anonymous_usage_stats {
+    pub fn get_send_anonymous_usage_stats(&self) -> bool {
+        let env_bool = |name| {
+            env::var_os(name).and_then(|value| {
+                BoolishValueParser::new()
+                    .parse_ref(&clap::Command::new("dbt"), None, value.as_ref())
+                    .ok()
+            })
+        };
+        // `send_anonymous_usage_stats` is false only when the env var says so, or when the
+        // args were not parsed from the CLI (e.g. `CommonArgs::default()` for `dbt lsp`).
+        if env_bool("DO_NOT_TRACK") == Some(true)
+            || self.no_send_anonymous_usage_stats
+            || !self.send_anonymous_usage_stats
+        {
             return false;
         }
-        if let Some(value) = env::var_os("DBT_SEND_ANONYMOUS_USAGE_STATS") {
-            return BoolishValueParser::new()
-                .parse_ref(&clap::Command::new("dbt"), None, value.as_ref())
-                .unwrap_or(true);
+        if let Some(value) = env_bool("DBT_SEND_ANONYMOUS_USAGE_STATS") {
+            return value;
         }
-        send_anonymous_usage_stats_from_yaml(&project_dir.join(DBT_PROJECT_YML)).unwrap_or(true)
+        self.project_dir
+            .clone()
+            .or_else(|| determine_project_dir(&[], DBT_PROJECT_YML).ok())
+            .and_then(|dir| send_anonymous_usage_stats_from_yaml(&dir.join(DBT_PROJECT_YML)))
+            .unwrap_or(true)
     }
 
     pub fn get_introspect(&self) -> bool {
@@ -3121,6 +3281,111 @@ pub struct InitArgs {
     // Flattened Common args
     #[clap(flatten)]
     pub common_args: CommonArgs,
+
+    /// Set up an existing project for something, instead of creating a project
+    #[command(subcommand)]
+    pub mode: Option<InitMode>,
+}
+
+#[derive(clap::Subcommand, Debug, Clone, Serialize, Deserialize)]
+pub enum InitMode {
+    /// Find the models in this project that can run on Lake Compute
+    Lakecompute(InitLakecomputeArgs),
+}
+
+impl InitMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            InitMode::Lakecompute(_) => "lakecompute",
+        }
+    }
+}
+
+#[derive(clap::Args, Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InitLakecomputeArgs {
+    /// Print the report as JSON (with --quiet, stdout is the report alone)
+    #[arg(long, default_value = "false")]
+    pub json: bool,
+
+    /// With --json, report counts, grouped blockers and the plan, not each model
+    #[arg(long, default_value = "false", requires = "json")]
+    pub summary: bool,
+
+    /// List every model, not just a summary
+    #[arg(long, default_value = "false")]
+    pub all: bool,
+
+    /// Don't rewrite SQL that Lake Compute rejects
+    #[arg(long, default_value = "false")]
+    pub no_rewrite: bool,
+
+    /// Switch the models that can move: show the diff, then edit config and SQL
+    #[arg(long, default_value = "false")]
+    pub switch: bool,
+
+    /// Compile on Snowflake (as dbt compile does), then size and price models from query history, EXPLAIN and table sizes (read-only queries)
+    #[arg(long, default_value = "false")]
+    pub snowflake: bool,
+
+    /// With --snowflake, the days of query history to read
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=365))]
+    pub history_days: u32,
+
+    /// Write nothing with --switch; print queries without running them with --snowflake
+    #[arg(long, default_value = "false")]
+    pub dry_run: bool,
+
+    /// With --switch or --snowflake, go ahead without asking
+    #[arg(long, short = 'y', default_value = "false")]
+    pub yes: bool,
+
+    /// With --switch, also convert views that block models from moving
+    #[arg(long, default_value = "false", requires = "switch")]
+    pub convert_views: bool,
+
+    /// Before switching, fingerprint each model's Snowflake table for --validate
+    #[arg(long, default_value = "false", conflicts_with = "validate")]
+    pub baseline: bool,
+
+    /// After switched models build on Lake Compute, compare their tables with --baseline's
+    #[arg(long, default_value = "false")]
+    pub validate: bool,
+
+    /// With --switch, also switch models whose SQL couldn't be checked
+    #[arg(long, default_value = "false", requires = "switch")]
+    pub include_unverified: bool,
+
+    /// Read build times from this run_results.json (of a `dbt run` or `dbt build`)
+    /// [default: <target-path>/run_results.json]
+    #[arg(long)]
+    pub run_results: Option<PathBuf>,
+
+    /// Warehouse size to price build times at
+    #[arg(long, value_enum, default_value_t = WarehouseSize::XSmall)]
+    pub warehouse_size: WarehouseSize,
+}
+
+/// A Snowflake warehouse size, smallest first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+pub enum WarehouseSize {
+    #[default]
+    #[value(name = "xsmall")]
+    XSmall,
+    Small,
+    Medium,
+    Large,
+    #[value(name = "xlarge")]
+    XLarge,
+    #[value(name = "2xlarge")]
+    X2Large,
+    #[value(name = "3xlarge")]
+    X3Large,
+    #[value(name = "4xlarge")]
+    X4Large,
+    #[value(name = "5xlarge")]
+    X5Large,
+    #[value(name = "6xlarge")]
+    X6Large,
 }
 
 impl InitArgs {
@@ -3190,7 +3455,11 @@ pub fn from_main(cli: &Cli) -> SystemArgs {
         io: IoArgs {
             invocation_id: common_args.invocation_id.unwrap_or_else(Uuid::now_v7),
             otel_parent_span_id: common_args.parent_span_id,
-            show: resolve_show_arg(common_args.show.as_slice(), common_args.get_quiet()),
+            show: resolve_show_arg(
+                common_args.show.as_slice(),
+                default_show(cli),
+                common_args.get_quiet(),
+            ),
             is_compile: command == FsCommand::Compile,
             debug: common_args.debug,
             in_dir: PathBuf::new(),
@@ -3240,7 +3509,11 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
         io: IoArgs {
             invocation_id: common_args.invocation_id.unwrap_or_else(Uuid::now_v7),
             otel_parent_span_id: common_args.parent_span_id,
-            show: resolve_show_arg(common_args.show.as_slice(), common_args.get_quiet()),
+            show: resolve_show_arg(
+                common_args.show.as_slice(),
+                default_show(cli),
+                common_args.get_quiet(),
+            ),
             is_compile: command == FsCommand::Compile,
             debug: common_args.debug,
             in_dir: PathBuf::new(),
@@ -3369,6 +3642,47 @@ mod tests {
             Some(false),
             "--no-partial-load must not read DBT_PARTIAL_LOAD via clap"
         );
+    }
+
+    #[test]
+    fn no_generate_info_schema_cancels_the_flag_and_its_implications() {
+        let mut args = CommonArgs {
+            generate_info_schema: true,
+            ..Default::default()
+        };
+        assert!(args.effective_generate_info_schema());
+        assert!(args.effective_partial_parse());
+        assert!(args.effective_partial_load());
+
+        args.no_generate_info_schema = true;
+        assert!(!args.effective_generate_info_schema());
+        assert!(!args.effective_partial_parse());
+        assert!(!args.effective_partial_load());
+    }
+
+    #[test]
+    fn info_schema_default_yields_to_explicit_flags_and_opt_outs() {
+        assert!(CommonArgs::default().defaults_info_schema());
+        for args in [
+            CommonArgs {
+                generate_info_schema: true,
+                ..Default::default()
+            },
+            CommonArgs {
+                no_generate_info_schema: true,
+                ..Default::default()
+            },
+            CommonArgs {
+                no_write_index: true,
+                ..Default::default()
+            },
+            CommonArgs {
+                write_metadata: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(!args.defaults_info_schema());
+        }
     }
 
     #[test]
@@ -3867,6 +4181,51 @@ mod tests {
         }
     }
 
+    fn command_eval_resource_types(args: &[&str]) -> Vec<ClapResourceType> {
+        let cmd = parse_core_command(args);
+        let in_dir = Path::new("/tmp/in");
+        let out_dir = Path::new("/tmp/out");
+        match cmd {
+            CoreCommand::List(args) => {
+                args.to_eval_args(test_system_args(FsCommand::List), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Compile(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Compile), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Freshness(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Freshness), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Show(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Show), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Test(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Test), in_dir, out_dir)
+                    .resource_types
+            }
+            CoreCommand::Build(args) => {
+                args.to_eval_args(test_system_args(FsCommand::Build), in_dir, out_dir)
+                    .resource_types
+            }
+            other => panic!("expected a command with --resource-type, got {other:?}"),
+        }
+    }
+
+    fn exclude_resource_type_error(command: &str, flag: &str) -> String {
+        match CliParser::new("dbt", "2.0.0", Box::new(NoopParser)).try_parse_from([
+            "dbt",
+            command,
+            "--exclude-resource-type",
+            flag,
+        ]) {
+            Ok(_) => panic!("`{command}` accepted `--exclude-resource-type {flag}`"),
+            Err(error) => error.to_string(),
+        }
+    }
+
     #[test]
     #[allow(clippy::disallowed_methods)]
     fn user_static_analysis_env_wins_over_default_static_analysis_env() {
@@ -3956,6 +4315,112 @@ mod tests {
             Path::new("/tmp/out"),
         );
         assert_eq!(eval_args.resource_types, vec![ClapResourceType::Exposure]);
+    }
+
+    #[test]
+    fn exclude_resource_type_rejects_all_and_default() {
+        for command in ["list", "build", "compile", "show", "test", "freshness"] {
+            for flag in ["all", "default"] {
+                let error = exclude_resource_type_error(command, flag);
+                assert!(
+                    error.contains(&format!("invalid value '{flag}'")),
+                    "`{command} --exclude-resource-type {flag}` should fail on the value: {error}"
+                );
+                assert!(
+                    error.contains("--exclude-resource-type"),
+                    "error should name the flag: {error}"
+                );
+            }
+            // Both `all` and `default` must be rejected, not silently ignored.
+        }
+    }
+
+    #[test]
+    fn commands_accept_resource_type_all() {
+        let all = ClapResourceType::resolve(&[ClapResourceType::All], &[]);
+        for command in ["list", "build", "compile", "show", "test", "freshness"] {
+            assert_eq!(
+                command_eval_resource_types(&[command, "--resource-type", "all"]),
+                all,
+                "{command} --resource-type all"
+            );
+        }
+    }
+
+    #[test]
+    fn list_omitted_resource_type_uses_list_defaults() {
+        let default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Experimental,
+        ];
+        assert_eq!(command_eval_resource_types(&["list"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["list", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn show_omitted_resource_type_uses_show_defaults() {
+        let default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Seed,
+            ClapResourceType::Source,
+            ClapResourceType::Analysis,
+            ClapResourceType::Test,
+        ];
+        assert_eq!(command_eval_resource_types(&["show"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["show", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn test_omitted_resource_type_uses_test_defaults() {
+        let default = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
+        assert_eq!(command_eval_resource_types(&["test"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["test", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn build_omitted_resource_type_uses_build_defaults() {
+        let default = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::Check,
+            ClapResourceType::Experimental,
+        ];
+        assert_eq!(command_eval_resource_types(&["build"]), default);
+        assert_eq!(
+            command_eval_resource_types(&["build", "--resource-type", "default"]),
+            default
+        );
+    }
+
+    #[test]
+    fn compile_and_freshness_omitted_resource_type_is_unfiltered() {
+        assert!(command_eval_resource_types(&["compile"]).is_empty());
+        assert!(command_eval_resource_types(&["freshness"]).is_empty());
     }
 
     #[test]
@@ -4157,9 +4622,31 @@ mod tests {
         assert!(send_anonymous_usage_stats_from_yaml(&path).is_none());
     }
 
-    /// Serializes tests that mutate `DBT_SEND_ANONYMOUS_USAGE_STATS`, since env vars are
-    /// process-global and Rust runs tests in parallel within a binary.
+    /// Serializes tests that mutate `DBT_SEND_ANONYMOUS_USAGE_STATS` or `DO_NOT_TRACK`, since
+    /// env vars are process-global and Rust runs tests in parallel within a binary.
     static SEND_STATS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes the env lock and clears both consent env vars, so ambient values (CI sets
+    /// `DO_NOT_TRACK=1` in some jobs) don't leak in.
+    #[allow(clippy::disallowed_methods)]
+    fn lock_send_stats_env() -> std::sync::MutexGuard<'static, ()> {
+        let guard = SEND_STATS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
+        unsafe { env::remove_var("DO_NOT_TRACK") };
+        guard
+    }
+
+    /// `CommonArgs` as clap parses `--project-dir <dir>` with no other flags:
+    /// `send_anonymous_usage_stats` defaults to true.
+    fn cli_default_args(project_dir: &Path) -> CommonArgs {
+        CommonArgs {
+            send_anonymous_usage_stats: true,
+            project_dir: Some(project_dir.to_path_buf()),
+            ..Default::default()
+        }
+    }
 
     fn write_yaml_with_stats(dir: &Path, value: bool) -> PathBuf {
         let path = dir.join("dbt_project.yml");
@@ -4172,70 +4659,74 @@ mod tests {
     }
 
     #[test]
-    fn get_send_anonymous_usage_stats_for_project_opt_out_wins() {
+    fn get_send_anonymous_usage_stats_opt_out_wins() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         // yaml says true, but the explicit `--no-` opt-out wins.
         write_yaml_with_stats(dir.path(), true);
         let args = CommonArgs {
             no_send_anonymous_usage_stats: true,
-            ..Default::default()
+            ..cli_default_args(dir.path())
         };
-        assert!(!args.get_send_anonymous_usage_stats_for_project(dir.path()));
+        assert!(!args.get_send_anonymous_usage_stats());
     }
 
     #[test]
     #[allow(clippy::disallowed_methods)]
-    fn get_send_anonymous_usage_stats_for_project_env_false_overrides_yaml_true() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    fn get_send_anonymous_usage_stats_env_false_overrides_yaml_true() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         write_yaml_with_stats(dir.path(), true);
-        let args = CommonArgs::default();
+        let args = cli_default_args(dir.path());
         unsafe { env::set_var("DBT_SEND_ANONYMOUS_USAGE_STATS", "false") };
-        let result = args.get_send_anonymous_usage_stats_for_project(dir.path());
+        let result = args.get_send_anonymous_usage_stats();
         unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
         assert!(!result);
     }
 
     #[test]
     #[allow(clippy::disallowed_methods)]
-    fn get_send_anonymous_usage_stats_for_project_env_true_overrides_yaml_false() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    fn get_send_anonymous_usage_stats_env_true_overrides_yaml_false() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         write_yaml_with_stats(dir.path(), false);
-        let args = CommonArgs::default();
+        let args = cli_default_args(dir.path());
         unsafe { env::set_var("DBT_SEND_ANONYMOUS_USAGE_STATS", "true") };
-        let result = args.get_send_anonymous_usage_stats_for_project(dir.path());
+        let result = args.get_send_anonymous_usage_stats();
         unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
         assert!(result);
     }
 
     #[test]
-    fn get_send_anonymous_usage_stats_for_project_yaml_only_fallback() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Ensure no ambient env var leaks in.
-        unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
+    fn get_send_anonymous_usage_stats_yaml_only_fallback() {
+        let _guard = lock_send_stats_env();
         let dir = tempfile::tempdir().unwrap();
         write_yaml_with_stats(dir.path(), false);
-        let args = CommonArgs::default();
-        assert!(!args.get_send_anonymous_usage_stats_for_project(dir.path()));
+        let args = cli_default_args(dir.path());
+        assert!(!args.get_send_anonymous_usage_stats());
     }
 
     #[test]
-    fn get_send_anonymous_usage_stats_for_project_defaults_true() {
-        let _guard = SEND_STATS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        unsafe { env::remove_var("DBT_SEND_ANONYMOUS_USAGE_STATS") };
+    fn get_send_anonymous_usage_stats_defaults_true() {
+        let _guard = lock_send_stats_env();
         // No yaml file, no env, no opt-out → default true.
         let dir = tempfile::tempdir().unwrap();
-        let args = CommonArgs::default();
-        assert!(args.get_send_anonymous_usage_stats_for_project(dir.path()));
+        let args = cli_default_args(dir.path());
+        assert!(args.get_send_anonymous_usage_stats());
+    }
+
+    #[test]
+    fn get_send_anonymous_usage_stats_unparsed_args_stay_off() {
+        let _guard = lock_send_stats_env();
+        // `dbt lsp`, `dbt wizard` and `dbt agent` build `CommonArgs::default()`, which must
+        // keep Vortex off whatever the project says.
+        let dir = tempfile::tempdir().unwrap();
+        write_yaml_with_stats(dir.path(), true);
+        let args = CommonArgs {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert!(!args.get_send_anonymous_usage_stats());
     }
 
     fn parse_internal_args(args: &[&str]) -> Result<InternalArgs, clap::Error> {

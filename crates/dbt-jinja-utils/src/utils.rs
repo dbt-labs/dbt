@@ -16,6 +16,7 @@ use minijinja::{
     value::{Rest, Value as MinijinjaValue, ValueKind},
 };
 use regex::Regex;
+use serde::Serialize;
 use sqlparser::dialect::{Dialect, GenericDialect};
 use sqlparser::keywords::Keyword;
 use sqlparser::tokenizer::{Location, Token, Tokenizer};
@@ -37,7 +38,12 @@ use crate::{jinja_environment::JinjaEnv, phases::parse::sql_resource::SqlResourc
 pub use dbt_jinja_vars::{DBT_INTERNAL_ENV_VAR_PREFIX, SECRET_ENV_VAR_PREFIX};
 
 /// The version of dbt used in this crate
-pub const DBT_VERSION: &str = "2.0.0"; // easter egg jokes for now
+///
+/// See: fs/sa/crates/dbt-main/src/dbt_lib.rs:660
+pub const DBT_VERSION: &str = match option_env!("DBT_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// A lazy initialized mutex-protected hash map for storing environment variables
 pub static ENV_VARS: LazyLock<Mutex<HashMap<String, String>>> =
@@ -236,7 +242,12 @@ pub fn inject_and_persist_ephemeral_models(
     let ctes = all_ctes.join(", ");
     if let Some((sql, insertion)) = inject_ctes_into_existing_with(&final_sql, &ctes) {
         final_sql = sql;
+        let inserted = inserted_ctes_spans(macro_spans, insertion);
         shift_macro_spans_after_insertion(macro_spans, insertion);
+        let index = macro_spans
+            .items
+            .partition_point(|(_, expanded)| expanded.start_offset < insertion.offset);
+        macro_spans.items.insert(index, inserted);
     } else {
         // Preserve the wrapper fallback for statements without a leading WITH clause.
         final_sql = format!(
@@ -400,6 +411,45 @@ fn byte_offset_at_location(sql: &str, target: Location) -> Option<usize> {
     (line == target.line && col == target.column).then_some(sql.len())
 }
 
+/// The span pair for CTEs spliced in at `insertion`, computed before the
+/// spans are shifted. The CTEs have no source text, so they map to an empty
+/// span at the source position of the insertion point. Without it, compiled
+/// offsets between the insertion and the next span map to the source as if
+/// nothing had been inserted, landing past their real position.
+fn inserted_ctes_spans(
+    macro_spans: &MacroSpans,
+    insertion: Insertion,
+) -> (minijinja::machinery::Span, minijinja::machinery::Span) {
+    let source = dbt_common::CodeLocationWithFile::new(
+        insertion.line,
+        insertion.col,
+        insertion.offset,
+        PathBuf::new(),
+    )
+    .get_source_location(&macro_spans_to_macro_span_vec(macro_spans));
+    let source = minijinja::machinery::Span {
+        start_line: source.line,
+        start_col: source.col,
+        start_offset: source.index,
+        end_line: source.line,
+        end_col: source.col,
+        end_offset: source.index,
+    };
+    let expanded = minijinja::machinery::Span {
+        start_line: insertion.line,
+        start_col: insertion.col,
+        start_offset: insertion.offset,
+        end_line: insertion.line + insertion.added_lines,
+        end_col: if insertion.added_lines == 0 {
+            insertion.col + insertion.added_cols
+        } else {
+            insertion.trailing_cols
+        },
+        end_offset: insertion.offset + insertion.added_bytes,
+    };
+    (source, expanded)
+}
+
 fn shift_macro_spans_after_insertion(macro_spans: &mut MacroSpans, insertion: Insertion) {
     for (_, expanded) in &mut macro_spans.items {
         if expanded.end_offset <= insertion.offset {
@@ -481,7 +531,7 @@ fn extract_local_ephemeral_cte_names(sql: &str) -> HashSet<&str> {
 pub fn render_sql(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listener_factory: &dyn RenderingEventListenerFactory,
     filename: &Path,
 ) -> FsResult<String> {
@@ -515,7 +565,7 @@ pub fn render_sql(
 pub fn render_sql_with_listeners(
     sql: &str,
     env: &JinjaEnv,
-    ctx: &BTreeMap<String, Value>,
+    ctx: &impl Serialize,
     listeners: &[Rc<dyn RenderingEventListener>],
     tokenizer_listeners: &[Rc<dyn minijinja::listener::TokenizerEventListener>],
     filename: &Path,
@@ -883,22 +933,24 @@ pub fn dependency_package_name_from_ctx<'a>(
 
 /// Add common context vars for tasks
 pub fn add_task_context(
-    base_context: &mut BTreeMap<String, Value>,
+    base_context: &mut impl Extend<(String, Value)>,
     common: &CommonAttributes,
     thread_id: &i32,
 ) {
-    base_context.insert(
-        TARGET_PACKAGE_NAME.to_string(),
-        MinijinjaValue::from(common.package_name.clone()),
-    );
-    base_context.insert(
-        TARGET_UNIQUE_ID.to_string(),
-        MinijinjaValue::from(common.unique_id.clone()),
-    );
-    base_context.insert(
-        THREAD_ID.to_string(),
-        MinijinjaValue::from(format!("Thread-{}", thread_id)),
-    );
+    base_context.extend([
+        (
+            TARGET_PACKAGE_NAME.to_string(),
+            MinijinjaValue::from(common.package_name.clone()),
+        ),
+        (
+            TARGET_UNIQUE_ID.to_string(),
+            MinijinjaValue::from(common.unique_id.clone()),
+        ),
+        (
+            THREAD_ID.to_string(),
+            MinijinjaValue::from(format!("Thread-{}", thread_id)),
+        ),
+    ]);
 }
 
 #[cfg(test)]
@@ -909,12 +961,15 @@ mod tests {
         Environment, MacroSpans, context, listener::RenderingEventListener, machinery::Span,
     };
 
+    use dbt_common::error::CodeLocationWithFile;
+
     use crate::listener::DefaultRenderingEventListener;
 
     use sqlparser::dialect::MsSqlDialect;
 
     use super::{
-        find_macro_template, inject_ctes_into_existing_with, raw_source_spans_to_macro_span_vec,
+        find_macro_template, inject_and_persist_ephemeral_models, inject_ctes_into_existing_with,
+        macro_spans_to_macro_span_vec, raw_source_spans_to_macro_span_vec,
         shift_macro_spans_after_insertion, split_leading_ctes,
     };
     use crate::jinja_environment::JinjaEnv;
@@ -1083,6 +1138,78 @@ mod tests {
         assert_eq!(
             macro_spans.items[3].1.start_offset,
             after.start_offset + insertion.added_bytes
+        );
+    }
+
+    #[test]
+    fn spliced_ephemeral_ctes_map_to_the_source_insertion_point() {
+        let source =
+            "WITH parent AS (\n    SELECT * FROM {{ ref('eph') }}\n)\nSELECT * FROM parent";
+        let rendered = source.replace("{{ ref('eph') }}", "__dbt__cte__eph");
+        let ref_start = source.find("{{").unwrap() as u32;
+        let ref_end = (source.find("}}").unwrap() + 2) as u32;
+        let cte_start = rendered.find("__dbt__cte__eph").unwrap() as u32;
+        let mut macro_spans = MacroSpans {
+            items: vec![(
+                Span {
+                    start_line: 2,
+                    start_col: ref_start - 16,
+                    start_offset: ref_start,
+                    end_line: 2,
+                    end_col: ref_end - 16,
+                    end_offset: ref_end,
+                },
+                Span {
+                    start_line: 2,
+                    start_col: cte_start - 16,
+                    start_offset: cte_start,
+                    end_line: 2,
+                    end_col: cte_start - 16 + "__dbt__cte__eph".len() as u32,
+                    end_offset: cte_start + "__dbt__cte__eph".len() as u32,
+                },
+            )],
+            ..Default::default()
+        };
+        let ephemeral_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ephemeral_dir.path().join("eph.sql"),
+            "__dbt__cte__eph as (\nselect 1 as id\n)",
+        )
+        .unwrap();
+
+        let compiled = inject_and_persist_ephemeral_models(
+            rendered,
+            &mut macro_spans,
+            "child",
+            false,
+            ephemeral_dir.path(),
+        )
+        .unwrap();
+        let spans = macro_spans_to_macro_span_vec(&macro_spans);
+        let source_location = |compiled_offset: usize| {
+            let prefix = &compiled[..compiled_offset];
+            let line = prefix.matches('\n').count() as u32 + 1;
+            let col = prefix.rsplit('\n').next().unwrap().chars().count() as u32 + 1;
+            let location = CodeLocationWithFile::new(line, col, compiled_offset as u32, "")
+                .get_source_location(&spans);
+            (location.line, location.col, location.index)
+        };
+
+        // The spliced CTE maps to the insertion point after `WITH`.
+        assert_eq!(
+            source_location(compiled.find("__dbt__cte__eph as").unwrap()),
+            (1, 5, 4)
+        );
+        // Text after the splice keeps its source position, before and after the ref.
+        let parent = source.find("parent AS").unwrap();
+        assert_eq!(
+            source_location(compiled.find("parent AS").unwrap()),
+            (1, 6, parent as u32)
+        );
+        let last_line = source.rfind("SELECT").unwrap();
+        assert_eq!(
+            source_location(compiled.rfind("SELECT").unwrap()),
+            (4, 1, last_line as u32)
         );
     }
 

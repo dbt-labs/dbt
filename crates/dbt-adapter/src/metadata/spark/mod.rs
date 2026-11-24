@@ -11,7 +11,10 @@
 use std::sync::Arc;
 
 use arrow_array::*;
+
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
+use dbt_adapter_sql::ident::spark::Namespace;
 use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
@@ -21,9 +24,8 @@ use dbt_schemas::schemas::relations::base::BaseRelation;
 use crate::AdapterEngine;
 use crate::column::Column;
 use crate::connection::ConnectionGuard;
-use crate::errors::AdapterResult;
+use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use crate::metadata::CatalogAndSchema;
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 
 /// Extracts the value of a `Key: value` line from `SHOW TABLE EXTENDED`'s
@@ -75,6 +77,8 @@ fn relations_from_show_table_extended(
         // format (`delta` for regular lakehouse tables) and absent for views.
         let table_type = information_value(info, "Type").unwrap_or("MANAGED");
         let is_delta = information_value(info, "Provider") == Some("delta");
+        let relation_type = RelationType::from_adapter_type(adapter_type, table_type)
+            .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
 
         let relation = Arc::new(
             Relation::new(
@@ -83,7 +87,7 @@ fn relations_from_show_table_extended(
                 schema.to_string(),
                 names.value(i).to_string(),
             )
-            .with_relation_type(RelationType::from_adapter_type(adapter_type, table_type))
+            .with_relation_type(relation_type)
             .with_quoting(quoting)
             .with_is_delta(is_delta),
         ) as Arc<dyn BaseRelation>;
@@ -100,13 +104,7 @@ pub fn list_relations(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    let catalog = &db_schema.resolved_catalog;
-    let schema = &db_schema.resolved_schema;
-    let namespace = if catalog.is_empty() {
-        format!("`{schema}`")
-    } else {
-        format!("`{catalog}`.`{schema}`")
-    };
+    let namespace = Namespace::new(&db_schema.resolved_catalog, &db_schema.resolved_schema);
 
     let sql = format!("SHOW TABLE EXTENDED IN {namespace} LIKE '*'");
     let batch = match engine.execute(None, conn.as_mut(), ctx, &sql, token) {

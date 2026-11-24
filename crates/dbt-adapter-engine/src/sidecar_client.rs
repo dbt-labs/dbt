@@ -1,12 +1,15 @@
-//! SidecarClient trait for subprocess-based adapter execution. See [`SidecarClient`] for
-//! the design rationale.
+//! SidecarClient trait for subprocess-based adapter execution.
+//!
+//! See [`SidecarClient`] for the design rationale.
 
 use std::fmt::Debug;
 
 use arrow::record_batch::RecordBatch;
+use minijinja::State;
+
+use dbt_adapter_sql::ident::duckdb::Ident;
 use dbt_adbc::{Connection, QueryCtx};
 use dbt_schemas::{dbt_types::RelationType, schemas::common::ResolvedQuoting};
-use minijinja::State;
 
 use crate::errors::AdapterResult;
 
@@ -17,6 +20,20 @@ pub struct ColumnInfo {
     pub name: String,
     /// Column data type (backend-specific, e.g., DuckDB types)
     pub data_type: String,
+}
+
+/// Builds the `database.schema.identifier` name that sidecar introspection
+/// ([`SidecarClient::get_columns`]) passes to the local DuckDB. A part that is
+/// not a plain identifier (for example a hyphenated BigQuery project id) is
+/// double-quoted, with an embedded `"` escaped. Plain parts do not change, so
+/// their case-folding stays the same.
+pub fn sidecar_relation_name(database: &str, schema: &str, identifier: &str) -> String {
+    format!(
+        "{}.{}.{}",
+        Ident::new(database),
+        Ident::new(schema),
+        Ident::new(identifier)
+    )
 }
 
 /// Delegation interface for adapters that route execution to a sidecar subprocess or

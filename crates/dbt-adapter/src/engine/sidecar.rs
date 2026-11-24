@@ -4,25 +4,26 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
+use minijinja::State;
+
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::Options;
+use dbt_adapter_engine::behavior::make_behavior;
+use dbt_adapter_engine::noop_connection::NoopConnection;
+use dbt_adapter_engine::sidecar_client::SidecarClient;
 use dbt_adbc::*;
 use dbt_auth::AdapterConfig;
 use dbt_common::AdapterResult;
 use dbt_common::behavior_flags::Behavior;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::schemas::common::ResolvedQuoting;
-use minijinja::State;
 
 use crate::cache::RelationCache;
+use crate::engine::adapter_engine::*;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::QueryRetryPolicy;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
-
-use super::adapter_engine::*;
-use dbt_adapter_engine::behavior::make_behavior;
-use dbt_adapter_engine::noop_connection::NoopConnection;
-use dbt_adapter_engine::sidecar_client::SidecarClient;
 
 /// Sidecar engine for subprocess-based execution.
 ///

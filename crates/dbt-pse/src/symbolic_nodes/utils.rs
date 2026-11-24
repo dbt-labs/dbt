@@ -385,7 +385,7 @@ pub fn array_to_literal(array: &ArrayRef) -> Literal {
                         .unwrap()
                         .value(0),
                 )),
-                TimeUnit::Millisecond => ScalarValue::Time64Nanosecond(Some(
+                TimeUnit::Nanosecond => ScalarValue::Time64Nanosecond(Some(
                     array
                         .as_any()
                         .downcast_ref::<Time64NanosecondArray>()
@@ -701,5 +701,28 @@ pub fn contains_gen_var(expr: &SymbolicExpr) -> bool {
         SymbolicExpr::Literal(_) => false,
         SymbolicExpr::Variable { .. } => false,
         SymbolicExpr::Hole { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn array_to_literal_accepts_time64_units() {
+        for (array, expected) in [
+            (
+                Arc::new(Time64MicrosecondArray::from(vec![45_296_123_456])) as ArrayRef,
+                ScalarValue::Int64(Some(45_296_123_456)),
+            ),
+            (
+                Arc::new(Time64NanosecondArray::from(vec![45_296_123_456_789])) as ArrayRef,
+                ScalarValue::Int64(Some(45_296_123_456_789)),
+            ),
+        ] {
+            assert_eq!(array_to_literal(&array).value(), &expected);
+        }
     }
 }

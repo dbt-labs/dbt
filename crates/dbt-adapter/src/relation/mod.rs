@@ -66,6 +66,7 @@ mod tests {
 
         let run_filter = RunFilter {
             empty: false,
+            empty_marker: false,
             sample: Some(sample),
         };
         let event_time = Some("created_at".to_string());
@@ -102,6 +103,7 @@ mod tests {
 
         let run_filter = RunFilter {
             empty: false,
+            empty_marker: false,
             sample: Some(Sample {
                 start: Some(DateTime::<Utc>::from_naive_utc_and_offset(start, Utc)),
                 end: Some(DateTime::<Utc>::from_naive_utc_and_offset(end, Utc)),
@@ -145,6 +147,7 @@ mod tests {
 
         let run_filter = RunFilter {
             empty: false,
+            empty_marker: false,
             sample: Some(sample),
         };
         let event_time = Some("created_at".to_string());
@@ -182,6 +185,7 @@ mod tests {
 
         let run_filter = RunFilter {
             empty: false,
+            empty_marker: false,
             sample: Some(sample),
         };
         let event_time = Some("created_at".to_string());
@@ -219,6 +223,7 @@ mod tests {
 
         let run_filter = RunFilter {
             empty: false,
+            empty_marker: false,
             sample: Some(sample),
         };
         let event_time = Some("created_at".to_string());
@@ -277,6 +282,7 @@ mod tests {
 
         let run_filter = RunFilter {
             empty: false,
+            empty_marker: false,
             sample: Some(sample),
         };
         let event_time = Some("created_at".to_string());

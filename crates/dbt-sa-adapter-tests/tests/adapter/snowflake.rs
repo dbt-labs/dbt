@@ -634,3 +634,149 @@ async fn adapters_snowflake_copy_tags() -> FsResult<()> {
     )
     .await
 }
+
+#[dbt_runtime::test]
+async fn adapters_snowflake_dynamic_table_create_or_alter() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/dynamic_table_create_or_alter",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source table, governance objects
+            AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE all dynamic tables
+            AdapterRecordReplayTurn::new("run-operation prepare", &[]), // run_2: record created_on, set attributes out of band
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: "dbt_project.yml",
+                    overriding_file: "_project_overrides/run_3.yml",
+                }],
+            ), // run_3: SQL edits + config changes, deployed via CREATE OR ALTER
+            AdapterRecordReplayTurn::new("run-operation verify", &[]), // run_4: read back and print PASS/FAIL per expectation
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// Schema changes CREATE OR ALTER cannot express (column reorder, type narrowing, an incompatible
+/// type change) and a transient flip it cannot make surface Snowflake's error; `--full-refresh` recovers. `on_configuration_change: fail`
+/// aborts the run. The failing turns' stderr goldies pin the errors.
+#[dbt_runtime::test]
+async fn adapters_snowflake_dynamic_table_create_or_alter_errors() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/dynamic_table_create_or_alter_errors",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source table
+            AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE all dynamic tables
+            AdapterRecordReplayTurn::new(
+                "run --select err_reorder err_transient_drift err_type_narrow err_type_change ok_evolve",
+                &[FileOverride {
+                    original: "dbt_project.yml",
+                    overriding_file: "_project_overrides/run_3.yml",
+                }],
+            ), // run_2: column reorder and transient drift error, the sibling deploys
+            AdapterRecordReplayTurn::new("run --select err_fail_fast", &[]), // run_3: fail-fast on a config change
+            AdapterRecordReplayTurn::new(
+                "run --full-refresh --select err_reorder err_transient_drift err_type_narrow err_type_change",
+                &[],
+            ), // run_4: --full-refresh recovers
+            AdapterRecordReplayTurn::new("run-operation verify", &[]),       // run_5: read back
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// Managed dynamic Iceberg tables: a query and target lag edit syncs in place via
+/// `CREATE OR ALTER DYNAMIC ICEBERG TABLE`; `refresh_mode` changes and native <-> Iceberg
+/// conversions are rebuilt with `CREATE OR REPLACE`; a changed Iceberg base location is rejected by
+/// Snowflake and recovered with `--full-refresh`. Recorded against a Snowflake account with an
+/// external volume (`EXVOL`).
+#[dbt_runtime::test]
+async fn adapters_snowflake_dynamic_table_create_or_alter_iceberg() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/dynamic_table_create_or_alter_iceberg",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source table
+            AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE the dynamic tables
+            AdapterRecordReplayTurn::new("run-operation prepare", &[]), // run_2: record created_on
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: "dbt_project.yml",
+                    overriding_file: "_project_overrides/run_3.yml",
+                }],
+            ), // run_3: evolve; the base location change errors, the siblings deploy
+            AdapterRecordReplayTurn::new("run --full-refresh --select ice_identity_change", &[]), // run_4: recover
+            AdapterRecordReplayTurn::new("run-operation verify", &[]), // run_5: read back
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// Control: with the flag off, a SQL-only edit is still a no-op and `--full-refresh` deploys it.
+#[dbt_runtime::test]
+async fn adapters_snowflake_dynamic_table_create_or_alter_flag_off() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/dynamic_table_create_or_alter_flag_off",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &[
+            AdapterRecordReplayTurn::new("run-operation set_up", &[]), // run_0: source table
+            AdapterRecordReplayTurn::new("run", &[]), // run_1: CREATE the dynamic table
+            AdapterRecordReplayTurn::new(
+                "run",
+                &[FileOverride {
+                    original: "dbt_project.yml",
+                    overriding_file: "_project_overrides/run_2.yml",
+                }],
+            ), // run_2: SQL-only edit, no-op
+            AdapterRecordReplayTurn::new("run-operation verify_noop", &[]), // run_3
+            AdapterRecordReplayTurn::new("run --full-refresh", &[]), // run_4: deploys the edit
+            AdapterRecordReplayTurn::new("run-operation verify_refreshed", &[]), // run_5
+        ],
+        None,
+        &[],
+    )
+    .await
+}
+
+/// Grants on a function name the object as a function
+/// (https://github.com/dbt-labs/fs/issues/17585). Snowflake also needs the
+/// argument types: `grant usage on function <name>(integer) to public`.
+#[dbt_runtime::test]
+async fn adapters_snowflake_function_grants() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/function_grants",
+        AdapterType::Snowflake.as_ref(),
+        None,
+        &["build"],
+        None,
+        &[],
+    )
+    .await
+}

@@ -7,7 +7,7 @@
 //! A supplied sha1 is verified against the buffered body before extraction.
 
 use crate::network_client::LazyHttpClient;
-use crate::utils::ensure_dir;
+use crate::utils::{ensure_dir, package_url_for_display};
 use async_compression::tokio::bufread::GzipDecoder;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
@@ -244,7 +244,8 @@ impl TarballClient {
                     | EntryType::Fifo
             ) {
                 emit_info_log_message(format!(
-                    "Skipping unsupported tar entry ({entry_type:?}) in tarball from {download_url}: {}",
+                    "Skipping unsupported tar entry ({entry_type:?}) in tarball from {}: {}",
+                    package_url_for_display(download_url),
                     entry_path.display()
                 ));
                 continue;

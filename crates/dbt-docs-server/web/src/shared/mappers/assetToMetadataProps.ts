@@ -1,5 +1,6 @@
+import type { Asset, Relation } from 'dbt-docs-lib/domain';
+
 import type { AssetMetadataProps } from '../components/AssetMetadata';
-import type { Asset, Relation } from '../typings/domain/asset';
 
 function relationOf(asset: Asset): Relation | null {
   return 'relation' in asset ? (asset.relation ?? null) : null;
