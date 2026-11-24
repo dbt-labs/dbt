@@ -19,13 +19,14 @@ use regex::Regex;
 use serde::Serialize;
 use sqlparser::dialect::{Dialect, GenericDialect};
 use sqlparser::keywords::Keyword;
-use sqlparser::tokenizer::{Location, Token, Tokenizer};
+use sqlparser::tokenizer::{Location, Token, TokenWithSpan, Tokenizer};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::{
     collections::{HashMap, HashSet},
+    iter::Peekable,
     path::Path,
     sync::Mutex,
 };
@@ -293,49 +294,79 @@ pub fn split_leading_ctes<'a>(sql: &'a str, dialect: &dyn Dialect) -> Option<(&'
     let _ = Tokenizer::new(dialect, sql).tokenize_with_location_into_buf(&mut tokens);
     let mut tokens = tokens
         .iter()
-        .filter(|token| !matches!(token.token, Token::Whitespace(_)));
+        .filter(|token| !matches!(token.token, Token::Whitespace(_)))
+        .peekable();
 
-    let with = tokens.next()?;
-    if !matches!(&with.token, Token::Word(word) if word.keyword == Keyword::WITH) {
+    let list_start = after_leading_with(sql, tokens.next()?)?;
+    let list_end = cte_list_end(sql, &mut tokens)?;
+    Some((sql[list_start..list_end].trim(), &sql[list_end..]))
+}
+
+/// The byte offset just past the `WITH` that opens `sql`, or `None` when the
+/// first token is something else.
+fn after_leading_with(sql: &str, token: &TokenWithSpan) -> Option<usize> {
+    match &token.token {
+        Token::Word(word) if word.keyword == Keyword::WITH => {
+            byte_offset_at_location(sql, token.span.end)
+        }
+        _ => None,
+    }
+}
+
+/// Walks the `name as (...)` list and returns the offset just past the last
+/// CTE body.
+fn cte_list_end<'a, I>(sql: &'a str, tokens: &mut Peekable<I>) -> Option<usize>
+where
+    I: Iterator<Item = &'a TokenWithSpan>,
+{
+    loop {
+        skip_cte_head(tokens)?;
+        let close = skip_cte_body(tokens)?;
+        let Some(token) = tokens.peek() else {
+            return byte_offset_at_location(sql, close.span.end);
+        };
+        if !matches!(token.token, Token::Comma) {
+            return byte_offset_at_location(sql, close.span.end);
+        }
+        tokens.next();
+    }
+}
+
+/// Skips a CTE's name and its optional column list, up to and including the
+/// `AS` that opens its body.
+fn skip_cte_head<'a>(tokens: &mut impl Iterator<Item = &'a TokenWithSpan>) -> Option<()> {
+    let mut depth = 0i32;
+    loop {
+        match &tokens.next()?.token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth -= 1,
+            Token::Word(word) if depth == 0 && word.keyword == Keyword::AS => return Some(()),
+            _ => {}
+        }
+    }
+}
+
+/// Skips a CTE body, whose opening parenthesis is the next token, and returns
+/// its closing parenthesis.
+fn skip_cte_body<'a>(
+    tokens: &mut impl Iterator<Item = &'a TokenWithSpan>,
+) -> Option<&'a TokenWithSpan> {
+    if !matches!(tokens.next()?.token, Token::LParen) {
         return None;
     }
-    let list_start = byte_offset_at_location(sql, with.span.end)?;
-    let mut tokens = tokens.peekable();
+    let mut depth = 1;
     loop {
-        // The CTE's name and any column list, up to its AS.
-        let mut depth = 0i32;
-        loop {
-            match &tokens.next()?.token {
-                Token::LParen => depth += 1,
-                Token::RParen => depth -= 1,
-                Token::Word(word) if depth == 0 && word.keyword == Keyword::AS => break,
-                _ => {}
-            }
-        }
-        // Its body.
-        if !matches!(tokens.next()?.token, Token::LParen) {
-            return None;
-        }
-        let mut depth = 1;
-        let close = loop {
-            let token = tokens.next()?;
-            match token.token {
-                Token::LParen => depth += 1,
-                Token::RParen => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break token;
-                    }
+        let token = tokens.next()?;
+        match token.token {
+            Token::LParen => depth += 1,
+            Token::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(token);
                 }
-                _ => {}
             }
-        };
-        if matches!(tokens.peek(), Some(token) if matches!(token.token, Token::Comma)) {
-            tokens.next();
-            continue;
+            _ => {}
         }
-        let list_end = byte_offset_at_location(sql, close.span.end)?;
-        return Some((sql[list_start..list_end].trim(), &sql[list_end..]));
     }
 }
 

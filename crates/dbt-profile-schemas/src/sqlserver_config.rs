@@ -90,69 +90,17 @@ impl InteractiveSetup for SqlServerDbConfig {
 
     fn set_field(&mut self, field_name: &str, value: FieldValue) -> FsResult<()> {
         match field_name {
-            "host" => {
-                if let FieldValue::String(s) = value {
-                    self.host = Some(s);
-                }
-            }
-            "port" => match value {
-                FieldValue::String(s) => {
-                    if let Ok(port) = s.parse::<i64>() {
-                        self.port = Some(StringOrInteger::Integer(port));
-                    }
-                }
-                FieldValue::Integer(i) => {
-                    self.port = Some(StringOrInteger::Integer(i));
-                }
-                _ => {}
-            },
-            "database" => {
-                if let FieldValue::String(s) = value {
-                    self.database = Some(s);
-                }
-            }
-            "schema" => {
-                if let FieldValue::String(s) = value {
-                    self.schema = Some(s);
-                }
-            }
-            "authentication" => {
-                if let FieldValue::Integer(i) = value
-                    && let Some((val, _)) = AUTH_METHODS.get(i as usize)
-                {
-                    self.authentication = Some((*val).to_string());
-                }
-            }
-            "user" => {
-                if let FieldValue::String(s) = value {
-                    self.user = Some(s);
-                }
-            }
-            "password" => {
-                if let FieldValue::String(s) = value {
-                    self.password = Some(s);
-                }
-            }
-            "client_id" => {
-                if let FieldValue::String(s) = value {
-                    self.client_id = Some(s);
-                }
-            }
-            "client_secret" => {
-                if let FieldValue::String(s) = value {
-                    self.client_secret = Some(s);
-                }
-            }
-            "tenant_id" => {
-                if let FieldValue::String(s) = value {
-                    self.tenant_id = Some(s);
-                }
-            }
-            "access_token" => {
-                if let FieldValue::String(s) = value {
-                    self.access_token = Some(s);
-                }
-            }
+            "host" => set_string(&mut self.host, value),
+            "port" => set_port(&mut self.port, value),
+            "database" => set_string(&mut self.database, value),
+            "schema" => set_string(&mut self.schema, value),
+            "authentication" => set_auth_method(&mut self.authentication, value),
+            "user" => set_string(&mut self.user, value),
+            "password" => set_string(&mut self.password, value),
+            "client_id" => set_string(&mut self.client_id, value),
+            "client_secret" => set_string(&mut self.client_secret, value),
+            "tenant_id" => set_string(&mut self.tenant_id, value),
+            "access_token" => set_string(&mut self.access_token, value),
             _ => {} // Ignore temporary or unrecognized fields
         }
         Ok(())
@@ -248,4 +196,30 @@ pub fn setup_sqlserver_profile(
     let default_config = default_sqlserver_config();
     let config = ConfigProcessor::process_config(existing_config.or(Some(&default_config)))?;
     Ok(Box::new(config))
+}
+
+fn set_string(target: &mut Option<String>, value: FieldValue) {
+    if let FieldValue::String(value) = value {
+        *target = Some(value);
+    }
+}
+
+fn set_port(target: &mut Option<StringOrInteger>, value: FieldValue) {
+    let port = match value {
+        FieldValue::Integer(port) => Some(port),
+        FieldValue::String(port) => port.parse().ok(),
+        _ => None,
+    };
+    if let Some(port) = port {
+        *target = Some(StringOrInteger::Integer(port));
+    }
+}
+
+fn set_auth_method(target: &mut Option<String>, value: FieldValue) {
+    let FieldValue::Integer(index) = value else {
+        return;
+    };
+    if let Some((method, _)) = AUTH_METHODS.get(index as usize) {
+        *target = Some((*method).to_string());
+    }
 }
