@@ -141,6 +141,18 @@ models:
             flag: "{{ env_var('DBT_TEST_DOTTED_NAMES_FLAG', 'x') }}"
 """
 
+source_with_env_var_test_config_yml = """
+sources:
+  - name: a.b.raw
+    schema: "{{ target.schema }}"
+    tables:
+      - name: events
+        data_tests:
+          - has_rows:
+              config:
+                where: "{{ env_var('DBT_TEST_DOTTED_NAMES_WHERE', '1 = 1') }}"
+"""
+
 
 def _node_state(node):
     return (
@@ -320,3 +332,31 @@ class TestDottedModelEnvVarInGenericTestArgument:
             assert_matches_full_parse(manifest)
         finally:
             del os.environ["DBT_TEST_DOTTED_NAMES_FLAG"]
+
+
+class TestDottedSourceEnvVarInGenericTestConfig:
+    @pytest.fixture(scope="class")
+    def macros(self):
+        return {"where.sql": where_macro_sql, "has_rows.sql": has_rows_test_sql}
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {"sources.yml": source_with_env_var_test_config_yml}
+
+    def test_dotted_source_env_var_in_generic_test_config(self, project):
+        os.environ["DBT_TEST_DOTTED_NAMES_WHERE"] = "1 = 1"
+        try:
+            manifest = run_dbt(["parse"])
+            schema_file = _schema_file(manifest, "models/sources.yml")
+            assert schema_file.env_vars == {
+                "sources": {"a.b.raw": ["DBT_TEST_DOTTED_NAMES_WHERE"]}
+            }
+
+            os.environ["DBT_TEST_DOTTED_NAMES_WHERE"] = "2 = 2"
+            manifest = run_dbt(["--partial-parse", "parse"])
+
+            test_nodes = [n for n in manifest.nodes.values() if n.resource_type == "test"]
+            assert [n.config.where for n in test_nodes] == ["2 = 2"]
+            assert_matches_full_parse(manifest)
+        finally:
+            del os.environ["DBT_TEST_DOTTED_NAMES_WHERE"]

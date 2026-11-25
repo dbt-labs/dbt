@@ -261,10 +261,9 @@ class SchemaGenericTestParser(SimpleParser):
         if schema_file_id in self.manifest.files:
             schema_file = self.manifest.files[schema_file_id]
             if isinstance(target, UnpatchedSourceDefinition):
+                # The source entry's name, which may contain dots
                 search_name = target.source.name
                 yaml_key = target.source.yaml_key
-                if "." in search_name:  # source file definitions
-                    (search_name, _) = search_name.split(".")
             else:
                 search_name = target.name
                 yaml_key = target.yaml_key
