@@ -634,6 +634,24 @@ pub fn filter_missing_schemas(
     state: &State,
     catalog_schemas: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> AdapterResult<Vec<(String, String, String)>> {
+    let selected = catalog_schemas.iter().flat_map(|(catalog, schemas)| {
+        schemas
+            .keys()
+            .map(move |schema| (catalog.as_str(), schema.as_str()))
+    });
+    if let Some(missing) = adapter.missing_schemas_by_name(state, selected)? {
+        return Ok(missing
+            .into_iter()
+            .map(|(catalog, schema)| {
+                (
+                    catalog.to_owned(),
+                    schema.to_owned(),
+                    catalog_schemas[catalog][schema].clone(),
+                )
+            })
+            .collect());
+    }
+
     let catalog_schema_count = catalog_schemas
         .iter()
         .fold(0, |acc, (_, schemas)| acc + schemas.len());

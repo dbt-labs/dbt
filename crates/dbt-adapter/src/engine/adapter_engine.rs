@@ -178,6 +178,11 @@ pub trait AdapterEngine: Send + Sync {
         None
     }
 
+    /// Whether schema registration can use targeted metadata lookups.
+    fn supports_targeted_schema_lookup(&self) -> bool {
+        false
+    }
+
     fn is_mock(&self) -> bool {
         false
     }
