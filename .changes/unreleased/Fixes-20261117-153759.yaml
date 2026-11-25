@@ -1,0 +1,7 @@
+kind: Fixes
+body: Add the `start` value to the total in the Jinja `sum` filter, matching Jinja2, instead of skipping that many items
+time: 2026-11-17T15:37:59.175832+05:30
+custom:
+    author: ajaykr0905
+    issue: "16783"
+    project: dbt-core
