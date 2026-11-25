@@ -2240,6 +2240,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_version_column_empty_include_suppresses_inherited_tests() {
+        use dbt_schemas::schemas::common::Versions;
+        use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
+        use dbt_yaml::Verbatim;
+
+        let unique_test = DataTests::String(Spanned::from("unique".to_string()));
+        let mut base_col_tests = BTreeMap::new();
+        base_col_tests.insert(
+            "cost_center_bkey".to_string(),
+            ColumnTestEntry {
+                quote: false,
+                tests: vec![unique_test],
+                tags: vec![],
+                legacy_syntax_handling: LegacyTestSyntaxHandling::Strict,
+            },
+        );
+        let base_config = GenericTestConfig {
+            resource_type: "model".to_string(),
+            resource_name: "cost_centers".to_string(),
+            version_num: None,
+            model_tests: None,
+            column_tests: Some(base_col_tests),
+            source_name: None,
+        };
+
+        // v3: empty include list — no tests should be inherited
+        let v3 = Versions {
+            v: dbt_yaml::Value::Number(dbt_yaml::Number::from(3), Span::zero()),
+            deprecation_date: None,
+            defined_in: None,
+            description: None,
+            access: None,
+            config: Verbatim::from(None),
+            constraints: None,
+            data_tests: None,
+            tests: None,
+            columns: Some(vec![VersionColumnProperties {
+                include: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![])),
+                ..Default::default()
+            }]),
+            __additional_properties__: Verbatim::from(HashMap::new()),
+        };
+
+        let result = collect_versioned_model_tests(&base_config, &[v3]).expect("should not fail");
+        assert_eq!(result.len(), 1);
+        let v3_cfg = &result[0];
+        assert!(
+            !v3_cfg
+                .column_tests
+                .as_ref()
+                .map(|m| m.contains_key("cost_center_bkey"))
+                .unwrap_or(false),
+            "v3 must not have a test for cost_center_bkey (empty include list)"
+        );
+    }
+
     /// dbt-core renames a version's `tests:` to `data_tests:` in
     /// `SchemaParser.validate_data_tests` (`core/dbt/parser/schemas.py`, the `# versioned models`
     /// branch) before `get_tests_for_version` ever runs, so the alias is honored at the version

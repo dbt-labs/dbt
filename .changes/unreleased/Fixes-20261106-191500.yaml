@@ -1,0 +1,7 @@
+kind: Fixes
+body: Honor `include: []` in versioned model column inheritance to exclude all top-level columns
+time: 2026-11-06T19:15:00.000000+05:30
+custom:
+    author: ansh-rohilla
+    issue: "17043"
+    project: dbt-core
