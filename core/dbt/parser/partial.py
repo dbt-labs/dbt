@@ -1112,6 +1112,12 @@ class PartialParsing:
                 self.saved_files[macro_file_id] = deepcopy(self.new_files[macro_file_id])
                 self.add_to_pp_files(self.saved_files[macro_file_id])
 
+    def _schedule_new_file_for_parsing(self, file_id: str) -> None:
+        # The content of a non-schema file is only in new_files
+        if file_id in self.new_files:
+            self.saved_files[file_id] = deepcopy(self.new_files[file_id])
+            self.add_to_pp_files(self.saved_files[file_id])
+
     def delete_schema_data_test_patch(self, schema_file, data_test):
         data_test_unique_id = None
         for unique_id in schema_file.node_patches:
@@ -1124,17 +1130,17 @@ class PartialParsing:
                 break
         if data_test_unique_id and data_test_unique_id in self.saved_manifest.nodes:
             singular_data_test = self.saved_manifest.nodes.pop(data_test_unique_id)
-            file_id = singular_data_test.file_id
-            if file_id in self.new_files:
-                self.saved_files[file_id] = deepcopy(self.new_files[file_id])
-                self.add_to_pp_files(self.saved_files[file_id])
+            self._schedule_new_file_for_parsing(singular_data_test.file_id)
         elif data_test_unique_id and data_test_unique_id in self.saved_manifest.disabled:
             # A disabled singular data test lives in saved_manifest.disabled
             # rather than saved_manifest.nodes; remove the stale copy there too
             # so it does not accumulate across partial parses (CORE-725). The
             # node's file_id is the .sql test file, not the schema_file, so
             # pop by unique_id rather than filtering on schema_file.file_id.
-            self.saved_manifest.disabled.pop(data_test_unique_id)
+            # As for an enabled test above, schedule the .sql file so the node
+            # is created again with the new patch.
+            for disabled_data_test in self.saved_manifest.disabled.pop(data_test_unique_id):
+                self._schedule_new_file_for_parsing(disabled_data_test.file_id)
 
     # exposures are created only from schema files, so just delete
     # the exposure or the disabled exposure.

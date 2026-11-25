@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix partial parsing dropping a singular test that is disabled in its schema
+  file entry when that entry changes
+time: 2026-11-25T21:22:09.159676+09:00
+custom:
+    Author: permitroot
+    Issue: "17324"

@@ -364,11 +364,32 @@ def test_remove_tests_removes_disabled_generic_test(partial_parsing, nodes):
     assert disabled_test.unique_id not in partial_parsing.saved_manifest.disabled
 
 
+def _add_singular_test_file(partial_parsing, test_node) -> str:
+    source_file = SourceFile(
+        path=FilePath(
+            project_root="/users/root",
+            searched_path="tests",
+            relative_path=test_node.path,
+            modification_time=time.time(),
+        ),
+        checksum=FileHash.from_contents(test_node.raw_code),
+        project_name=PROJECT_NAME,
+        parse_file_type=ParseFileType.SingularTest,
+        nodes=[test_node.unique_id],
+        env_vars=[],
+    )
+    assert source_file.file_id == test_node.file_id
+    partial_parsing.saved_files[source_file.file_id] = source_file
+    partial_parsing.new_files[source_file.file_id] = deepcopy(source_file)
+    return source_file.file_id
+
+
 def test_delete_schema_data_test_patch_removes_disabled_singular_test(partial_parsing):
     # CORE-725: a disabled singular data test lives in saved_manifest.disabled
     # rather than saved_manifest.nodes. delete_schema_data_test_patch must find
     # it via schema_file.node_patches and remove the stale disabled copy so it
-    # does not accumulate across partial parses.
+    # does not accumulate across partial parses. Its .sql file is scheduled so
+    # the node is created again with the new patch.
     schema_file_id = "my_test://" + normalize("models/schema.yml")
     schema_file = partial_parsing.saved_manifest.files[schema_file_id]
 
@@ -378,6 +399,7 @@ def test_delete_schema_data_test_patch_removes_disabled_singular_test(partial_pa
         "select 1 where false",
         path="my_disabled_singular_test.sql",
     )
+    test_file_id = _add_singular_test_file(partial_parsing, disabled_test)
 
     schema_file.node_patches.append(disabled_test.unique_id)
     partial_parsing.saved_manifest.disabled[disabled_test.unique_id] = [disabled_test]
@@ -388,3 +410,5 @@ def test_delete_schema_data_test_patch_removes_disabled_singular_test(partial_pa
     )
 
     assert disabled_test.unique_id not in partial_parsing.saved_manifest.disabled
+    pp_files = partial_parsing.project_parser_files.get(PROJECT_NAME, {})
+    assert test_file_id in pp_files.get("SingularTestParser", [])
