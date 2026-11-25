@@ -13533,6 +13533,7 @@
       "enum": [
         "never",
         "if_missing",
+        "if_changed",
         "always"
       ]
     },
