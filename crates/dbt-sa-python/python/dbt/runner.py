@@ -76,6 +76,14 @@ class dbtRunnerResult:
         )
 
 
+def _kwarg_to_argv(flag: str, value: Any) -> List[str]:
+    if isinstance(value, bool):
+        return [flag if value else "--no-" + flag[2:]]
+    if isinstance(value, (list, tuple)):
+        return [token for item in value if item is not None for token in (flag, str(item))]
+    return [flag, str(value)]
+
+
 def _kwargs_to_cli(kwargs: dict) -> List[str]:
     """Turn keyword args into CLI flags.
 
@@ -84,19 +92,16 @@ def _kwargs_to_cli(kwargs: dict) -> List[str]:
         select="my_model" -> --select my_model
         select=["a", "b"] -> --select a --select b
         threads=4          -> --threads 4
+        threads=None       -> (omitted)
 
     An unknown flag becomes a parse error on the result, not a crash.
     """
     argv: List[str] = []
     for key, value in kwargs.items():
+        if value is None:
+            continue
         flag = "--" + key.replace("_", "-")
-        if isinstance(value, bool):
-            argv.append(flag if value else "--no-" + key.replace("_", "-"))
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                argv += [flag, str(item)]
-        else:
-            argv += [flag, str(value)]
+        argv.extend(_kwarg_to_argv(flag, value))
     return argv
 
 

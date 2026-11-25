@@ -1,0 +1,7 @@
+kind: Fixes
+body: Omit None kwargs in dbtRunner.invoke instead of converting them to string literal None
+time: 2026-11-21T20:38:10.93772316+05:30
+custom:
+    author: RyukR1
+    issue: "17264"
+    project: dbt-core
