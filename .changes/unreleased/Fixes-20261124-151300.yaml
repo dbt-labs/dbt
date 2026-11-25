@@ -1,0 +1,7 @@
+kind: Fixes
+body: Stop raising CustomKeyInConfigDeprecation for the documented dbt-redshift
+  `query_group` model config by adding it to the adapter extra-keys allow-list
+time: 2026-11-24T15:13:00.000000-08:00
+custom:
+    Author: officialpm
+    Issue: "dbt-labs/dbt-adapters#2359"

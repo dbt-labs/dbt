@@ -286,6 +286,8 @@ class TestAdapterConfigKeys:
                 "snowflake",
                 {"snapshots": {"my_project": {"+table_format": "iceberg", "+iceberg_version": 3}}},
             ),
+            # dbt-labs/dbt-adapters#2359
+            ("redshift", {"models": {"my_project": {"+query_group": "highest_priority"}}}),
         ],
     )
     def test_project_config_no_warning(self, adapter, project_configs):
@@ -301,6 +303,19 @@ class TestAdapterConfigKeys:
             **project_configs,
         }
         jsonschema_validate(project_schema(), project_dict, "dbt_project.yml")
+        assert active_deprecations == {}
+
+    def test_redshift_query_group_model_config_no_warning(self):
+        # dbt-labs/dbt-adapters#2359: `query_group` is a documented dbt-redshift
+        # model config and must not warn as a custom key
+        reset_deprecations()
+
+        safe_set_invocation_context()
+        get_invocation_context().uses_adapter("redshift")
+
+        validate_model_config(
+            {"materialized": "table", "query_group": "highest_priority"}, "test.yml"
+        )
         assert active_deprecations == {}
 
 
