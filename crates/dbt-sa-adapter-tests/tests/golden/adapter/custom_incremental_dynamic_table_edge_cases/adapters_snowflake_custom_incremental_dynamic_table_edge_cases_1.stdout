@@ -7,29 +7,25 @@
    Parsing models/self_reference.sql
    Parsing models/stg_orders.sql
    Parsing models/widened_column.sql
-   Parsing models/wrong_materialization.sql
- Rendering models/wrong_materialization.sql
-   Running models/wrong_materialization.sql
- Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.wrong_materialization (table) [1 of 7 in duration]
  Rendering models/widened_column.sql
    Running models/widened_column.sql
- Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column (dynamic_table) [2 of 7 in duration]
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column (dynamic_table) [1 of 6 in duration]
  Rendering models/self_reference.sql
    Running models/self_reference.sql
-    Failed model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.self_reference (dynamic_table) [3 of 7 in duration]
+    Failed model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.self_reference (dynamic_table) [2 of 6 in duration]
  Rendering models/stg_orders.sql
    Running models/stg_orders.sql
- Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.stg_orders (table) [4 of 7 in duration]
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.stg_orders (table) [3 of 6 in duration]
  Rendering models/over_replaced_table.sql
    Running models/over_replaced_table.sql
- Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table (dynamic_table) [5 of 7 in duration]
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table (dynamic_table) [4 of 6 in duration]
  Rendering models/no_change_tracking.sql
    Running models/no_change_tracking.sql
-    Failed model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.no_change_tracking (dynamic_table) [6 of 7 in duration]
+    Failed model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.no_change_tracking (dynamic_table) [5 of 6 in duration]
  Rendering models/duplicate_keys.sql
    Running models/duplicate_keys.sql
- Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys (dynamic_table) [7 of 7 in duration]
+ Succeeded model adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys (dynamic_table) [6 of 6 in duration]
 ==================== Execution Summary =====================
 Finished 'run' with 2 errors for target 'snowflake' [duration]
-Processed: 7 models
-Summary: 7 total | 5 success | 2 error
+Processed: 6 models
+Summary: 6 total | 4 success | 2 error

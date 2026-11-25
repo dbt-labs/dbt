@@ -7,7 +7,6 @@
    Parsing models/self_reference.sql
    Parsing models/stg_orders.sql
    Parsing models/widened_column.sql
-   Parsing models/wrong_materialization.sql
 [PASS] duplicate_keys: the failed refresh left its rows
 [PASS] widened_column: the failed refresh left its rows
 [PASS] over_replaced_table: update and insert arrive, the deleted order 2 stays

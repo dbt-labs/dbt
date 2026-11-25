@@ -7,6 +7,5 @@
    Parsing models/self_reference.sql
    Parsing models/stg_orders.sql
    Parsing models/widened_column.sql
-   Parsing models/wrong_materialization.sql
 ==================== Execution Summary =====================
 Finished 'run-operation' successfully for target 'snowflake' [duration]
