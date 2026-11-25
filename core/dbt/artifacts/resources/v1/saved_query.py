@@ -77,6 +77,7 @@ class SavedQueryConfig(BaseConfig):
     )
     export_as: Optional[ExportDestinationType] = None
     schema: Optional[str] = None
+    database: Optional[str] = None
     cache: SavedQueryCache = field(default_factory=SavedQueryCache)
 
 
