@@ -57,10 +57,29 @@ impl VersionsHttpClient for ReqwestClient {
     }
 }
 
+/// Release tracks that are aliases of another track, as (alias, target).
+/// The tracks are published separately and drifted apart, so an alias resolves
+/// through its target when the manifest has a target entry. Without one, the
+/// alias keeps its own entry. install.sh and install.ps1 apply the same table.
+const TRACK_ALIASES: [(&str, &str); 3] = [
+    ("dev", "nightly"),
+    ("canary", "preview"),
+    ("latest", "stable"),
+];
+
+fn canonical_alias<'a>(versions: &serde_json::Value, requested: &'a str) -> &'a str {
+    TRACK_ALIASES
+        .iter()
+        .find(|(alias, target)| *alias == requested && versions.get(*target).is_some())
+        .map_or(requested, |(_, target)| *target)
+}
+
 /// Resolve a version from the versions manifest, mirroring install.sh's
 /// `determine_version`:
 ///   1. No version requested  -> use `stable.tag`
 ///   2. Version is an alias key (e.g. "canary") -> resolve `versions[alias].tag`
+///      (`dev`, `canary` and `latest` resolve through `nightly`, `preview` and
+///      `stable` when present; see [`TRACK_ALIASES`])
 ///   3. Version is a literal semver -> use it without a leading `v`
 fn resolve_version_from_manifest(
     versions: &serde_json::Value,
@@ -79,6 +98,7 @@ fn resolve_version_from_manifest(
             ),
         },
         Some(v) => {
+            let v = canonical_alias(versions, v);
             if let Some(tag) = versions
                 .get(v)
                 .and_then(|obj| obj.get("tag"))
@@ -193,8 +213,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_version_alias_latest_still_resolves() {
+    fn resolve_version_latest_follows_stable_when_present() {
+        // The manifest's own `latest` entry is preview.154; `latest` must follow `stable`.
         let versions = test_versions_json();
+        let version = resolve_version_from_manifest(&versions, Some("latest")).unwrap();
+        assert_eq!(version, "2.0.0-preview.150");
+    }
+
+    #[test]
+    fn resolve_version_stable_resolves_directly() {
+        let versions = test_versions_json();
+        let version = resolve_version_from_manifest(&versions, Some("stable")).unwrap();
+        assert_eq!(version, "2.0.0-preview.150");
+    }
+
+    #[test]
+    fn resolve_version_latest_without_stable_uses_latest_entry() {
+        let versions = serde_json::json!({ "latest": { "tag": "v2.0.0-preview.154" } });
         let version = resolve_version_from_manifest(&versions, Some("latest")).unwrap();
         assert_eq!(version, "2.0.0-preview.154");
     }
@@ -213,10 +248,57 @@ mod tests {
     }
 
     #[test]
+    fn resolve_version_dev_follows_nightly_when_present() {
+        let versions = serde_json::json!({
+            "dev":     { "tag": "v2.0.0-preview.157" },
+            "nightly": { "tag": "v2.0.0-preview.160" }
+        });
+        let version = resolve_version_from_manifest(&versions, Some("dev")).unwrap();
+        assert_eq!(version, "2.0.0-preview.160");
+    }
+
+    #[test]
+    fn resolve_version_nightly_resolves_directly() {
+        let versions = serde_json::json!({
+            "dev":     { "tag": "v2.0.0-preview.157" },
+            "nightly": { "tag": "v2.0.0-preview.160" }
+        });
+        let version = resolve_version_from_manifest(&versions, Some("nightly")).unwrap();
+        assert_eq!(version, "2.0.0-preview.160");
+    }
+
+    #[test]
+    fn resolve_version_dev_without_nightly_uses_dev_entry() {
+        let versions = serde_json::json!({ "dev": { "tag": "v2.0.0-preview.157" } });
+        let version = resolve_version_from_manifest(&versions, Some("dev")).unwrap();
+        assert_eq!(version, "2.0.0-preview.157");
+    }
+
+    #[test]
     fn resolve_version_alias_canary() {
         let versions = test_versions_json();
         let version = resolve_version_from_manifest(&versions, Some("canary")).unwrap();
         assert_eq!(version, "2.0.0-preview.157");
+    }
+
+    #[test]
+    fn resolve_version_canary_follows_preview_when_present() {
+        let versions = serde_json::json!({
+            "canary":  { "tag": "v2.0.0-preview.157" },
+            "preview": { "tag": "v2.0.0-preview.159" }
+        });
+        let version = resolve_version_from_manifest(&versions, Some("canary")).unwrap();
+        assert_eq!(version, "2.0.0-preview.159");
+    }
+
+    #[test]
+    fn resolve_version_preview_resolves_directly() {
+        let versions = serde_json::json!({
+            "canary":  { "tag": "v2.0.0-preview.157" },
+            "preview": { "tag": "v2.0.0-preview.159" }
+        });
+        let version = resolve_version_from_manifest(&versions, Some("preview")).unwrap();
+        assert_eq!(version, "2.0.0-preview.159");
     }
 
     #[test]
