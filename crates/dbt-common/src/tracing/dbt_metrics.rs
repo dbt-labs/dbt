@@ -232,6 +232,16 @@ pub enum NamedProbe {
     /// A root-project macro overrides an internal dbt or adapter macro. Counted once per
     /// overriding macro.
     InternalMacroOverride = 1,
+    /// A `.sql` test file is skipped because the second component of its path is `generic`,
+    /// but dbt-core collects it as a singular test since it is not under any
+    /// `<test-path>/generic` (e.g. `data/generic/my_test.sql` with
+    /// `test-paths: ["data/generic"]`). Counted once per file.
+    LegacyGenericDirSkip = 2,
+    /// A `.sql` test file is collected as a singular test, but dbt-core skips it as a generic
+    /// test or unit-test fixture since it is under some `<test-path>/generic` or
+    /// `<test-path>/fixtures` (e.g. `tests/dbt/fixtures/my_fixture.sql` with
+    /// `test-paths: ["tests", "tests/dbt"]`). Counted once per file.
+    NonSingularTestCollected = 3,
     /// Test-only probe for exercising emission and aggregation.
     #[cfg(test)]
     TestOnly = 65_534,
@@ -250,6 +260,8 @@ impl NamedProbe {
     pub const fn tracking_issue(self) -> Option<TrackingIssue> {
         match self {
             Self::InternalMacroOverride => None,
+            Self::LegacyGenericDirSkip => None,
+            Self::NonSingularTestCollected => None,
             #[cfg(test)]
             Self::TestOnly => Some(const { TrackingIssue::new(1) }),
             #[cfg(test)]
@@ -617,6 +629,8 @@ mod tests {
             actual,
             [
                 ("internal_macro_override", 1),
+                ("legacy_generic_dir_skip", 2),
+                ("non_singular_test_collected", 3),
                 ("test_only", u16::MAX - 1),
                 ("test_only_other", u16::MAX)
             ]
