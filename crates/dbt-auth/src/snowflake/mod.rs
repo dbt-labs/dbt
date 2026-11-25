@@ -9,6 +9,8 @@ use std::fs;
 use std::sync::Once;
 
 const APP_NAME: &str = "dbt";
+/// Adapter-agnostic env var for the application name dbt reports to the warehouse.
+const APPLICATION_NAME_ENV_VAR: &str = "DBT_APPLICATION_NAME";
 
 // WARNING: Still needs adjustment on what is considered must-have
 const CONNECTION_PARAMS_STR: [&str; 9] = [
@@ -672,6 +674,18 @@ fn parse_auth<'a>(
     }
 }
 
+/// Resolves the Snowflake application name reported on each session.
+///
+/// The `application_name` profile field takes precedence, followed by the
+/// `DBT_APPLICATION_NAME` environment variable (ignored when empty),
+/// and finally the default `dbt`.
+fn resolve_application_name(profile_value: Option<&str>, env_value: Option<String>) -> String {
+    profile_value
+        .map(str::to_owned)
+        .or_else(|| env_value.filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| APP_NAME.to_owned())
+}
+
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
@@ -709,7 +723,10 @@ fn apply_connection_args(
             }?;
         }
     }
-    let application_name = config.get_str("application_name").unwrap_or(APP_NAME);
+    let application_name = resolve_application_name(
+        config.get_str("application_name"),
+        std::env::var(APPLICATION_NAME_ENV_VAR).ok(),
+    );
     builder.with_named_option(snowflake::APPLICATION_NAME, application_name)?;
 
     // LOGIN_TIMEOUT defaults to 300s,
@@ -921,6 +938,35 @@ mod tests {
             (snowflake::REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT),
         ];
         run_config_test(config, &expected);
+    }
+
+    #[test]
+    fn test_resolve_application_name_default() {
+        assert_eq!(resolve_application_name(None, None), APP_NAME);
+    }
+
+    #[test]
+    fn test_resolve_application_name_from_env() {
+        assert_eq!(
+            resolve_application_name(None, Some("env_app".to_owned())),
+            "env_app"
+        );
+    }
+
+    #[test]
+    fn test_resolve_application_name_ignores_empty_env() {
+        assert_eq!(
+            resolve_application_name(None, Some(String::new())),
+            APP_NAME
+        );
+    }
+
+    #[test]
+    fn test_resolve_application_name_profile_overrides_env() {
+        assert_eq!(
+            resolve_application_name(Some("custom_app"), Some("env_app".to_owned())),
+            "custom_app"
+        );
     }
 
     #[test]

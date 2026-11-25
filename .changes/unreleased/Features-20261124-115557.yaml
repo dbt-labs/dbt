@@ -1,0 +1,7 @@
+kind: Features
+body: Add the DBT_APPLICATION_NAME environment variable to set the application name reported to Snowflake when application_name is not set in the profile.
+time: 2026-11-24T11:55:57.064696-08:00
+custom:
+    author: noel
+    issue: "17311"
+    project: dbt-core
