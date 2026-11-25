@@ -1,11 +1,11 @@
 use dbt_tracing::{
-    IndexedTelemetryDeserializeError, TelemetryOutputFlags, TelemetryRecord,
+    IndexedTelemetryDeserializeError, TelemetryAttributes, TelemetryOutputFlags, TelemetryRecord,
     serialize::json::{deserialize_from_json_value, deserialize_json_lines},
 };
 use serde_json::{Value as JsonValue, json};
 
 use crate::{
-    TelemetryEventTypeRegistry,
+    GenericOpExecuted, NodeEvaluated, NodeOutcome, TelemetryEventTypeRegistry,
     test_utils::{create_all_fake_attributes, create_all_fake_records, create_test_log_record},
 };
 
@@ -197,4 +197,94 @@ fn value_without_optional_envelope_fields(value: &JsonValue) -> JsonValue {
     object.remove("span_id");
     object.remove("span_name");
     value
+}
+
+fn has_string(json: &JsonValue) -> bool {
+    match json {
+        JsonValue::String(_) => true,
+        JsonValue::Array(items) => items.iter().any(has_string),
+        JsonValue::Object(fields) => fields.values().any(has_string),
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => false,
+    }
+}
+
+/// `rewrite_strings` goes through an event's JSON form. Every public event must come back
+/// from that trip unchanged, or its strings could not be rewritten.
+#[test]
+fn rewrite_strings_rebuilds_every_public_event_unchanged() {
+    let all_events = create_all_fake_attributes(
+        "rewrite_strings_seed",
+        TelemetryEventTypeRegistry::public(),
+        TelemetryOutputFlags::empty(),
+    );
+    assert!(!all_events.is_empty(), "expected public events");
+    for original in all_events {
+        let json = original.inner().to_json().expect("the event serializes");
+        let mut rewritten = original.clone();
+        let changed = rewritten.rewrite_strings(&|text| Some(text.to_string()));
+        assert_eq!(rewritten, original, "{}", original.event_type());
+        // An event that can't be rebuilt is left as it is, so it also compares equal. Only
+        // the return value tells the two apart.
+        assert!(
+            changed || !has_string(&json),
+            "{} was not rebuilt",
+            original.event_type()
+        );
+    }
+}
+
+fn replace_text(text: &str, from: &str) -> Option<String> {
+    text.contains(from).then(|| text.replace(from, "*****"))
+}
+
+/// An enum is written to JSON by name. Rewriting that name would make the event
+/// unparsable, so it is kept and the other strings are still rewritten.
+#[test]
+fn rewrite_strings_keeps_a_value_that_would_not_parse() {
+    let mut event = TelemetryAttributes::from(NodeEvaluated {
+        unique_id: "model.pkg.SUCCESS_rate".to_string(),
+        node_outcome: NodeOutcome::Success as i32,
+        ..Default::default()
+    });
+    let json = event.inner().to_json().expect("the event serializes");
+    assert!(json.to_string().contains("NODE_OUTCOME_SUCCESS"), "{json}");
+
+    assert!(event.rewrite_strings(&|text| replace_text(text, "SUCCESS")));
+
+    let event = event
+        .downcast_ref::<NodeEvaluated>()
+        .expect("the event keeps its type");
+    assert_eq!(event.unique_id, "model.pkg.*****_rate");
+    assert_eq!(event.node_outcome(), NodeOutcome::Success);
+}
+
+/// JSON escapes quotes and backslashes, so the text to rewrite does not appear as it is in
+/// the event's JSON text.
+#[test]
+fn rewrite_strings_finds_text_that_json_escapes() {
+    let secret = r#"p"ss\word"#;
+    let mut event = TelemetryAttributes::from(GenericOpExecuted {
+        operation_id: "login".to_string(),
+        display_action: format!("Logging in with {secret}"),
+        item_count_total: None,
+    });
+
+    assert!(event.rewrite_strings(&|text| replace_text(text, secret)));
+
+    let event = event
+        .downcast_ref::<GenericOpExecuted>()
+        .expect("the event keeps its type");
+    assert_eq!(event.display_action, "Logging in with *****");
+}
+
+#[test]
+fn rewrite_strings_reports_no_change_without_a_match() {
+    let original = TelemetryAttributes::from(GenericOpExecuted {
+        operation_id: "login".to_string(),
+        display_action: "Logging in".to_string(),
+        item_count_total: None,
+    });
+    let mut event = original.clone();
+    assert!(!event.rewrite_strings(&|text| replace_text(text, "s3cr3t")));
+    assert_eq!(event, original);
 }

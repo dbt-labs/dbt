@@ -2360,8 +2360,10 @@ __additional_properties__: {}
             Some(OnConfigurationChange::Apply)
         );
 
-        let manifest: ManifestModelConfig =
-            dbt_yaml::from_str("__warehouse_specific_config__: {}\n").unwrap();
+        let manifest: ManifestModelConfig = dbt_yaml::from_str(
+            "__rare_freshness__: {}\n__rare_python__: {}\n__warehouse_specific_config__: {}\n",
+        )
+        .unwrap();
         let mut manifest_runtime: ModelConfig = manifest.into();
         assert_eq!(manifest_runtime.on_configuration_change, None);
         manifest_runtime.apply_resolve_defaults((StaticAnalysisKind::default(), None, None));
@@ -2460,6 +2462,21 @@ __warehouse_specific_config__: {}
         assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
         assert_eq!(state.execute_hooks_on_any_reuse, Some(true));
         assert_eq!(state.ignore_external_modifications, Some(true));
+    }
+
+    #[test]
+    fn test_model_config_state_parses_pre_clone_if_changed() {
+        let config: ModelConfig = dbt_yaml::from_str(
+            r#"
+state:
+  pre_clone: if_changed
+__warehouse_specific_config__: {}
+"#,
+        )
+        .unwrap();
+
+        let state = config.state.expect("state config should parse");
+        assert_eq!(state.pre_clone, Some(StatePreClone::IfChanged));
     }
 
     /// Regression for #16135: `state:` keys merge key by key, so a model that sets
@@ -2634,6 +2651,8 @@ __warehouse_specific_config__: {}
         let config: ManifestModelConfig = dbt_yaml::from_str(
             r#"
 python_version: 3.10
+__rare_freshness__: {}
+__rare_python__: {}
 __warehouse_specific_config__: {}
 "#,
         )

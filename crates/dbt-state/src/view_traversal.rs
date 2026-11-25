@@ -53,7 +53,8 @@ pub struct ViewTraversalResult {
     pub unresolvable_tables: BTreeSet<String>,
 
     /// Raw text of references skipped because they are not tables (for
-    /// example, Snowflake stage paths); nothing can check their freshness.
+    /// example, Snowflake stage paths or table-valued function names);
+    /// nothing can check their freshness.
     pub unsupported_references: BTreeSet<String>,
 }
 
@@ -302,7 +303,7 @@ fn extract_referenced_tables(
     adapter_type: AdapterType,
     view_def: &ViewDefinition,
     sources_extractor: &dyn SourcesExtractor,
-) -> AdapterResult<BTreeSet<FullyQualifiedName>> {
+) -> AdapterResult<(BTreeSet<FullyQualifiedName>, BTreeSet<String>)> {
     sources_extractor
         .extract_upstreams(
             adapter_type,
@@ -318,11 +319,14 @@ fn extract_referenced_tables(
             )
         })
         .map(|upstreams| {
-            upstreams
-                .tables
-                .into_iter()
-                .map(|nr| nr.into_inner())
-                .collect()
+            (
+                upstreams
+                    .tables
+                    .into_iter()
+                    .map(|nr| nr.into_inner())
+                    .collect(),
+                upstreams.table_functions,
+            )
         })
 }
 
@@ -351,7 +355,9 @@ fn record_and_enqueue(
     sources_extractor: &dyn SourcesExtractor,
 ) -> AdapterResult<()> {
     view_definitions.insert(view_def.fqn.clone(), Arc::clone(view_def));
-    let refs = extract_referenced_tables(adapter_type, view_def, sources_extractor)?;
+    let (refs, table_functions) =
+        extract_referenced_tables(adapter_type, view_def, sources_extractor)?;
+    unsupported_references.extend(table_functions);
     for ref_fqn in refs {
         if is_snowflake_stage_reference(adapter_type, &ref_fqn) {
             unsupported_references.insert(ref_fqn.table().name().to_string());
@@ -601,8 +607,9 @@ mod tests {
             default_catalog: "DB".to_string(),
             default_schema: "S".to_string(),
         };
-        let refs = extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
-            .expect("parse ok");
+        let (refs, _) =
+            extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
+                .expect("parse ok");
         assert!(refs.is_empty(), "expected no upstream refs, got {refs:?}");
     }
 
@@ -615,8 +622,9 @@ mod tests {
             default_catalog: "DB".to_string(),
             default_schema: "S".to_string(),
         };
-        let refs = extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
-            .expect("parse ok");
+        let (refs, _) =
+            extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
+                .expect("parse ok");
         // The unqualified `upstream_t` must come back qualified against the
         // view's default catalog/schema. Snowflake normalizes unquoted
         // identifiers to uppercase.
@@ -700,8 +708,9 @@ mod tests {
             default_catalog: "DB".to_string(),
             default_schema: "S".to_string(),
         };
-        let refs = extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
-            .expect("parse ok");
+        let (refs, _) =
+            extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
+                .expect("parse ok");
         assert_eq!(refs.len(), 1);
         let parsed = refs.into_iter().next().unwrap();
         let r2 =
@@ -1263,5 +1272,88 @@ mod tests {
             );
         }
         assert_eq!(mock.count_for(&v1), 1, "V1 fetched more than once");
+    }
+
+    /// Returns one table-valued function and no tables.
+    struct TableFunctionExtractor(&'static str);
+
+    impl SourcesExtractor for TableFunctionExtractor {
+        fn extract_upstreams(
+            &self,
+            _adapter_type: AdapterType,
+            _sql: &str,
+            _default_catalog: &str,
+            _default_schema: &str,
+            _quoted_name_ignore_case: bool,
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(ExtractedUpstreams {
+                table_functions: BTreeSet::from([self.0.to_string()]),
+                ..Default::default()
+            })
+        }
+
+        fn extract_standalone_expression_upstreams(
+            &self,
+            adapter_type: AdapterType,
+            sql: &str,
+            default_catalog: &str,
+            default_schema: &str,
+            quoted_name_ignore_case: bool,
+        ) -> FrontendResult<ExtractedUpstreams> {
+            self.extract_upstreams(
+                adapter_type,
+                sql,
+                default_catalog,
+                default_schema,
+                quoted_name_ignore_case,
+            )
+        }
+    }
+
+    #[dbt_runtime::test]
+    async fn view_over_table_function_reports_unsupported_reference() {
+        let (_, mock) = stage_graph();
+        let adapter: Arc<dyn MetadataAdapter> = mock.clone();
+        let traverser = ViewDefinitionTraverser::new(
+            adapter,
+            Arc::new(TableFunctionExtractor("table_changes")),
+        );
+
+        let result = traverser
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+
+        assert_eq!(
+            result.unsupported_references,
+            BTreeSet::from(["table_changes".to_string()])
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn view_over_pure_generator_has_no_unsupported_reference() {
+        let v1 = rel("V1").semantic_fqn();
+        let mut graph = HashMap::new();
+        graph.insert(
+            v1,
+            Some("SELECT * FROM TABLE(GENERATOR(ROWCOUNT => 10))".to_string()),
+        );
+        let adapter: Arc<dyn MetadataAdapter> = Arc::new(MockAdapter::new(graph));
+        let traverser = ViewDefinitionTraverser::new(adapter, Arc::new(DefaultSourcesExtractor));
+
+        let result = traverser
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+
+        assert!(result.unsupported_references.is_empty());
     }
 }

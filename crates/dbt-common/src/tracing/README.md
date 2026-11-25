@@ -86,15 +86,17 @@ writers accept that hook but do not know what a dbt `LogMessage` is.
 
 ## Middlewares
 
-Middleware order is intentional and is defined in `FsTraceConfig::build_layers`:
+Middleware order is intentional and is defined in `build_shared_middleware_layers`:
 
-1. `TelemetryMarkdownLogFilter` downgrades markdown file errors first.
-2. `TelemetryParsingErrorFilter` filters repeated parsing/deprecation errors.
-3. `TelemetryWarnErrorOptionsMiddleware` applies warn/error options, including
+1. `TelemetrySecretScrubber` masks `DBT_ENV_SECRET*` values first, so no later
+   middleware and no consumer sees them.
+2. `TelemetryMarkdownLogFilter` downgrades markdown file errors.
+3. `TelemetryParsingErrorFilter` filters repeated parsing/deprecation errors.
+4. `TelemetryWarnErrorOptionsMiddleware` applies warn/error options, including
    warning upgrades or silencing.
-4. `TelemetryNodeWarnOutcome` marks node spans with warning outcomes after warn
+5. `TelemetryNodeWarnOutcome` marks node spans with warning outcomes after warn
    transforms have settled.
-5. `TelemetryMetricAggregator` runs last so invocation metrics see the final
+6. `TelemetryMetricAggregator` runs last so invocation metrics see the final
    severity and outcome state.
 
 ## Formatters

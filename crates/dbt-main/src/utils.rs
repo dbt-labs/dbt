@@ -140,7 +140,7 @@ impl InvocationContext {
             defer_env_id: None,
             user_id: None,
             user_name: None,
-            dbt_version: env!("CARGO_PKG_VERSION").to_string(),
+            dbt_version: dbt_common::version::dbt_version().to_string(),
             git_sha: self.git_sha,
             git_branch: self.git_branch,
             git_is_dirty: self.git_is_dirty,

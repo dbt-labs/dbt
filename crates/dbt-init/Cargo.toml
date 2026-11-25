@@ -34,9 +34,17 @@ dbt-yaml = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
-rust-embed = { workspace = true }
+tar = { workspace = true }
+zstd-safe = { workspace = true }
 
 dbt-fusion-workspace-hack = { version = "0.1" }
+
+[build-dependencies]
+tar = { workspace = true }
+zstd-safe = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lib]
 name = "dbt_init"

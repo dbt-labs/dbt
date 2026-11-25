@@ -16,7 +16,7 @@ pub fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-/// One `NAME[=VALUE]` setting from the CLI or an env list.
+/// One boolean setting of a flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Assignment {
     /// Normalized: lowercase, `-` replaced by `_`.
@@ -24,44 +24,32 @@ pub(crate) struct Assignment {
     pub value: bool,
 }
 
-/// Parses `NAME[=VALUE]` settings. A bare `NAME` means `NAME=true`.
+/// Parses lists of beta feature names. Each item of `lists` is one name or several separated
+/// by commas.
 ///
-/// Returns the parsed settings in order plus a warning for each one that
-/// could not be parsed. `origin` names the source in warnings.
-pub(crate) fn parse_assignments<'a>(
-    specs: impl IntoIterator<Item = &'a str>,
+/// Returns the names in order, normalized (lowercase, `-` replaced by `_`), plus a warning for
+/// each entry that is not a name. `origin` names the source in warnings.
+pub(crate) fn parse_names<'a>(
+    lists: impl IntoIterator<Item = &'a str>,
     origin: &str,
-) -> (Vec<Assignment>, Vec<String>) {
-    let mut assignments = Vec::new();
+) -> (Vec<String>, Vec<String>) {
+    let mut names = Vec::new();
     let mut warnings = Vec::new();
-    for spec in specs {
-        let spec = spec.trim();
-        if spec.is_empty() {
+    for entry in lists.into_iter().flat_map(|list| list.split(',')) {
+        let entry = entry.trim();
+        if entry.is_empty() {
             continue;
         }
-        let (name, value) = match spec.split_once('=') {
-            Some((name, raw)) => match parse_bool(raw) {
-                Some(value) => (name, value),
-                None => {
-                    warnings.push(format!(
-                        "Ignoring feature setting '{spec}' from {origin}: \
-                         value must be a boolean (1/0, true/false, yes/no, on/off)"
-                    ));
-                    continue;
-                }
-            },
-            None => (spec, true),
-        };
-        let name = crate::def::normalize_name(name);
-        if name.is_empty() {
+        if entry.contains('=') {
             warnings.push(format!(
-                "Ignoring feature setting '{spec}' from {origin}: missing flag name"
+                "Ignoring '{entry}' in {origin}: list beta features by name. To turn a feature \
+                 off, set its DBT_ENGINE_EXPERIMENTAL_<NAME> environment variable to 0"
             ));
             continue;
         }
-        assignments.push(Assignment { name, value });
+        names.push(crate::def::normalize_name(entry));
     }
-    (assignments, warnings)
+    (names, warnings)
 }
 
 #[cfg(test)]
@@ -82,32 +70,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_assignments_handles_bare_names_values_and_errors() {
-        let (assignments, warnings) = parse_assignments(
-            [
-                "Git-Deps-Fast-Path",
-                "other=false",
-                "bad=maybe",
-                "=true",
-                "",
-            ],
+    fn parse_names_splits_lists_and_rejects_values() {
+        let (names, warnings) = parse_names(
+            ["Metricflow-V2, other", "", "third", "bad=false"],
             "the test",
         );
-        assert_eq!(
-            assignments,
-            vec![
-                Assignment {
-                    name: "git_deps_fast_path".to_string(),
-                    value: true
-                },
-                Assignment {
-                    name: "other".to_string(),
-                    value: false
-                },
-            ]
-        );
-        assert_eq!(warnings.len(), 2);
-        assert!(warnings[0].contains("'bad=maybe'"));
-        assert!(warnings[1].contains("missing flag name"));
+        assert_eq!(names, ["metricflow_v2", "other", "third"]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("'bad=false' in the test"));
     }
 }

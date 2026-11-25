@@ -105,7 +105,10 @@ fn update_resolved_states_manifest_with_schemas_and_compiled_sql_core(
 
         if let Some(entry) = schema_cache.get_schema_by_unique_id(unique_id) {
             let columns = update_node_columns(
-                resolved_state.adapter_type,
+                adapter_type_outside_compute_platform(
+                    model.node_adapter(),
+                    resolved_state.adapter_type,
+                ),
                 type_ops_factory,
                 &model.__common_attr__,
                 &model.__base_attr__.columns,
@@ -170,7 +173,10 @@ fn update_resolved_states_manifest_with_schemas_and_compiled_sql_core(
     for (unique_id, seed) in resolved_state.nodes.seeds.iter_mut() {
         if let Some(entry) = schema_cache.get_schema_by_unique_id(unique_id) {
             let columns = update_node_columns(
-                resolved_state.adapter_type,
+                adapter_type_outside_compute_platform(
+                    seed.node_adapter(),
+                    resolved_state.adapter_type,
+                ),
                 type_ops_factory,
                 &seed.__common_attr__,
                 &seed.__base_attr__.columns,

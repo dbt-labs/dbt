@@ -153,6 +153,15 @@ fn bigquery_behavior_flags() -> Vec<BehaviorFlag> {
             None,
             None,
         ),
+        BehaviorFlag::new(
+            "bigquery_enforce_job_config",
+            false,
+            Some(
+                "Apply BigQuery profile job settings that v2 ignored before, as in v1. Covers the legacy timeout_seconds key, read as job_execution_timeout_seconds.",
+            ),
+            None,
+            None,
+        ),
     ]
 }
 

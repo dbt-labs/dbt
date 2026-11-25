@@ -5,7 +5,7 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_GENERIC_TESTS_DIR_NAME;
-use dbt_common::io_args::{FsCommand, multi_adapter_enabled, project_flag_bool};
+use dbt_common::io_args::{FsCommand, multi_adapter_enabled, project_flag_lookup};
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::path::DbtPath;
 use dbt_common::stdfs;
@@ -483,7 +483,9 @@ pub async fn resolve(
     // `metricflow` is a config of models only while `metricflow_v2` is on. While it is off, it
     // is a config that nothing reads, on whichever of a model's config sources it is set.
     if !dbt_flags::METRICFLOW_V2
-        .resolve_with_project(&project_flag_bool(dbt_state.root_project().flags.as_ref()))
+        .resolve_with_project(&project_flag_lookup(
+            dbt_state.root_project().flags.as_ref(),
+        ))
         .value
     {
         for model in nodes.models.values_mut() {

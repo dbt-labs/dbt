@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Once};
 
 type YmlValue = dbt_yaml::Value;
 
@@ -2378,13 +2378,39 @@ impl TryFrom<DbConfig> for TargetContext {
 
             // Bigquery case
             DbConfig::Bigquery(config) => {
-                // dbt-bigquery treats `retries` as an alias of `job_retries` and rejects both.
-                if config.retries.is_some() && config.job_retries.is_some() {
-                    return Err(
-                        "In file `profiles.yml`, set either `retries` or `job_retries`, \
-                         not both: `retries` is an alias of `job_retries`."
-                            .to_string(),
-                    );
+                // v1 rejects a profile that sets both a key and its legacy alias. v2 keeps loading
+                // it so existing projects don't break, uses the canonical key, and warns.
+                if let (Some(retries), Some(job_retries)) = (config.retries, config.job_retries) {
+                    static WARN_DUPLICATE_RETRIES: Once = Once::new();
+                    WARN_DUPLICATE_RETRIES.call_once(|| {
+                        emit_warn_log_message(
+                            ErrorCode::DuplicateConfigKey,
+                            format!(
+                                "BigQuery profile sets both `job_retries` ({job_retries}) and its \
+                                 legacy alias `retries` ({retries}); using `job_retries` \
+                                 ({job_retries}) and ignoring `retries`. Remove `retries` from \
+                                 profiles.yml."
+                            ),
+                        )
+                    });
+                }
+                if let (Some(timeout), Some(job_execution_timeout)) =
+                    (config.timeout_seconds, config.job_execution_timeout_seconds)
+                {
+                    static WARN_DUPLICATE_TIMEOUT: Once = Once::new();
+                    WARN_DUPLICATE_TIMEOUT.call_once(|| {
+                        emit_warn_log_message(
+                            ErrorCode::DuplicateConfigKey,
+                            format!(
+                                "BigQuery profile sets both `job_execution_timeout_seconds` \
+                                 ({job_execution_timeout}) and its legacy alias \
+                                 `timeout_seconds` ({timeout}); using \
+                                 `job_execution_timeout_seconds` ({job_execution_timeout}) and \
+                                 ignoring `timeout_seconds`. Remove `timeout_seconds` from \
+                                 profiles.yml."
+                            ),
+                        )
+                    });
                 }
                 let database = config
                     .database
@@ -2870,7 +2896,7 @@ query_tags:
     }
 
     #[test]
-    fn test_bigquery_target_context_rejects_retries_and_job_retries() {
+    fn test_bigquery_target_context_accepts_retries_and_job_retries() {
         let bigquery = |retries: &str| -> DbConfig {
             dbt_yaml::from_str(&format!(
                 "type: bigquery\ndatabase: project\nschema: dataset\n{retries}"
@@ -2879,10 +2905,12 @@ query_tags:
         };
         assert!(TargetContext::try_from(bigquery("retries: 3")).is_ok());
         assert!(TargetContext::try_from(bigquery("job_retries: 3")).is_ok());
-        let Err(err) = TargetContext::try_from(bigquery("retries: 3\njob_retries: 5")) else {
-            panic!("expected both keys to be rejected");
+        let Ok(TargetContext::Bigquery(target)) =
+            TargetContext::try_from(bigquery("retries: 3\njob_retries: 5"))
+        else {
+            panic!("expected both keys to load");
         };
-        assert!(err.contains("`retries` or `job_retries`"), "{err}");
+        assert_eq!(target.job_retries, Some(5));
     }
 
     // Regression coverage: `compute_region` used to carry `#[serde(alias = "dataproc_region")]`,

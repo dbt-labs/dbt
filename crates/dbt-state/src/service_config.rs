@@ -30,6 +30,9 @@ const STATE_OAUTH_CLIENT_SECRET_ENV: &str = "DBT_ENV_SECRET_STATE_OAUTH_CLIENT_S
 pub enum CloneIncrementalInDev {
     Never,
     IfTableMissing,
+    /// Like `IfTableMissing`, but an existing target is re-cloned when the clone source has
+    /// changed since the target was last cloned from it. The service decides whether it changed.
+    IfChanged,
     Always,
 }
 
@@ -38,6 +41,7 @@ impl CloneIncrementalInDev {
         match self {
             Self::Never => "NEVER",
             Self::IfTableMissing => "IF_TABLE_MISSING",
+            Self::IfChanged => "IF_CHANGED",
             Self::Always => "ALWAYS",
         }
     }
@@ -610,6 +614,7 @@ fn parse_clone_incremental_in_dev(
     match value.trim().to_ascii_uppercase().as_str() {
         "NEVER" => Ok(CloneIncrementalInDev::Never),
         "IF_TABLE_MISSING" => Ok(CloneIncrementalInDev::IfTableMissing),
+        "IF_CHANGED" => Ok(CloneIncrementalInDev::IfChanged),
         "ALWAYS" => Ok(CloneIncrementalInDev::Always),
         _ => Err(RunCacheServiceConfigError::InvalidCloneIncrementalInDev {
             value: value.to_string(),
@@ -1093,6 +1098,18 @@ mod tests {
                 }),
             Some("staging")
         );
+    }
+
+    #[test]
+    fn parses_clone_incremental_in_dev_if_changed() {
+        let config =
+            config_from_pairs(&[("RUN_CACHE_CLONE_INCREMENTAL_IN_DEV", "if_changed")]).unwrap();
+
+        assert_eq!(
+            config.clone_incremental_in_dev,
+            CloneIncrementalInDev::IfChanged
+        );
+        assert_eq!(config.clone_incremental_in_dev.as_str(), "IF_CHANGED");
     }
 
     #[test]

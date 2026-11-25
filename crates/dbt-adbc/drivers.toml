@@ -74,6 +74,7 @@ drivers = [
   "duckdb-1.5.2",
   "duckdb-1.5.3",
   "duckdb-1.5.4",
+  "duckdb-2.0.1",
   "duckdb_extended-0.21.0.dev+dbt0.0.26",
   "duckdb_extended-0.21.0.dev+dbt0.0.27",
   "duckdb_extended-0.21.0.dev+dbt0.0.28",

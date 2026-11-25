@@ -587,12 +587,14 @@ mod tests {
     }
 
     // Records #17438. The fix for each type changes its test to `assert_seed_loads_as`.
+    // A system-installed DuckDB can report an older diagnostic for the same failure.
     #[test]
     fn seed_load_records_time_column_rendering_gap() {
         // `SqlType` renders the column as `TIME(6) WITHOUT TIME ZONE`.
         let err = seed_load_error("time.csv", "c\n13:45:00\n", "TIME");
         assert!(
-            err.contains("Type 'TIME' does not take any type parameters"),
+            err.contains(r#"Value "TIME(6) WITHOUT TIME ZONE" can not be converted"#)
+                || err.contains("Type 'TIME' does not take any type parameters"),
             "{err}"
         );
     }
@@ -618,7 +620,11 @@ mod tests {
     #[test]
     fn seed_load_records_map_column_rendering_gap() {
         let err = seed_load_error("map.csv", "c\n\"{a=1}\"\n", "MAP(VARCHAR, INTEGER)");
-        assert!(err.contains(r#"Value "MAP" can not be converted"#), "{err}");
+        assert!(
+            err.contains(r#"Type "MAP" requires type parameters"#)
+                || err.contains(r#"Value "MAP" can not be converted"#),
+            "{err}"
+        );
     }
 
     // Records #17438.

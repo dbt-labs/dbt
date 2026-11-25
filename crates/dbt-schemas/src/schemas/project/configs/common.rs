@@ -499,94 +499,112 @@ pub fn take_databricks_catalog_alias(
     warehouse_specific.catalog.take()
 }
 
-static EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG: LazyLock<WarehouseSpecificNodeConfig> =
-    LazyLock::new(WarehouseSpecificNodeConfig::default);
-
-/// A [`WarehouseSpecificNodeConfig`] that is heap-allocated only when it differs from the
-/// default, so configs that set no warehouse option don't carry the whole struct inline.
+/// A type with one shared default value, which [`LazyDefault`] derefs to while nothing is
+/// allocated.
 ///
-/// Derefs to the config, or to a shared default when nothing is allocated. Serialization,
+/// `shared_default()` must equal `Self::default()`: an unallocated [`LazyDefault`] reads as the
+/// shared value but builds `Self::default()` for `into_inner()` and mutable access.
+pub trait SharedDefault: Default + PartialEq + 'static {
+    fn shared_default() -> &'static Self;
+}
+
+/// A `T` that is heap-allocated only when it differs from the default, so structs whose fields
+/// are almost always unset don't carry them inline.
+///
+/// Derefs to the value, or to the shared default when nothing is allocated. Serialization,
 /// deserialization, equality and `Debug` all go through that logical value, so the storage is
 /// not observable.
 #[derive(Clone, Default)]
-pub struct LazyWarehouseSpecificNodeConfig(Option<Box<WarehouseSpecificNodeConfig>>);
+pub struct LazyDefault<T>(Option<Box<T>>);
 
-impl LazyWarehouseSpecificNodeConfig {
-    /// The allocated config, or `None` for a default.
-    pub fn get(&self) -> Option<&WarehouseSpecificNodeConfig> {
+impl<T: SharedDefault> LazyDefault<T> {
+    /// The allocated value, or `None` for a default.
+    pub fn get(&self) -> Option<&T> {
         self.0.as_deref()
     }
 
-    /// Mutable access to an allocated config. Returns `None`, without allocating, for a default.
-    pub fn get_mut(&mut self) -> Option<&mut WarehouseSpecificNodeConfig> {
+    /// Mutable access to an allocated value. Returns `None`, without allocating, for a default.
+    pub fn get_mut(&mut self) -> Option<&mut T> {
         self.0.as_deref_mut()
     }
 
-    /// Frees the allocation if the config is back to the default.
+    /// Frees the allocation if the value is back to the default.
     pub fn free_if_default(&mut self) {
         if self
             .0
             .as_deref()
-            .is_some_and(|config| *config == *EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG)
+            .is_some_and(|value| value == T::shared_default())
         {
             self.0 = None;
         }
     }
 
-    pub fn into_inner(self) -> WarehouseSpecificNodeConfig {
-        self.0.map(|config| *config).unwrap_or_default()
+    pub fn into_inner(self) -> T {
+        self.0.map(|value| *value).unwrap_or_default()
     }
 }
 
-impl From<WarehouseSpecificNodeConfig> for LazyWarehouseSpecificNodeConfig {
-    fn from(config: WarehouseSpecificNodeConfig) -> Self {
-        if config == *EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG {
+impl<T: SharedDefault> From<T> for LazyDefault<T> {
+    fn from(value: T) -> Self {
+        if value == *T::shared_default() {
             Self(None)
         } else {
-            Self(Some(Box::new(config)))
+            Self(Some(Box::new(value)))
         }
     }
 }
 
-impl Deref for LazyWarehouseSpecificNodeConfig {
-    type Target = WarehouseSpecificNodeConfig;
+impl<T: SharedDefault> Deref for LazyDefault<T> {
+    type Target = T;
 
-    fn deref(&self) -> &WarehouseSpecificNodeConfig {
-        self.0
-            .as_deref()
-            .unwrap_or(&EMPTY_WAREHOUSE_SPECIFIC_NODE_CONFIG)
+    fn deref(&self) -> &T {
+        match self.0.as_deref() {
+            Some(value) => value,
+            None => T::shared_default(),
+        }
     }
 }
 
-impl DerefMut for LazyWarehouseSpecificNodeConfig {
-    fn deref_mut(&mut self) -> &mut WarehouseSpecificNodeConfig {
+impl<T: SharedDefault> DerefMut for LazyDefault<T> {
+    fn deref_mut(&mut self) -> &mut T {
         self.0.get_or_insert_with(Default::default)
     }
 }
 
-impl PartialEq for LazyWarehouseSpecificNodeConfig {
+impl<T: SharedDefault> PartialEq for LazyDefault<T> {
     fn eq(&self, other: &Self) -> bool {
         **self == **other
     }
 }
 
-impl fmt::Debug for LazyWarehouseSpecificNodeConfig {
+impl<T: SharedDefault + fmt::Debug> fmt::Debug for LazyDefault<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
-impl Serialize for LazyWarehouseSpecificNodeConfig {
+impl<T: SharedDefault + Serialize> Serialize for LazyDefault<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         (**self).serialize(serializer)
     }
 }
 
-impl<'de> Deserialize<'de> for LazyWarehouseSpecificNodeConfig {
+impl<'de, T: SharedDefault + Deserialize<'de>> Deserialize<'de> for LazyDefault<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        WarehouseSpecificNodeConfig::deserialize(deserializer).map(Self::from)
+        T::deserialize(deserializer).map(Self::from)
     }
 }
+
+impl SharedDefault for WarehouseSpecificNodeConfig {
+    fn shared_default() -> &'static Self {
+        static DEFAULT: LazyLock<WarehouseSpecificNodeConfig> =
+            LazyLock::new(WarehouseSpecificNodeConfig::default);
+        &DEFAULT
+    }
+}
+
+/// A [`WarehouseSpecificNodeConfig`] allocated only when a config sets a warehouse option.
+pub type LazyWarehouseSpecificNodeConfig = LazyDefault<WarehouseSpecificNodeConfig>;
 
 impl ResolvableConfig<WarehouseSpecificNodeConfig> for WarehouseSpecificNodeConfig {
     type Resolved = Self;

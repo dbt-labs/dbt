@@ -280,6 +280,16 @@ pub struct InvocationFacts {
     pub node_count: Option<i32>,
 }
 
+/// The metadata flags a run used. They can differ from the flags the invocation started with:
+/// `dbt retry` learns the command it repeats only after it starts, and that command's defaults
+/// can turn them on.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetadataFlags {
+    pub write_metadata: bool,
+    pub write_index: bool,
+    pub generate_info_schema: bool,
+}
+
 /// In-memory result of dbt command invocation.
 ///
 /// Maybe partially populated depending on the command and if execution reached
@@ -288,6 +298,8 @@ pub struct InvocationFacts {
 pub struct DbtCommandExecutionArtifacts {
     /// What the run resolved about itself, once it got far enough to know.
     pub invocation_facts: Option<InvocationFacts>,
+    /// The metadata flags the run used, once it knew its command.
+    pub metadata_flags: Option<MetadataFlags>,
     pub manifest: Option<DbtManifest>,
     pub run_results: Option<RunResultsArtifact>,
     pub catalog: Option<DbtCatalog>,

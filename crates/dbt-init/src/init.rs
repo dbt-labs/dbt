@@ -1,6 +1,3 @@
-// Allow disallowed methods for this module because RustEmbed generates calls to Path::canonicalize
-#![allow(clippy::disallowed_methods)]
-
 use crate::profile_setup::{ProfileAction, ProfileSetup};
 use dbt_common::pretty_string::{GREEN, YELLOW};
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
@@ -10,17 +7,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod assets {
-    #![allow(clippy::disallowed_methods)] // RustEmbed generates calls to std::path::Path::canonicalize
+    use std::io::{self, Read};
+    use std::path::PathBuf;
 
-    use rust_embed::{EmbeddedFile, RustEmbed};
-
-    #[derive(RustEmbed)]
-    #[folder = "assets/jaffle_shop/"]
-    struct JaffleShopProjectTemplate;
-
-    #[derive(RustEmbed)]
-    #[folder = "assets/moms_flower_shop/"]
-    struct MomsFlowerShopProjectTemplate;
+    // Zstd-compressed tar archives of `assets/<template>/`, packed by `build.rs`.
+    static JAFFLE_SHOP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/jaffle_shop.tar.zst"));
+    static MOMS_FLOWER_SHOP: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/moms_flower_shop.tar.zst"));
 
     pub enum ProjectTemplateAsset {
         JaffleShop,
@@ -36,22 +29,34 @@ pub mod assets {
             }
         }
 
-        pub fn get(&self, file_path: &str) -> Option<EmbeddedFile> {
-            match self {
-                ProjectTemplateAsset::JaffleShop => JaffleShopProjectTemplate::get(file_path),
-                ProjectTemplateAsset::MomsFlowerShop => {
-                    MomsFlowerShopProjectTemplate::get(file_path)
-                }
-            }
-        }
+        /// Unpack the template's files as `(path relative to the project root, contents)`.
+        pub(crate) fn files(&self) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+            let archive = match self {
+                ProjectTemplateAsset::JaffleShop => JAFFLE_SHOP,
+                ProjectTemplateAsset::MomsFlowerShop => MOMS_FLOWER_SHOP,
+            };
 
-        pub fn iter(&self) -> Box<dyn Iterator<Item = ::std::borrow::Cow<'static, str>>> {
-            match self {
-                ProjectTemplateAsset::JaffleShop => Box::new(JaffleShopProjectTemplate::iter()),
-                ProjectTemplateAsset::MomsFlowerShop => {
-                    Box::new(MomsFlowerShopProjectTemplate::iter())
-                }
+            // `build.rs` packs each archive as a single frame that records its
+            // unpacked size, so one buffer of that size holds the whole tar.
+            let size = zstd_safe::get_frame_content_size(archive)
+                .ok()
+                .flatten()
+                .and_then(|size| usize::try_from(size).ok())
+                .ok_or_else(|| io::Error::other("invalid zstd frame"))?;
+            let mut tar_bytes = vec![0; size];
+            let written = zstd_safe::decompress(tar_bytes.as_mut_slice(), archive)
+                .map_err(|code| io::Error::other(zstd_safe::get_error_name(code)))?;
+            tar_bytes.truncate(written);
+
+            let mut files = Vec::new();
+            for entry in tar::Archive::new(tar_bytes.as_slice()).entries()? {
+                let mut entry = entry?;
+                let path = entry.path()?.into_owned();
+                let mut data = Vec::with_capacity(entry.size() as usize);
+                entry.read_to_end(&mut data)?;
+                files.push((path, data));
             }
+            Ok(files)
         }
     }
 }
@@ -148,16 +153,15 @@ pub fn init_project(
     fs::create_dir_all(target_dir)?;
 
     // Extract all embedded files
-    for file_path in project_template.iter() {
-        let file_content = project_template.get(&file_path).ok_or_else(|| {
-            fs_err!(
-                ErrorCode::IoError,
-                "Failed to read embedded file: {}",
-                file_path
-            )
-        })?;
-
-        let target_file_path = target_dir.join(file_path.as_ref());
+    let files = project_template.files().map_err(|e| {
+        fs_err!(
+            ErrorCode::IoError,
+            "Failed to read embedded project template: {}",
+            e
+        )
+    })?;
+    for (file_path, data) in files {
+        let target_file_path = target_dir.join(file_path);
 
         // Create parent directories if they don't exist
         if let Some(parent) = target_file_path.parent() {
@@ -165,7 +169,7 @@ pub fn init_project(
         }
 
         // Replace template placeholders
-        let content = String::from_utf8_lossy(&file_content.data);
+        let content = String::from_utf8_lossy(&data);
         let content = content.replace(project_template.default_project_name(), project_name);
         let content = content.replace("__PROFILE_NAME__", profile_name);
 
@@ -475,7 +479,64 @@ fn next_available_dir_name(base: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::set_profile_in_project_yaml;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::assets::ProjectTemplateAsset;
+    use super::{init_project, set_profile_in_project_yaml};
+
+    /// Every file under `dir`, keyed by its path relative to `dir`.
+    fn read_tree(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn visit(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    let relative_path = path.strip_prefix(root).unwrap().to_path_buf();
+                    files.insert(relative_path, fs::read(&path).unwrap());
+                }
+            }
+        }
+
+        let mut files = BTreeMap::new();
+        visit(dir, dir, &mut files);
+        files
+    }
+
+    #[test]
+    fn init_project_writes_the_template_as_it_is_in_assets() {
+        for template in [
+            ProjectTemplateAsset::JaffleShop,
+            ProjectTemplateAsset::MomsFlowerShop,
+        ] {
+            let name = template.default_project_name();
+            let target_dir = tempfile::tempdir().unwrap();
+            // The default project name and the profile placeholder substitute to
+            // themselves, so the written project must match `assets/` byte for byte.
+            init_project(name, "__PROFILE_NAME__", target_dir.path(), &template).unwrap();
+
+            let assets = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets")
+                .join(name);
+            let expected = read_tree(&assets);
+            let written = read_tree(target_dir.path());
+            assert!(!expected.is_empty(), "no template files for {name}");
+            assert_eq!(
+                written.keys().collect::<Vec<_>>(),
+                expected.keys().collect::<Vec<_>>(),
+                "file list of {name}"
+            );
+            for (path, data) in &expected {
+                assert!(
+                    written[path] == *data,
+                    "contents of {name}/{}",
+                    path.display()
+                );
+            }
+        }
+    }
 
     #[test]
     fn replaces_existing_profile_without_duplicating() {
