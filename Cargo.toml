@@ -567,7 +567,7 @@ tempfile = "3.2.0"
 walkdir = "2.4.0"
 windows-sys = "0.61"
 xshell = "0.2.7"
-zip = "8.3.0"
+zip = "9.8.2"
 zstd = "0.13"
 
 # async + threading

@@ -160,10 +160,7 @@ fn wheel_sidecar_files(target: &str, bytes: &[u8]) -> Result<Vec<SidecarFile>> {
             dbt_dist::packages::LIBRARY_DIRECTORY,
             package.filename(target)
         );
-        let filename = wheel
-            .file_names()
-            .find(|name| name.ends_with(&suffix))
-            .map(str::to_owned)
+        let filename = find_entry_name(&wheel, |name| name.ends_with(&suffix))?
             .with_context(|| format!("release wheel missing required sidecar *{suffix}"))?;
         let mut entry = wheel.by_name(&filename)?;
         let mut bytes = Vec::new();
@@ -219,18 +216,30 @@ fn check_wheel_metadata_agrees(spec: &Spec, filename: &str, wheel: &[u8]) -> Res
     Ok(())
 }
 
+/// The first entry name in `archive` that matches `matches`. Fails on an entry
+/// name that zip cannot decode.
+fn find_entry_name<R: std::io::Read + std::io::Seek>(
+    archive: &zip::ZipArchive<R>,
+    matches: impl Fn(&str) -> bool,
+) -> Result<Option<String>> {
+    for name in archive.file_names() {
+        let name = name?;
+        if matches(&name) {
+            return Ok(Some(name.into_owned()));
+        }
+    }
+    Ok(None)
+}
+
 /// The `*.dist-info/METADATA` bytes from a wheel held in memory.
 fn wheel_metadata(wheel: &[u8]) -> Result<Option<Vec<u8>>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(wheel)).context("open wheel as zip")?;
-    let name = archive
-        .file_names()
-        .find(|n| {
-            n.ends_with("/METADATA")
-                && n.split('/')
-                    .next()
-                    .is_some_and(|d| d.ends_with(".dist-info"))
-        })
-        .map(str::to_string);
+    let name = find_entry_name(&archive, |n| {
+        n.ends_with("/METADATA")
+            && n.split('/')
+                .next()
+                .is_some_and(|d| d.ends_with(".dist-info"))
+    })?;
     let Some(name) = name else {
         return Ok(None);
     };
