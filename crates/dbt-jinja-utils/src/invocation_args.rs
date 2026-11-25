@@ -1,11 +1,14 @@
 use std::{collections::BTreeMap, env};
 
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use chrono_tz::Tz;
 use dbt_common::io_args::EvalArgs;
 use dbt_common::io_args::LogLevel;
 use dbt_common::io_args::ReplayMode;
 use dbt_common::warn_error_options::WarnErrorOptions;
 use itertools::Itertools;
 use minijinja::Value;
+use minijinja_contrib::modules::{py_datetime::datetime::PyDateTime, pytz::PytzTimezone};
 
 /// Invocation args is the dictionary of arguments passed into the jinja environment.
 // TODO: this is not complete, we will add more as we go.
@@ -76,6 +79,11 @@ pub struct InvocationArgs {
     /// Empty flag
     pub empty: bool,
 
+    /// Override end datetime when generating microbatches
+    pub event_time_end: Option<DateTime<Utc>>,
+    /// Override start datetime when generating microbatches
+    pub event_time_start: Option<DateTime<Utc>>,
+
     /// Replay mode (when running against a recording)
     pub replay: Option<ReplayMode>,
 
@@ -117,19 +125,44 @@ impl Default for InvocationArgs {
             store_failures: false,
             favor_state: false,
             empty: false,
+            event_time_end: None,
+            event_time_start: None,
             replay: None,
             use_v2_compatible_package_downloads: false,
         }
     }
 }
 
+/// Parse an `--event-time-*` value into a UTC datetime (naive values are assumed to be UTC).
+fn parse_event_time(value: &str) -> Option<DateTime<Utc>> {
+    let value = value.trim();
+    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(value, fmt) {
+            return Some(dt.and_utc());
+        }
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|dt| dt.and_utc())
+}
+
+/// Expose a datetime to Jinja as a Python-like aware datetime (supports `strftime`, timedelta math, ...).
+fn event_time_value(dt: DateTime<Utc>) -> Value {
+    Value::from_object(PyDateTime::new_aware(
+        dt.with_timezone(&Tz::UTC),
+        Some(PytzTimezone::new(Tz::UTC)),
+    ))
+}
+
 impl InvocationArgs {
     /// Create an InvocationArgs from an EvalArgs.
     pub fn from_eval_args(arg: &EvalArgs) -> Self {
         let log_level = arg.log_level.unwrap_or(LogLevel::Info);
-
         let log_level_file = arg.log_level_file.unwrap_or(log_level);
-
         let log_format = arg.log_format;
         let log_format_file = arg.log_format_file.unwrap_or(log_format);
 
@@ -138,13 +171,10 @@ impl InvocationArgs {
             vars: arg
                 .vars
                 .iter()
-                .map(|(k, v)| {
-                    let value = Value::from_serialize(v);
-                    (k.clone(), value)
-                })
+                .map(|(k, v)| (k.clone(), Value::from_serialize(v)))
                 .collect(),
-            select: arg.select.clone().map(|select| select.to_string()),
-            exclude: arg.exclude.clone().map(|exclude| exclude.to_string()),
+            select: arg.select.as_ref().map(ToString::to_string),
+            exclude: arg.exclude.as_ref().map(ToString::to_string),
             profiles_dir: arg
                 .profiles_dir
                 .clone()
@@ -194,6 +224,8 @@ impl InvocationArgs {
             store_failures: arg.store_failures,
             favor_state: arg.favor_state,
             empty: arg.empty,
+            event_time_end: arg.event_time_end.as_deref().and_then(parse_event_time),
+            event_time_start: arg.event_time_start.as_deref().and_then(parse_event_time),
             replay: arg.replay.clone(),
             use_v2_compatible_package_downloads: arg.io.use_v2_compatible_package_downloads,
         }
@@ -278,6 +310,12 @@ impl InvocationArgs {
         );
         dict.insert("FAVOR_STATE".to_string(), Value::from(self.favor_state));
         dict.insert("EMPTY".to_string(), Value::from(self.empty));
+        if let Some(value) = self.event_time_end {
+            dict.insert("EVENT_TIME_END".to_string(), event_time_value(value));
+        }
+        if let Some(value) = self.event_time_start {
+            dict.insert("EVENT_TIME_START".to_string(), event_time_value(value));
+        }
         dict.insert("REPLAY".to_string(), Value::from(self.replay.is_some()));
         dict.insert(
             "USE_V2_COMPATIBLE_PACKAGE_DOWNLOADS".to_string(),
@@ -343,5 +381,45 @@ mod tests {
             !replay2.is_true(),
             "REPLAY should be present and falsy, got: {replay2:?}"
         );
+    }
+
+    #[test]
+    fn to_dict_includes_event_time_flags_as_datetimes() {
+        let args = InvocationArgs::from_eval_args(&EvalArgs {
+            event_time_start: Some("2026-09-01".to_string()),
+            event_time_end: Some("2026-09-03 12:30:00".to_string()),
+            ..EvalArgs::default()
+        });
+        assert_eq!(
+            args.event_time_start,
+            Some("2026-09-01T00:00:00Z".parse().unwrap())
+        );
+        assert_eq!(
+            args.event_time_end,
+            Some("2026-09-03T12:30:00Z".parse().unwrap())
+        );
+
+        let dict = args.to_dict();
+        for key in ["EVENT_TIME_START", "event_time_start"] {
+            let value = dict.get(key).unwrap();
+            assert!(value.as_object().is_some(), "{key} should be a datetime object");
+        }
+        assert!(dict.contains_key("EVENT_TIME_END"));
+        assert!(dict.contains_key("event_time_end"));
+    }
+
+    #[test]
+    fn parse_event_time_rejects_garbage() {
+        assert!(parse_event_time("not-a-date").is_none());
+    }
+
+    #[test]
+    fn to_dict_omits_unset_event_time_flags() {
+        let dict = InvocationArgs::default().to_dict();
+
+        assert!(!dict.contains_key("EVENT_TIME_START"));
+        assert!(!dict.contains_key("EVENT_TIME_END"));
+        assert!(!dict.contains_key("event_time_start"));
+        assert!(!dict.contains_key("event_time_end"));
     }
 }
