@@ -6,6 +6,9 @@ use dbt_adapter_core::AdapterType;
 use dbt_jinja_utils::flags::Flags;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::schemas::manifest::{
+    BigqueryPartitionConfig, BigqueryPartitionConfigInner, Range, RangeConfig,
+};
 use minijinja::Value;
 
 use crate::macro_test_harness::{MacroTestHarness, default_mock_config};
@@ -296,4 +299,108 @@ fn load_csv_rows_forwards_seed_path_from_adapter() {
         load_call.args.get(3).and_then(Value::as_str),
         Some(SEED_PATH)
     );
+}
+
+// ---------------------------------------------------------------------------
+// bq_copy_partitions
+// ---------------------------------------------------------------------------
+/// The arguments of every `adapter.copy_table` call `bq_copy_partitions` makes for `partitions`.
+/// Relations are reduced to their identifier.
+fn copy_table_calls(concurrency: Option<u32>, partitions: &[i64]) -> Vec<Vec<Value>> {
+    let harness = build_harness();
+    harness.mock().on("copy_table", |_| Ok(Value::UNDEFINED));
+
+    let relation = |identifier| {
+        let relation = harness.relation(
+            "test-db",
+            "test_schema",
+            identifier,
+            Some(RelationType::Table),
+        );
+        RelationObject::new(relation).into_value()
+    };
+    let partition_by = BigqueryPartitionConfig {
+        field: "id".to_string(),
+        data_type: "int64".to_string(),
+        __inner__: BigqueryPartitionConfigInner::Range(RangeConfig {
+            range: Range {
+                start: 0,
+                end: 100,
+                interval: 10,
+            },
+        }),
+        copy_partitions: true,
+        copy_partitions_concurrency: concurrency,
+    };
+    let ctx = BTreeMap::from([
+        ("tmp_relation", relation("events__dbt_tmp")),
+        ("target_relation", relation("events")),
+        ("partition_by", Value::from_object(partition_by)),
+        ("partitions", Value::from(partitions.to_vec())),
+    ]);
+
+    harness
+        .render(
+            "{% do bq_copy_partitions(tmp_relation, target_relation, partitions, partition_by) %}",
+            ctx,
+        )
+        .expect("bq_copy_partitions should render");
+
+    let calls = harness.mock().observed_calls();
+    calls
+        .to("copy_table")
+        .map(|call| {
+            let mut args = call.args.clone();
+            for relation in &mut args[..2] {
+                *relation = relation.get_attr("identifier").unwrap();
+            }
+            args
+        })
+        .collect()
+}
+
+fn one_by_one(partitions: &[&str]) -> Vec<Vec<Value>> {
+    let copy = |partition: &&str| {
+        vec![
+            Value::from(format!("events__dbt_tmp${partition}")),
+            Value::from(format!("events${partition}")),
+            Value::from("table"),
+        ]
+    };
+    partitions.iter().map(copy).collect()
+}
+
+fn one_call(partitions: &[&str], concurrency: u32) -> Vec<Vec<Value>> {
+    vec![vec![
+        Value::from("events__dbt_tmp"),
+        Value::from("events"),
+        Value::from("table"),
+        Value::from_iter(partitions.iter().map(|partition| partition.to_string())),
+        Value::from(concurrency),
+    ]]
+}
+
+#[test]
+fn bq_copy_partitions_copies_16_at_a_time_by_default() {
+    assert_eq!(
+        copy_table_calls(None, &[0, 10, 20]),
+        one_call(&["0", "10", "20"], 16)
+    );
+    assert_eq!(
+        copy_table_calls(Some(4), &[0, 10, 20]),
+        one_call(&["0", "10", "20"], 4)
+    );
+}
+
+#[test]
+fn bq_copy_partitions_copies_one_by_one_when_asked_or_for_a_single_partition() {
+    for concurrency in [Some(0), Some(1)] {
+        assert_eq!(
+            copy_table_calls(concurrency, &[0, 10, 20]),
+            one_by_one(&["0", "10", "20"]),
+            "concurrency: {concurrency:?}"
+        );
+    }
+    assert_eq!(copy_table_calls(None, &[10]), one_by_one(&["10"]));
+    assert_eq!(copy_table_calls(None, &[]), one_by_one(&[]));
 }

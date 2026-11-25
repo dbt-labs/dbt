@@ -478,6 +478,41 @@ fn test_parse_mode_accepts_mistyped_args_list_relations_without_caching() {
 }
 
 #[dbt_runtime::worker_test]
+fn test_copy_table_dispatch_copies_partitions() {
+    use crate::relation::{Relation, RelationObject};
+
+    let adapter = make_mock_adapter(AdapterType::Bigquery);
+    let relation = |identifier: &str| {
+        let relation = Relation::new(
+            AdapterType::Bigquery,
+            "db".to_string(),
+            "schema".to_string(),
+            identifier.to_string(),
+        );
+        RelationObject::new(Arc::new(relation)).into_value()
+    };
+    let copy = |partition_ids: Value, concurrency: Value| {
+        let args = [
+            relation("events__dbt_tmp"),
+            relation("events"),
+            Value::from("table"),
+            partition_ids,
+            concurrency,
+        ];
+        dispatch_test(&adapter, "copy_table", &args)
+    };
+    let partition_ids = || Value::from(vec!["20250101", "20250102", "20250103"]);
+
+    // helpers are spawned on the pool, on the calling thread only, and not at all
+    copy(partition_ids(), Value::from(4)).unwrap();
+    copy(partition_ids(), Value::from(1)).unwrap();
+    copy(Value::from(Vec::<String>::new()), Value::from(16)).unwrap();
+
+    // a single id as a string must not be read as one partition per character
+    assert!(copy(Value::from("20250101"), Value::from(4)).is_err());
+}
+
+#[dbt_runtime::worker_test]
 fn test_get_relation_dispatch_spark_absent_database() {
     // Exercises the full `"get_relation"` arm of `call_method_impl` (arg parsing + per-adapter
     // database resolution + handoff to `get_relation`) for the absent-database (`none`) case,

@@ -1,0 +1,7 @@
+kind: Features
+body: Copy BigQuery insert_overwrite partitions 16 at a time by default, configurable with partition_by.copy_partitions_concurrency
+time: 2026-11-10T22:37:44.732786+11:00
+custom:
+    author: leohoare
+    issue: "17094"
+    project: dbt-core

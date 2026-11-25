@@ -195,6 +195,7 @@ fn partition_from_recorded(
         data_type,
         __inner__: inner,
         copy_partitions,
+        copy_partitions_concurrency: None,
     }))
 }
 
@@ -276,6 +277,7 @@ mod tests {
                 time_ingestion_partitioning: false,
             }),
             copy_partitions: false,
+            copy_partitions_concurrency: None,
         };
         let desired = new_loader()
             .from_local_config(&make_local_config(TestTableConfig {
