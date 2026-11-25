@@ -1787,6 +1787,9 @@ class SemanticModel(GraphNode, SemanticModelResource):
     def same_dimensions(self, old: "SemanticModel") -> bool:
         return self.dimensions == old.dimensions
 
+    def same_hierarchies(self, old: "SemanticModel") -> bool:
+        return self.hierarchies == old.hierarchies
+
     def same_measures(self, old: "SemanticModel") -> bool:
         return self.measures == old.measures
 
@@ -1811,6 +1814,7 @@ class SemanticModel(GraphNode, SemanticModelResource):
             and self.same_defaults(old)
             and self.same_entities(old)
             and self.same_dimensions(old)
+            and self.same_hierarchies(old)
             and self.same_measures(old)
             and self.same_config(old)
             and self.same_primary_entity(old)

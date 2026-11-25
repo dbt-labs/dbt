@@ -1,4 +1,4 @@
-from typing import List, Optional, Set
+from typing import List, Optional, Sequence, Set
 
 from metricflow_semantic_interfaces.implementations.metric import PydanticMetric
 from metricflow_semantic_interfaces.implementations.node_relation import (
@@ -25,11 +25,15 @@ from metricflow_semantic_interfaces.implementations.time_spine_table_configurati
     PydanticTimeSpineTableConfiguration as LegacyTimeSpine,
 )
 from metricflow_semantic_interfaces.type_enums import TimeGranularity
+from metricflow_semantic_interfaces.validations.hierarchies import (
+    SemanticModelHierarchiesRule,
+)
 from metricflow_semantic_interfaces.validations.semantic_manifest_validator import (
     SemanticManifestValidator,
 )
 from metricflow_semantic_interfaces.validations.validator_helpers import (
     FileContext,
+    SemanticManifestValidationResults,
     ValidationError,
     ValidationIssueContext,
 )
@@ -70,8 +74,11 @@ class SemanticManifest:
         #    )
         #    return False
 
-        if not self.manifest.metrics or not self.manifest.semantic_models:
+        if not self.manifest.semantic_models:
             return True
+
+        if not self.manifest.metrics:
+            return self._validate_hierarchies()
 
         semantic_manifest = self._get_pydantic_semantic_manifest()
         validator = SemanticManifestValidator[PydanticSemanticManifest]()
@@ -121,6 +128,27 @@ class SemanticManifest:
                 "mf-timespine-without-yaml-configuration",
             )
 
+        return self._report_validation_results(validation_results, validation_result_errors)
+
+    def _validate_hierarchies(self) -> bool:
+        validator = SemanticManifestValidator[PydanticSemanticManifest](
+            [SemanticModelHierarchiesRule[PydanticSemanticManifest]()]
+        )
+        semantic_manifest = PydanticSemanticManifest(
+            metrics=[],
+            semantic_models=self._get_pydantic_semantic_models(),
+            project_configuration=PydanticProjectConfiguration(
+                time_spine_table_configurations=[], time_spines=[]
+            ),
+        )
+        validation_results = validator.validate_semantic_manifest(semantic_manifest)
+        return self._report_validation_results(validation_results, validation_results.errors)
+
+    def _report_validation_results(
+        self,
+        validation_results: SemanticManifestValidationResults,
+        validation_result_errors: Sequence[ValidationError],
+    ) -> bool:
         for warning in validation_results.warnings:
             fire_event(SemanticValidationFailure(msg=warning.message))
 
@@ -173,6 +201,12 @@ class SemanticManifest:
             )
         write_file(file_path, result.output.to_osi_json())
         fire_event(ArtifactWritten(artifact_type="OsiDocument", artifact_path=file_path))
+
+    def _get_pydantic_semantic_models(self) -> List[PydanticSemanticModel]:
+        return [
+            PydanticSemanticModel.parse_obj(semantic_model.to_dict())
+            for semantic_model in self.manifest.semantic_models.values()
+        ]
 
     def write_json_to_file(self, file_path: str):
         semantic_manifest = self._get_pydantic_semantic_manifest()
@@ -233,13 +267,10 @@ class SemanticManifest:
             time_spine_table_configurations=[], time_spines=pydantic_time_spines
         )
         pydantic_semantic_manifest = PydanticSemanticManifest(
-            metrics=[], semantic_models=[], project_configuration=project_config
+            metrics=[],
+            semantic_models=self._get_pydantic_semantic_models(),
+            project_configuration=project_config,
         )
-
-        for semantic_model in self.manifest.semantic_models.values():
-            pydantic_semantic_manifest.semantic_models.append(
-                PydanticSemanticModel.parse_obj(semantic_model.to_dict())
-            )
 
         for metric in self.manifest.metrics.values():
             pydantic_semantic_manifest.metrics.append(PydanticMetric.parse_obj(metric.to_dict()))

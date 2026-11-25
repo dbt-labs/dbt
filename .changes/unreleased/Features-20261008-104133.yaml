@@ -1,0 +1,6 @@
+kind: Features
+body: Add dimension hierarchies to semantic models
+time: 2026-10-08T10:41:33.142571+09:00
+custom:
+    Author: dtaniwaki
+    Issue: "16656"
