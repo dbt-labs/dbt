@@ -25,6 +25,12 @@ pub const AUTH_CLIENT_TIMEOUT: &str = "adbc.snowflake.sql.client_option.auth_cli
 /// Retrying also stops when [REQUEST_TIMEOUT] (non-login requests) / [LOGIN_TIMEOUT] runs out
 pub const MAX_RETRY_COUNT: &str = "adbc.snowflake.sql.client_option.max_retry_count";
 pub const USE_HIGH_PRECISION: &str = "adbc.snowflake.sql.client_option.use_high_precision";
+/// When "true", TIME and TIMESTAMP_* columns come back in the coarsest Arrow
+/// time unit that holds every fractional digit of their scale, e.g.
+/// milliseconds for TIMESTAMP_NTZ(1). The default ("false") uses the unit of
+/// scale / 3 digits and drops the digits beyond it, e.g. seconds for
+/// TIMESTAMP_NTZ(1).
+pub const LOSSLESS_TIME_UNIT: &str = "adbc.snowflake.sql.client_option.lossless_time_unit";
 pub const APPLICATION_NAME: &str = "adbc.snowflake.sql.client_option.app_name";
 pub const SSL_SKIP_VERIFY: &str = "adbc.snowflake.sql.client_option.tls_skip_verify";
 pub const OCSP_FAIL_OPEN_MODE: &str = "adbc.snowflake.sql.client_option.ocsp_fail_open_mode";

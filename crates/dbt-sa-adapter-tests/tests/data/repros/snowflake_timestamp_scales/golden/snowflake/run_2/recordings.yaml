@@ -1,0 +1,70 @@
+1512cf98:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(4) as t,
+    to_varchar('10:49:35.861123456'::time(4), 'HH24:MI:SS.FF9') as t_varchar
+3ce31834:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(1) as t,
+    to_varchar('10:49:35.861123456'::time(1), 'HH24:MI:SS.FF9') as t_varchar
+8449fe72:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(8) as t,
+    to_varchar('10:49:35.861123456'::time(8), 'HH24:MI:SS.FF9') as t_varchar
+a6fc50b3:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(7) as t,
+    to_varchar('10:49:35.861123456'::time(7), 'HH24:MI:SS.FF9') as t_varchar
+b075de71:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(3) as t,
+    to_varchar('10:49:35.861123456'::time(3), 'HH24:MI:SS.FF9') as t_varchar
+ba5916d4:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(6) as t,
+    to_varchar('10:49:35.861123456'::time(6), 'HH24:MI:SS.FF9') as t_varchar
+c06ad709:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(0) as t,
+    to_varchar('10:49:35.861123456'::time(0), 'HH24:MI:SS.FF9') as t_varchar
+d519095b:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(5) as t,
+    to_varchar('10:49:35.861123456'::time(5), 'HH24:MI:SS.FF9') as t_varchar
+f4c4781d:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(2) as t,
+    to_varchar('10:49:35.861123456'::time(2), 'HH24:MI:SS.FF9') as t_varchar
+fea6d6b8:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '10:49:35.861123456'::time(9) as t,
+    to_varchar('10:49:35.861123456'::time(9), 'HH24:MI:SS.FF9') as t_varchar
