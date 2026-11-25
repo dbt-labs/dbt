@@ -6,6 +6,7 @@ import pytest
 
 from dbt.exceptions import DbtProjectError
 from dbt.tests.util import check_relations_equal, run_dbt, write_config_file
+from tests.functional.utils import installed_package_dirs
 
 models__disabled_one = """
 {{config(enabled=False)}}
@@ -249,7 +250,7 @@ sha1_hash: b9c8042f29446c55a33f9f211737f445a640c7a1
         with open("package-lock.yml") as fp:
             contents = fp.read()
         assert contents == expected
-        assert len(os.listdir("dbt_packages")) == 2
+        assert len(installed_package_dirs()) == 2
 
 
 class TestRekeyedDependencyWithSubduplicates(object):
@@ -272,7 +273,7 @@ class TestRekeyedDependencyWithSubduplicates(object):
 
     def test_simple_dependency_deps(self, project):
         run_dbt(["deps"])
-        assert len(os.listdir("dbt_packages")) == 2
+        assert len(installed_package_dirs()) == 2
 
 
 class TestTarballNestedDependencies(object):
@@ -291,7 +292,7 @@ class TestTarballNestedDependencies(object):
 
     def test_simple_dependency_deps(self, project):
         run_dbt(["deps"])
-        assert set(os.listdir("dbt_packages")) == set(["dbt_expectations", "dbt_date"])
+        assert set(installed_package_dirs()) == set(["dbt_expectations", "dbt_date"])
 
 
 class DependencyBranchBase(object):
@@ -408,7 +409,7 @@ class TestSimpleDependcyTarball(object):
 
     def test_deps_simple_tarball_doesnt_error_out(self, project):
         run_dbt(["deps"])
-        assert len(os.listdir("dbt_packages")) == 1
+        assert len(installed_package_dirs()) == 1
 
 
 class TestBadTarballDependency(object):

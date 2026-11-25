@@ -4,6 +4,7 @@ import os
 import pytest
 
 from dbt.tests.util import run_dbt_and_capture
+from tests.functional.utils import installed_package_dirs
 
 
 class TestSimpleDependencyWithDuplicates(object):
@@ -45,7 +46,7 @@ class TestSimpleDependencyWithDuplicates(object):
         _, stdout = run_dbt_and_capture(["deps"])
 
         # assert a package being downloaded
-        assert len(os.listdir("dbt_packages")) == 1
+        assert len(installed_package_dirs()) == 1
 
         # package-lock.yml contain private package and deduped
         with open("package-lock.yml") as fp:
