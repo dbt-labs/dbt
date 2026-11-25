@@ -1,0 +1,7 @@
+kind: Features
+body: 'Log the effective thread count at startup as "Concurrency: N threads (target=''X'')", matching dbt 1.x, so run logs record which value was actually used (flag, profile, or adapter default)'
+time: 2026-10-10T04:54:52.850703601Z
+custom:
+    author: Shahzeb-DataEngineer
+    issue: "16682"
+    project: dbt-core
