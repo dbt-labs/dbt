@@ -37,7 +37,7 @@ use dbt_adbc::QueryCtx;
 use dbt_common::adapter::dialect_of;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::RunCacheMode;
-use dbt_common::sources_extractor::SourcesExtractor;
+use dbt_common::sources_extractor::{ExtractedUpstreams, SourcesExtractor};
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::dbt_emit::{
     emit_debug_log_message, emit_trace_log_message, emit_warn_log_message,
@@ -5154,7 +5154,7 @@ async fn query_dependencies_for_parse_error(
     let ParsedSqlRelations {
         relations,
         unsupported_references,
-    } = if upstreams.is_empty() {
+    } = if upstreams.tables.is_empty() && upstreams.table_functions.is_empty() {
         ParsedSqlRelations::default()
     } else {
         let Some(adapter) = ctx.env.get_adapter_ref() else {
@@ -5244,8 +5244,8 @@ fn node_uses_custom_materialization(
         .is_some_and(|model| model_is_custom_materialization(model, materialization_resolver))
 }
 
-/// Relations parsed from SQL, plus table references dbt State cannot check
-/// (such as Snowflake stages).
+/// Relations parsed from SQL, plus references dbt State cannot check (such as
+/// Snowflake stages and table-valued functions).
 #[derive(Default)]
 struct ParsedSqlRelations {
     relations: BTreeMap<String, Arc<dyn BaseRelation>>,
@@ -5267,7 +5267,7 @@ fn unsupported_references_dependencies(
     emit_warn_log_message(
         ErrorCode::StateServiceWarn,
         format!(
-            "Model {unique_id} reads from {refs}, table reference(s) that dbt State does not currently support, so they cannot be checked for updates. To let dbt State check for updates, read them through a view declared as a dbt source with loaded_at_field or loaded_at_query. See https://docs.getdbt.com/reference/resource-configs/freshness?version=2#using-loaded_at_query"
+            "Model {unique_id} reads from {refs}, stage(s) or table-valued function(s) that dbt State does not currently support, so they cannot be checked for updates. To let dbt State check for updates, read them through a view declared as a dbt source with loaded_at_field or loaded_at_query. See https://docs.getdbt.com/reference/resource-configs/freshness?version=2#using-loaded_at_query"
         ),
     );
     record_submit_skipped(node, "unsupported references");
@@ -5313,7 +5313,7 @@ fn parse_sql_relations_for_adapter(
         default_schema,
         quoted_name_ignore_case,
     ) {
-        Ok(upstreams) => upstreams.tables,
+        Ok(upstreams) => upstreams,
         Err(statement_err) => sources_extractor
             .extract_standalone_expression_upstreams(
                 adapter_type,
@@ -5327,8 +5327,7 @@ fn parse_sql_relations_for_adapter(
                     ErrorCode::Generic,
                     "failed to extract upstreams from SQL as statement or expression: statement parse failed: {statement_err}; expression parse failed: {expression_err}"
                 )
-            })?
-            .tables,
+            })?,
     };
 
     relations_from_upstreams(adapter_type, upstreams, type_ops)
@@ -5341,7 +5340,7 @@ fn extract_standalone_expression_upstreams_for_run_cache(
     default_schema: &str,
     quoted_name_ignore_case: bool,
     sources_extractor: &dyn SourcesExtractor,
-) -> FsResult<Vec<NamedReference<FullyQualifiedName>>> {
+) -> FsResult<ExtractedUpstreams> {
     sources_extractor
         .extract_standalone_expression_upstreams(
             adapter_type,
@@ -5356,17 +5355,17 @@ fn extract_standalone_expression_upstreams_for_run_cache(
                 "failed to extract upstreams from SQL: {e}"
             )
         })
-        .map(|extracted| extracted.tables)
 }
 
 fn relations_from_upstreams(
     adapter_type: AdapterType,
-    upstreams: Vec<NamedReference<FullyQualifiedName>>,
+    upstreams: ExtractedUpstreams,
     type_ops: &dyn TypeOps,
 ) -> FsResult<ParsedSqlRelations> {
     let mut relations = BTreeMap::new();
-    let mut unsupported_references = BTreeSet::new();
-    for upstream in upstreams.into_iter() {
+    // Table-valued functions read data State cannot see, like stages.
+    let mut unsupported_references = upstreams.table_functions;
+    for upstream in upstreams.tables.into_iter() {
         if dbt_state::view_traversal::is_snowflake_stage_reference(adapter_type, &upstream) {
             unsupported_references.insert(upstream.table().name().to_string());
             continue;
@@ -5733,7 +5732,7 @@ pub(crate) mod tests {
     use dbt_common::cancellation::never_cancels;
     use dbt_common::collections::SccHashMap;
     use dbt_common::io_args::RunCacheMode;
-    use dbt_common::sources_extractor::{ExtractedUpstreams, SourcesExtractor};
+    use dbt_common::sources_extractor::SourcesExtractor;
     use dbt_common::{CompiledSpans, MacroSpan};
     use dbt_dag::schedule::Schedule;
     use dbt_frontend_common::FullyQualifiedName;
@@ -9448,6 +9447,188 @@ pub(crate) mod tests {
         )
         .await
         .expect("stage references should fail open");
+
+        assert!(!deps.metadata_complete);
+    }
+
+    /// Returns the given tables and table-valued functions.
+    struct TableFunctionSourcesExtractor {
+        tables: Vec<FullyQualifiedName>,
+        table_functions: Vec<&'static str>,
+    }
+
+    impl TableFunctionSourcesExtractor {
+        fn upstreams(&self) -> ExtractedUpstreams {
+            ExtractedUpstreams {
+                tables: self.tables.iter().cloned().map(Into::into).collect(),
+                table_functions: self.table_functions.iter().map(|f| f.to_string()).collect(),
+            }
+        }
+    }
+
+    impl SourcesExtractor for TableFunctionSourcesExtractor {
+        fn extract_upstreams(
+            &self,
+            _adapter_type: AdapterType,
+            _sql: &str,
+            _default_catalog: &str,
+            _default_schema: &str,
+            _quoted_name_ignore_case: bool,
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(self.upstreams())
+        }
+
+        fn extract_standalone_expression_upstreams(
+            &self,
+            _adapter_type: AdapterType,
+            _sql: &str,
+            _default_catalog: &str,
+            _default_schema: &str,
+            _quoted_name_ignore_case: bool,
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(self.upstreams())
+        }
+    }
+
+    #[test]
+    fn parse_sql_relations_for_adapter_reports_table_functions() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Databricks);
+        let parsed = parse_sql_relations_for_adapter(
+            AdapterType::Databricks,
+            "select * from t, table_changes('c.s.t', 1)",
+            "db",
+            "s",
+            false,
+            &TableFunctionSourcesExtractor {
+                tables: vec![FullyQualifiedName::new("db", "s", "t")],
+                table_functions: vec!["table_changes"],
+            },
+            &type_ops,
+        )
+        .expect("table functions should not fail parsing");
+
+        assert_eq!(parsed.relations.len(), 1);
+        assert_eq!(
+            parsed.unsupported_references,
+            BTreeSet::from(["table_changes".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_sql_relations_for_adapter_without_table_functions_has_no_unsupported_references() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Databricks);
+        let parsed = parse_sql_relations_for_adapter(
+            AdapterType::Databricks,
+            "select * from t, range(10)",
+            "db",
+            "s",
+            false,
+            &TableFunctionSourcesExtractor {
+                tables: vec![FullyQualifiedName::new("db", "s", "t")],
+                table_functions: vec![],
+            },
+            &type_ops,
+        )
+        .expect("parse");
+
+        assert_eq!(parsed.relations.len(), 1);
+        assert!(parsed.unsupported_references.is_empty());
+    }
+
+    #[dbt_runtime::test]
+    async fn model_reading_table_function_directly_has_incomplete_metadata() {
+        let ctx = test_task_runner_ctx_with_mode_and_sources_extractor(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(TableFunctionSourcesExtractor {
+                tables: vec![],
+                table_functions: vec!["table_changes"],
+            }),
+        );
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Snowflake)
+            .expect("mock adapter");
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+        let model = make_model(
+            "model.test.reads_tvf",
+            "db",
+            "s",
+            "reads_tvf",
+            DbtMaterialization::Table,
+        );
+
+        let deps = collect_query_dependencies(&ctx, model.as_ref(), "select 1", false)
+            .await
+            .expect("table functions should fail open");
+
+        assert!(!deps.metadata_complete);
+    }
+
+    #[dbt_runtime::test]
+    async fn model_reading_table_and_table_function_has_incomplete_metadata() {
+        let ctx = test_task_runner_ctx_with_mode_and_sources_extractor(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(TableFunctionSourcesExtractor {
+                tables: vec![FullyQualifiedName::new("db", "s", "t")],
+                table_functions: vec!["table_changes"],
+            }),
+        );
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Snowflake)
+            .expect("mock adapter");
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+        let model = make_model(
+            "model.test.reads_table_and_tvf",
+            "db",
+            "s",
+            "reads_table_and_tvf",
+            DbtMaterialization::Table,
+        );
+
+        let deps = collect_query_dependencies(&ctx, model.as_ref(), "select 1", false)
+            .await
+            .expect("table functions should fail open");
+
+        assert!(!deps.metadata_complete);
+    }
+
+    #[dbt_runtime::test]
+    async fn custom_materialization_reading_table_function_has_incomplete_metadata() {
+        let ctx = test_task_runner_ctx_with_mode_and_sources_extractor(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(TableFunctionSourcesExtractor {
+                tables: vec![],
+                table_functions: vec!["table_changes"],
+            }),
+        );
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Snowflake)
+            .expect("mock adapter");
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+        let model = make_model(
+            "model.test.custom_reads_tvf",
+            "db",
+            "s",
+            "custom_reads_tvf",
+            DbtMaterialization::Unknown("custom_table".to_string()),
+        );
+
+        let deps = query_dependencies_for_parse_error(
+            &ctx,
+            model.as_ref(),
+            "select 1",
+            synthetic_extraction_error(),
+        )
+        .await
+        .expect("table functions should fail open");
 
         assert!(!deps.metadata_complete);
     }
