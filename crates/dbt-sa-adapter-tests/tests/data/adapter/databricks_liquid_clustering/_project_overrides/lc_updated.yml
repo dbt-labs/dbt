@@ -3,6 +3,7 @@ models:
   - name: lc_table
     config: &user_cluster
       liquid_clustered_by: [user_id]
+      skip_optimize: false
     columns: &columns
       - name: user_id
         data_type: string

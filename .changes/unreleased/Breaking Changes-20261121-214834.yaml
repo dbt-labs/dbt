@@ -1,0 +1,7 @@
+kind: Breaking Changes
+body: 'Databricks: skip post-materialization OPTIMIZE by default on managed Unity Catalog tables with liquid_clustered_by when Predictive Optimization is enabled; set skip_optimize: false to opt back into inline OPTIMIZE (including for auto_liquid_cluster).'
+time: 2026-11-21T21:48:34.400542+05:30
+custom:
+    author: sd-db
+    issue: "17267"
+    project: dbt-core

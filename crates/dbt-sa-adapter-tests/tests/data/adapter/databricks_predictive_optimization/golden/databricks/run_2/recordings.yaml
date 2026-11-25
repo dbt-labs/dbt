@@ -1,0 +1,4 @@
+6c3b868d:
+- sequence: 0
+  type: execute
+  sql: alter schema `e2e`.`adapters_databricks_predictive_optimization` disable predictive optimization
