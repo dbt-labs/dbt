@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[Athena] `column.quoted_hive` renders the backtick-quoted name the dbt-athena Hive DDL macros use (`on_schema_change` column sync, seed tables), and relation cache keys fold the case of quoted identifiers, since Athena stores every identifier lowercased; a mixed-case model no longer fails its second build with TABLE_ALREADY_EXISTS'
+time: 2026-09-25T18:00:00.000000+02:00
+custom:
+    author: aoelvp94 fpiped
+    issue: "16252"
+    project: dbt-core
