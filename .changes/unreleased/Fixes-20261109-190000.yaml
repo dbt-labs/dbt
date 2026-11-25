@@ -1,0 +1,8 @@
+kind: Fixes
+body: Stop selecting unchanged models with inline pre_hook or post_hook configs in state:modified
+  against a manifest from an older dbt version that stored them as pre-hook or post-hook
+  (dbt-labs/dbt-adapters#2179)
+time: 2026-11-09T19:00:00.000000+01:00
+custom:
+    Author: Sam-Razavi
+    Issue: ""
