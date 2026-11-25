@@ -645,7 +645,7 @@ class PartialParsing:
                         patch = self.get_schema_element(patch_list, name)
                         if patch:
                             if key in ["models", "seeds", "snapshots"]:
-                                self.delete_schema_mssa_links(schema_file, key, patch)
+                                self._delete_schema_mssa_entry(schema_file, key, patch)
                                 self.merge_patch(schema_file, key, patch)
                                 if unique_id in schema_file.node_patches:
                                     schema_file.node_patches.remove(unique_id)
