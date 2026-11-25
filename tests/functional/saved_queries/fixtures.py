@@ -124,6 +124,29 @@ saved_queries:
         - name: my_export2
 """
 
+saved_query_with_export_database_configs_yml = """
+saved_queries:
+  - name: test_saved_query
+    description: "{{ doc('saved_query_description') }}"
+    label: Test Saved Query
+    config:
+      export_as: table
+      database: my_default_export_database
+    query_params:
+        metrics:
+            - simple_metric
+        group_by:
+            - "Dimension('id__ds')"
+        where:
+            - "{{ TimeDimension('id__ds', 'DAY') }} <= now()"
+            - "{{ TimeDimension('id__ds', 'DAY') }} >= '2023-01-01'"
+    exports:
+        - name: my_export
+          config:
+            database: my_custom_export_database
+        - name: my_export2
+"""
+
 saved_query_without_export_configs_defined_yml = """
 saved_queries:
   - name: test_saved_query

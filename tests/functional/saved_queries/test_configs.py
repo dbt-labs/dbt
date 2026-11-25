@@ -1,10 +1,14 @@
+from unittest import mock
+
 import pytest
 from metricflow_semantic_interfaces.type_enums.export_destination_type import (
     ExportDestinationType,
 )
 
 from dbt.contracts.graph.manifest import Manifest
-from dbt.tests.util import update_config_file
+from dbt.events.types import CustomKeyInConfigDeprecation
+from dbt.tests.util import run_dbt, update_config_file
+from dbt_common.events.event_catcher import EventCatcher
 from tests.functional.assertions.test_runner import dbtTestRunner
 from tests.functional.configs.fixtures import BaseConfigProject
 from tests.functional.saved_queries.fixtures import (
@@ -13,6 +17,7 @@ from tests.functional.saved_queries.fixtures import (
     saved_query_description,
     saved_query_with_cache_configs_defined_yml,
     saved_query_with_export_configs_defined_at_saved_query_level_yml,
+    saved_query_with_export_database_configs_yml,
     saved_query_with_extra_config_attributes_yml,
     saved_query_with_tags_defined_yml,
     saved_query_without_export_configs_defined_yml,
@@ -247,6 +252,82 @@ class TestInheritingExportConfigsFromProject(BaseConfigProject):
         assert len(result.result.saved_queries) == 1
         saved_query = result.result.saved_queries["saved_query.test.test_saved_query"]
         assert saved_query.config.export_as == ExportDestinationType.TABLE
+
+
+class TestInheritingExportDatabaseFromSavedQueryConfig(BaseConfigProject):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "saved_queries.yml": saved_query_with_export_database_configs_yml,
+            "schema.yml": schema_yml,
+            "fct_revenue.sql": fct_revenue_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+            "docs.md": saved_query_description,
+        }
+
+    @mock.patch("dbt.jsonschemas.jsonschemas._JSONSCHEMA_SUPPORTED_ADAPTERS", {"postgres"})
+    def test_export_database_inherits_from_saved_query(self, project):
+        event_catcher = EventCatcher(CustomKeyInConfigDeprecation)
+        manifest = run_dbt(
+            ["parse", "--no-partial-parse", "--show-all-deprecations"],
+            callbacks=[event_catcher.catch],
+        )
+        # `database` is a supported config, not a custom key
+        assert event_catcher.caught_events == []
+
+        saved_query = manifest.saved_queries["saved_query.test.test_saved_query"]
+
+        # the export's own `database` takes priority
+        export1 = next(export for export in saved_query.exports if export.name == "my_export")
+        assert export1.config.database == "my_custom_export_database"
+
+        # an export without `database` inherits it from the saved query
+        export2 = next(export for export in saved_query.exports if export.name == "my_export2")
+        assert export2.config.database == "my_default_export_database"
+
+        assert saved_query.config.database == "my_default_export_database"
+
+
+class TestInheritingExportDatabaseFromProject(BaseConfigProject):
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "saved-queries": {
+                "test": {
+                    "+export_as": ExportDestinationType.TABLE.value,
+                    "+schema": "my_project_export_schema",
+                    "+database": "my_project_export_database",
+                },
+            },
+        }
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "saved_queries.yml": saved_query_without_export_configs_defined_yml,
+            "schema.yml": schema_yml,
+            "fct_revenue.sql": fct_revenue_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+            "docs.md": saved_query_description,
+        }
+
+    @mock.patch("dbt.jsonschemas.jsonschemas._JSONSCHEMA_SUPPORTED_ADAPTERS", {"postgres"})
+    def test_export_database_inherits_from_project(self, project):
+        event_catcher = EventCatcher(CustomKeyInConfigDeprecation)
+        manifest = run_dbt(
+            ["parse", "--no-partial-parse", "--show-all-deprecations"],
+            callbacks=[event_catcher.catch],
+        )
+        # `+database` is a supported config, not a custom key
+        assert event_catcher.caught_events == []
+
+        saved_query = manifest.saved_queries["saved_query.test.test_saved_query"]
+
+        export = saved_query.exports[0]
+        assert export.config.schema_name == "my_project_export_schema"
+        assert export.config.database == "my_project_export_database"
+
+        assert saved_query.config.database == "my_project_export_database"
 
 
 # cache can be specified just in a SavedQuery config

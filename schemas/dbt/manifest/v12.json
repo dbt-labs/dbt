@@ -28805,6 +28805,17 @@
                           ],
                           "default": null
                         },
+                        "database": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null
+                        },
                         "cache": {
                           "type": "object",
                           "title": "SavedQueryCache",
@@ -30454,6 +30465,17 @@
                 "default": null
               },
               "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "database": {
                 "anyOf": [
                   {
                     "type": "string"

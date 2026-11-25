@@ -1,0 +1,7 @@
+kind: Fixes
+body: Propagate `database` set on a saved query, or under `saved-queries:` in `dbt_project.yml`,
+  to the saved query's exports
+time: 2026-11-25T18:00:00.000000+05:30
+custom:
+    Author: itsnamangoyal
+    Issue: "16387"
