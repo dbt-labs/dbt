@@ -965,6 +965,23 @@ class PartialParsing:
         schema_file.delete_from_unrendered_configs(key, patch["name"])
         self.add_to_pp_files(schema_file)
 
+    def _unique_id_has_name(self, unique_id: str, project_name: str, name: str) -> bool:
+        # A resource name may contain dots ("a.b.my_model"), so it is not always
+        # unique_id.split(".")[2]. Compare against the saved node's name when the node
+        # is still in the saved manifest.
+        if unique_id in self.saved_manifest.nodes:
+            return self.saved_manifest.nodes[unique_id].name == name
+        if unique_id in self.saved_manifest.disabled:
+            return self.saved_manifest.disabled[unique_id][0].name == name
+        # The node was already removed during this partial parse, so only the id is left.
+        # Names without dots keep the previous match, which also covers ".v<version>" ids.
+        # A dotted name must match the whole unique_id: from the id alone a version
+        # suffix cannot be told apart from a longer dotted name.
+        if "." not in name:
+            return unique_id.split(".")[2] == name
+        resource_type = unique_id.split(".", 1)[0]
+        return unique_id == f"{resource_type}.{project_name}.{name}"
+
     # For model, seed, snapshot, analysis schema dictionary keys,
     # delete the patches and tests from the patch
     def delete_schema_mssa_links(self, schema_file, dict_key, elem) -> None:
@@ -974,9 +991,7 @@ class PartialParsing:
         for unique_id in schema_file.node_patches:
             if not unique_id.startswith(prefix):
                 continue
-            parts = unique_id.split(".")
-            elem_name = parts[2]
-            if elem_name == elem["name"]:
+            if self._unique_id_has_name(unique_id, schema_file.project_name, elem["name"]):
                 elem_unique_ids.append(unique_id)
         self._delete_schema_mssa_links(schema_file, dict_key, elem, elem_unique_ids)
 
@@ -1117,9 +1132,7 @@ class PartialParsing:
         for unique_id in schema_file.node_patches:
             if not unique_id.startswith("test"):
                 continue
-            parts = unique_id.split(".")
-            elem_name = parts[2]
-            if elem_name == data_test["name"]:
+            if self._unique_id_has_name(unique_id, schema_file.project_name, data_test["name"]):
                 data_test_unique_id = unique_id
                 break
         if data_test_unique_id and data_test_unique_id in self.saved_manifest.nodes:

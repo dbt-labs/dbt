@@ -342,6 +342,96 @@ class TestFileDiff:
         }
 
 
+def test_delete_schema_mssa_links_matches_model_name_with_dots(partial_parsing):
+    # A resource name may contain dots, so its name is not unique_id.split(".")[2].
+    # Only the model whose whole name matches is removed.
+    schema_file_id = "my_test://" + normalize("models/schema.yml")
+    schema_file = partial_parsing.saved_manifest.files[schema_file_id]
+    dotted_model = make_model(PROJECT_NAME, "a.b.my_model", "select 1 as id", path="my_model.sql")
+    longer_model = make_model(
+        PROJECT_NAME, "a.b.my_model_other", "select 1 as id", path="my_model_untouched.sql"
+    )
+    for model in (dotted_model, longer_model):
+        partial_parsing.saved_manifest.nodes[model.unique_id] = model
+        schema_file.node_patches.append(model.unique_id)
+
+    partial_parsing.delete_schema_mssa_links(schema_file, "models", {"name": "a.b.my_model"})
+
+    assert dotted_model.unique_id not in partial_parsing.saved_manifest.nodes
+    assert dotted_model.unique_id not in schema_file.node_patches
+    assert longer_model.unique_id in partial_parsing.saved_manifest.nodes
+    assert longer_model.unique_id in schema_file.node_patches
+
+
+def test_delete_schema_mssa_links_matches_versions_of_model_name_with_dots(partial_parsing):
+    schema_file_id = "my_test://" + normalize("models/schema.yml")
+    schema_file = partial_parsing.saved_manifest.files[schema_file_id]
+    versions = [
+        make_model(PROJECT_NAME, "a.b.my_model", "select 1 as id", path="my_model.sql", version=v)
+        for v in (1, 2)
+    ]
+    for model in versions:
+        partial_parsing.saved_manifest.nodes[model.unique_id] = model
+        schema_file.node_patches.append(model.unique_id)
+
+    partial_parsing.delete_schema_mssa_links(
+        schema_file, "models", {"name": "a.b.my_model", "versions": [{"v": 1}, {"v": 2}]}
+    )
+
+    for model in versions:
+        assert model.unique_id not in partial_parsing.saved_manifest.nodes
+        assert model.unique_id not in schema_file.node_patches
+
+
+def test_delete_schema_data_test_patch_matches_singular_test_name_with_dots(partial_parsing):
+    schema_file_id = "my_test://" + normalize("models/schema.yml")
+    schema_file = partial_parsing.saved_manifest.files[schema_file_id]
+
+    disabled_test = make_singular_test(
+        PROJECT_NAME,
+        "a.b.my_disabled_singular_test",
+        "select 1 where false",
+        path="a.b.my_disabled_singular_test.sql",
+    )
+
+    schema_file.node_patches.append(disabled_test.unique_id)
+    partial_parsing.saved_manifest.disabled[disabled_test.unique_id] = [disabled_test]
+
+    partial_parsing.delete_schema_data_test_patch(
+        schema_file, {"name": "a.b.my_disabled_singular_test"}
+    )
+
+    assert disabled_test.unique_id not in partial_parsing.saved_manifest.disabled
+
+
+def test_delete_schema_mssa_links_without_saved_node_matches_whole_dotted_name(partial_parsing):
+    # The node can already be gone from the saved manifest earlier in the same partial
+    # parse; then only the unique_id left in node_patches is matched.
+    schema_file_id = "my_test://" + normalize("models/schema.yml")
+    schema_file = partial_parsing.saved_manifest.files[schema_file_id]
+    removed_unique_id = "model.my_test.a.b.my_model"
+    longer_unique_id = "model.my_test.a.b.my_model.vendors"
+    schema_file.node_patches.extend([removed_unique_id, longer_unique_id])
+
+    partial_parsing.delete_schema_mssa_links(schema_file, "models", {"name": "a.b.my_model"})
+
+    assert removed_unique_id not in schema_file.node_patches
+    assert longer_unique_id in schema_file.node_patches
+
+
+def test_delete_schema_mssa_links_without_saved_node_keeps_match_for_name_without_dots(
+    partial_parsing,
+):
+    schema_file_id = "my_test://" + normalize("models/schema.yml")
+    schema_file = partial_parsing.saved_manifest.files[schema_file_id]
+    versioned_unique_id = "model.my_test.orders.v1"
+    schema_file.node_patches.append(versioned_unique_id)
+
+    partial_parsing.delete_schema_mssa_links(schema_file, "models", {"name": "orders"})
+
+    assert versioned_unique_id not in schema_file.node_patches
+
+
 def test_remove_tests_removes_disabled_generic_test(partial_parsing, nodes):
     # CORE-725: a GenericTestNode that is currently disabled (config.enabled:
     # false) lives in saved_manifest.disabled rather than saved_manifest.nodes,

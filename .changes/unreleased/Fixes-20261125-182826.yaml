@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix partial parsing and generic test env var tracking for resource names that
+  contain dots
+time: 2026-11-25T18:28:26.324663+09:00
+custom:
+    Author: permitroot
+    Issue: "11363 17319"
