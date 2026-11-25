@@ -1,11 +1,21 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+use std::sync::OnceLock;
 
-use arrow_array::RecordBatch;
+use arrow_array::cast::AsArray;
+use arrow_array::{Array, RecordBatch};
 use arrow_schema::Schema;
+use minijinja::State;
+use parking_lot::RwLock;
+
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::Options;
+use dbt_adapter_engine::behavior::make_behavior;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
+use dbt_adapter_engine::databricks;
+use dbt_adapter_engine::noop_connection::NoopConnection;
 use dbt_adbc::*;
 use dbt_agate::hashers::IdentityBuildHasher;
 use dbt_auth::{AdapterConfig, Auth, AuthError};
@@ -15,21 +25,17 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::emit::emit_trace_event;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_telemetry::AdapterConnectionOpen;
-use minijinja::State;
-use parking_lot::RwLock;
 
 use crate::cache::RelationCache;
+use crate::engine::adapter_engine::*;
 use crate::engine::query_comment::QueryCommentConfig;
-use crate::errors::{AdapterError, adbc_error_to_adapter_error};
-use crate::metadata::clickhouse::ClickHouseCapabilities;
+use crate::engine::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
+use crate::errors::{
+    AdapterError, AdapterErrorKind, adbc_error_to_adapter_error, arrow_error_to_adapter_error,
+    is_bridge_adbc_error,
+};
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
-
-use super::adapter_engine::*;
-use super::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
-use dbt_adapter_engine::behavior::make_behavior;
-use dbt_adapter_engine::databricks;
-use dbt_adapter_engine::noop_connection::NoopConnection;
 
 #[derive(Default)]
 pub struct DatabaseMap {
@@ -88,7 +94,7 @@ pub struct AdbcEngine {
     /// fingerprint of that connection.
     connection_fingerprint: std::sync::atomic::AtomicU64,
     /// `ResolvedCloudConfig::project_id`, forwarded as the `dbt_cloud.project_id`
-    /// flock-adbc driver option alongside whichever credential is resolved.
+    /// bridge-adbc driver option alongside whichever credential is resolved.
     dbt_cloud_project_id: Option<String>,
     /// See [`AdapterEngine::clickhouse_capabilities`].
     clickhouse_capabilities: OnceLock<ClickHouseCapabilities>,
@@ -222,7 +228,7 @@ impl AdbcEngine {
             (false, _) => LoadStrategy::CdnCache,
         };
 
-        // This will load the "flock" driver if load_strategy is Remote.
+        // This will load the "bridge" driver if load_strategy is Remote.
         let mut driver = driver::Builder::new(backend, load_strategy)
             .try_load()
             .map_err(adbc_error_to_adapter_error)?;
@@ -253,7 +259,10 @@ impl AdbcEngine {
                         let mut conn = database
                             .new_connection()
                             .map_err(adbc_error_to_adapter_error)?;
-                        super::clickhouse::ensure_database(conn.as_mut(), config)?
+                        dbt_adapter_engine::clickhouse::bootstrap::ensure_database(
+                            conn.as_mut(),
+                            config,
+                        )?
                     }
                     _ => {}
                 }
@@ -306,12 +315,12 @@ impl AdbcEngine {
             AuthError::config(format!("{e}{hint}"))
         })?;
 
-        // See NOTE [flock-service-token-support] in flock-service/src/flight/handshake.rs:
-        // flock-service doesn't support service-credential fetching yet, so reject this
+        // See NOTE [bridge-service-token-support] in flock-service/src/flight/handshake.rs:
+        // bridge-service doesn't support service-credential fetching yet, so reject this
         // client-side instead of sending a token the server will reject anyway.
         if matches!(credential, Credential::ServiceToken { .. }) {
             return Err(AuthError::config(
-                "service token credentials are not yet supported for dbt Cloud/flock \
+                "service token credentials are not yet supported for dbt Cloud/bridge \
                  connections; use a personal access token or run `dbt login` instead",
             ));
         }
@@ -341,13 +350,25 @@ impl AdbcEngine {
             all_stmts.extend(self.generate_catalog_attach_stmts()?);
         }
 
-        if all_stmts.is_empty() {
+        let uses_native_duckdb =
+            self.auth.backend() == Backend::DuckDB && !config.use_dbt_cloud_credentials();
+        if all_stmts.is_empty() && !uses_native_duckdb {
             return Ok(());
         }
         let mut conn = database
             .new_connection()
             .map_err(adbc_error_to_adapter_error)?;
         for (idx, sql) in all_stmts.iter().enumerate() {
+            const LOCK_CONFIGURATION: &str = "SET lock_configuration = ";
+            // dbt-auth renders profile settings as `SET {key} = {literal}`. Apply
+            // the workaround before a profile setting freezes the configuration.
+            if uses_native_duckdb
+                && sql
+                    .get(..LOCK_CONFIGURATION.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(LOCK_CONFIGURATION))
+            {
+                disable_buggy_duckdb_window_optimizer(conn.as_mut())?;
+            }
             let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
             stmt.set_sql_query(sql)
                 .map_err(adbc_error_to_adapter_error)?;
@@ -357,6 +378,9 @@ impl AdbcEngine {
                     adbc_core::error::Status::Internal,
                 ))
             })?;
+        }
+        if uses_native_duckdb {
+            disable_buggy_duckdb_window_optimizer(conn.as_mut())?;
         }
         Ok(())
     }
@@ -387,7 +411,7 @@ impl AdbcEngine {
         } else {
             AdapterType::DuckDB.as_ref()
         };
-        super::duckdb_attach::compose_catalog_attach_stmts(&view, platform)
+        dbt_adapter_engine::duckdb::attach::compose_catalog_attach_stmts(&view, platform)
     }
 }
 
@@ -596,7 +620,8 @@ impl AdapterEngine for AdbcEngine {
             // dbclient.py `_set_client_database` parity; ensure_database
             // guarantees it exists.
             if self.adapter_type == AdapterType::ClickHouse
-                && let Some(schema) = super::clickhouse::target_schema(config)
+                && let Some(schema) =
+                    dbt_adapter_engine::clickhouse::bootstrap::target_schema(config)
             {
                 builder.with_option(
                     adbc_core::options::OptionConnection::CurrentSchema,
@@ -671,6 +696,45 @@ impl AdapterEngine for AdbcEngine {
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn disable_buggy_duckdb_window_optimizer(conn: &mut dyn Connection) -> AdapterResult<()> {
+    let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
+    // DuckDB #28843 can produce incorrect ROW_NUMBER values. Check the loaded
+    // engine because DuckDB can come from the system instead of the pinned CDN.
+    stmt.set_sql_query(
+        "SELECT version() IN ('v2.0.0', 'v2.0.1')
+           AND NOT list_contains(string_split(current_setting('disabled_optimizers'), ','),
+                                 'top_n_window_elimination')",
+    )
+    .map_err(adbc_error_to_adapter_error)?;
+    let batch = stmt
+        .execute()
+        .map_err(adbc_error_to_adapter_error)?
+        .next()
+        .transpose()
+        .map_err(arrow_error_to_adapter_error)?;
+    let needs_workaround = batch
+        .as_ref()
+        .and_then(|batch| batch.columns().first())
+        .and_then(|column| column.as_boolean_opt())
+        .filter(|column| column.len() == 1 && !column.is_null(0))
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::Internal,
+                "DuckDB optimizer version check did not return a Boolean",
+            )
+        })?
+        .value(0);
+    if needs_workaround {
+        stmt.set_sql_query(
+            "SET GLOBAL disabled_optimizers = concat_ws(',',
+                nullif(current_setting('disabled_optimizers'), ''), 'top_n_window_elimination')",
+        )
+        .map_err(adbc_error_to_adapter_error)?;
+        stmt.execute_update().map_err(adbc_error_to_adapter_error)?;
+    }
+    Ok(())
+}
+
 /// Enrich connection errors with adapter-specific hints where possible.
 fn enrich_connection_error(
     adapter_type: AdapterType,
@@ -689,7 +753,9 @@ fn enrich_connection_error(
         // case (the error arrives as a raw HTTP failure, not a typed
         // SnowflakeError), so substring matching on the status code is the most
         // reliable signal available.
-        Snowflake if err.message.contains(": 403") => {
+        //
+        // A Bridge 403 comes from the gateway, not from the Snowflake account.
+        Snowflake if err.message.contains(": 403") && !is_bridge_adbc_error(&err) => {
             let account_display = config
                 .get_string("account")
                 .map(|a| format!("'{a}'"))
@@ -716,10 +782,96 @@ Original error: {}",
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sql_types::DefaultTypeOps;
+    use crate::stmt_splitter::DefaultStmtSplitter;
+    use arrow_array::types::Int64Type;
     use dbt_yaml::Mapping;
     use minijinja::Environment;
     use minijinja::value::Value;
     use std::collections::BTreeMap;
+
+    #[dbt_runtime::worker_test]
+    fn duckdb_initialization_preserves_row_numbers_and_profile_optimizers() {
+        let config: Mapping = dbt_yaml::from_str(
+            "path: ':memory:'
+attach_catalogs: false
+settings:
+  disabled_optimizers: join_order
+  lock_configuration: true
+",
+        )
+        .unwrap();
+        let config = AdapterConfig::new(config);
+        let adapter_type = AdapterType::DuckDB;
+        let engine = AdbcEngine::new(
+            adapter_type,
+            dbt_auth::auth_for_backend(Backend::DuckDB).into(),
+            config.clone(),
+            dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING,
+            QueryCommentConfig::from_query_comment(None, adapter_type, false, None),
+            Arc::new(DefaultTypeOps::new(adapter_type)),
+            Arc::new(DefaultStmtSplitter),
+            Arc::new(RelationCache::default()),
+            BTreeMap::new(),
+            None,
+            None,
+        );
+        let mut driver = driver::Builder::new(Backend::DuckDB, LoadStrategy::CdnCache)
+            .try_load()
+            .unwrap();
+        let database = engine
+            .auth
+            .configure(&config)
+            .unwrap()
+            .build(&mut driver)
+            .unwrap();
+        engine
+            .apply_duckdb_init_sql(database.as_ref(), &config)
+            .unwrap();
+
+        let mut connection = database.new_connection().unwrap();
+        let mut statement = connection.new_statement().unwrap();
+        statement
+            .set_sql_query(
+                "SELECT current_setting('disabled_optimizers'),
+                        current_setting('lock_configuration')",
+            )
+            .unwrap();
+        let optimizers = statement.execute().unwrap().next().unwrap().unwrap();
+        assert!(
+            optimizers
+                .column(0)
+                .as_string::<i32>()
+                .value(0)
+                .split(',')
+                .any(|optimizer| optimizer == "join_order")
+        );
+        assert!(optimizers.column(1).as_boolean().value(0));
+
+        // DuckDB #28843 returns 0-based row numbers for the unpartitioned window.
+        for sql in [
+            "CREATE TABLE keys AS SELECT i AS k FROM range(4) AS t(i)",
+            "CREATE TABLE matches AS SELECT k, x FROM keys CROSS JOIN range(3) AS t(x)",
+        ] {
+            statement.set_sql_query(sql).unwrap();
+            statement.execute_update().unwrap();
+        }
+        statement
+            .set_sql_query(
+                "SELECT m.k, m.x, w.n
+                 FROM matches AS m
+                 JOIN (SELECT k, ROW_NUMBER() OVER (ORDER BY k) AS n FROM keys) AS w
+                   ON m.k = w.k
+                 QUALIFY ROW_NUMBER() OVER (PARTITION BY m.k ORDER BY m.x) = 1
+                 ORDER BY m.k",
+            )
+            .unwrap();
+        let rows = statement.execute().unwrap().next().unwrap().unwrap();
+        assert_eq!(
+            rows.column(2).as_primitive::<Int64Type>().values(),
+            &[1, 2, 3, 4]
+        );
+    }
 
     fn config_with_compute_block() -> AdapterConfig {
         AdapterConfig::new(Mapping::from_iter([("compute".into(), true.into())]))

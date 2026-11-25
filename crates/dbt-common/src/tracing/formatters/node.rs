@@ -10,7 +10,7 @@ use dbt_telemetry::{
     is_statically_checked_test,
 };
 
-use crate::io_args::FsCommand;
+use crate::io_args::{FsCommand, multi_adapter_enabled};
 
 use super::{
     color::{BLUE, CYAN, GREEN, MaybeColored, PLAIN, RED, YELLOW},
@@ -18,6 +18,7 @@ use super::{
         ACTION_WIDTH, DURATION_WIDTH, MAX_QUALIFIER_DISPLAY_LEN, MEMBER_TREE_INDENT,
         MIN_NODE_TYPE_WIDTH, UNIT_TEST_SCHEMA_SUFFIX,
     },
+    counter::CountText,
     duration::FixedWidthDuration,
     layout::RightAligned,
     phase::{get_phase_action, get_phase_progress_text},
@@ -41,9 +42,9 @@ pub fn get_node_display_alias<'a>(
 ) -> &'a str {
     match node_type {
         // Tests and unit tests always use `name` for display (contains original untruncated name).
-        // Checks and plugin nodes likewise: they have no relation, so `identifier` is empty and
-        // would display as nothing at all.
-        NodeType::Test | NodeType::UnitTest | NodeType::Check | NodeType::Plugin => name,
+        // Checks and experimental nodes likewise: they have no relation, so `identifier` is empty
+        // and would display as nothing at all.
+        NodeType::Test | NodeType::UnitTest | NodeType::Check | NodeType::Experimental => name,
         // Other nodes prefer `identifier` (database alias) with `name` as fallback
         _ => identifier.unwrap_or(name),
     }
@@ -311,7 +312,7 @@ fn node_outcome_status_parts(
         (NodeOutcome::Success, _, None, None) => ("success", &GREEN),
         (NodeOutcome::Error, _, _, _) => ("error", &RED),
         (NodeOutcome::Skipped, s_reason, _, _) => match s_reason {
-            Some(NodeSkipReason::Upstream) => ("skipped", &YELLOW),
+            Some(NodeSkipReason::Upstream | NodeSkipReason::FailFast) => ("skipped", &YELLOW),
             Some(NodeSkipReason::Cached) => ("reused", &GREEN),
             Some(NodeSkipReason::NoOp) => ("no-op", &YELLOW),
             // Other skip reasons are just "skipped"
@@ -353,7 +354,7 @@ fn node_action_parts(
         (NodeOutcome::Success, _, None, None) => ("Succeeded", &GREEN),
         (NodeOutcome::Error, _, _, _) => ("Failed", &RED),
         (NodeOutcome::Skipped, s_reason, _, _) => match s_reason {
-            Some(NodeSkipReason::Upstream) => ("Skipped", &YELLOW),
+            Some(NodeSkipReason::Upstream | NodeSkipReason::FailFast) => ("Skipped", &YELLOW),
             Some(NodeSkipReason::Cached) => ("Reused", &GREEN),
             Some(NodeSkipReason::NoOp) => ("Skipped", &YELLOW),
             // Other skip reasons are just "skipped"
@@ -517,10 +518,10 @@ impl<L: fmt::Display> fmt::Display for WithProgressField<L> {
 }
 
 /// Qualifier shown before a processed node's alias: schema for all nodes except sources,
-/// which use their source name, and plugin nodes, which write no relation, so their name
+/// which use their source name, and experimental nodes, which write no relation, so their name
 /// stands alone.
 fn node_processed_qualifier(node: &NodeProcessed, node_type: NodeType) -> &str {
-    if node_type == NodeType::Plugin {
+    if node_type == NodeType::Experimental {
         return "";
     }
     if node_type == NodeType::Source
@@ -575,10 +576,10 @@ impl fmt::Display for NodeProcessedStart<'_> {
     }
 }
 
-/// The node type a node's line shows: a plugin node's own kind, else its node type.
+/// The node type a node's line shows: an experimental node's own kind, else its node type.
 fn node_type_label(node: &NodeProcessed, pretty: bool) -> &str {
-    match node.plugin_type.as_deref() {
-        Some(kind) if node.node_type() == NodeType::Plugin => kind,
+    match node.experimental_type.as_deref() {
+        Some(kind) if node.node_type() == NodeType::Experimental => kind,
         _ if pretty => node.node_type().pretty(),
         _ => node.node_type().as_static_ref(),
     }
@@ -651,9 +652,9 @@ impl fmt::Display for NodeProcessedEnd<'_> {
         }
 
         // Get materialization string - use custom_materialization if materialization is Custom.
-        // Checks and plugin nodes materialize nothing, so they get no suffix — reporting one would
-        // claim a relation that is never written.
-        let materialization = if matches!(node_type, NodeType::Check | NodeType::Plugin) {
+        // Checks and experimental nodes materialize nothing, so they get no suffix — reporting one
+        // would claim a relation that is never written.
+        let materialization = if matches!(node_type, NodeType::Check | NodeType::Experimental) {
             None
         } else if node.materialization.is_some() {
             let mat = node.materialization();
@@ -686,17 +687,37 @@ impl fmt::Display for NodeProcessedEnd<'_> {
             "{}",
             MaterializationSuffix {
                 materialization,
-                adapter: node.adapter.as_deref(),
+                // Only named when nodes can run on different adapters.
+                adapter: node.adapter.as_deref().filter(|_| multi_adapter_enabled()),
                 // Determine description based on outcome
                 desc: NodeDescription::new(node),
             }
         )?;
         if let Some(progress) = ProgressField::new(node.node_index, node.node_count_total, elapsed)
         {
-            write!(f, " [{progress}]")?;
+            write!(f, " [{progress}")?;
+            // A node with a row count has run, so it always has an elapsed time and a progress field.
+            if let Some(rows) = rows_written(node) {
+                write!(f, ", {}", CountText::new(rows, "row", "rows"))?;
+            }
+            f.write_str("]")?;
         }
         Ok(())
     }
+}
+
+/// Rows the warehouse reported writing for the node's `main` statement, if the adapter gave a
+/// count. Only models, seeds and snapshots show it: the `main` statement of a test, unit test or
+/// function returns a verdict or a result set, not written rows. Whether a count exists at all
+/// is decided when the response is recorded, which only happens once the materialization has
+/// succeeded, so skipped and reused nodes carry none.
+fn rows_written(node: &NodeProcessed) -> Option<u64> {
+    node.rows_affected.filter(|_| {
+        matches!(
+            node.node_type(),
+            NodeType::Model | NodeType::Seed | NodeType::Snapshot
+        )
+    })
 }
 
 /// Displays a NodeEvaluated event for the start of evaluation (no duration)
@@ -1209,7 +1230,8 @@ impl fmt::Display for AggregatedTestGroupMember<'_> {
             },
             MaterializationSuffix {
                 materialization: None,
-                adapter: node.adapter.as_deref(),
+                // Only named when nodes can run on different adapters.
+                adapter: node.adapter.as_deref().filter(|_| multi_adapter_enabled()),
                 desc,
             }
         )
@@ -1414,9 +1436,9 @@ mod tests {
         node
     }
 
-    /// A plugin node's lines name its own kind and show no schema or materialization.
+    /// An experimental node's lines name its own kind and show no schema or materialization.
     #[test]
-    fn plugin_node_lines_use_its_own_kind() {
+    fn experimental_node_lines_use_its_own_kind() {
         let mut node = NodeProcessed::start(
             "widget.project.orders_widget".to_string(),
             "orders_widget".to_string(),
@@ -1425,7 +1447,7 @@ mod tests {
             None,
             Some(NodeMaterialization::Analysis),
             None,
-            NodeType::Plugin,
+            NodeType::Experimental,
             Some(ExecutionPhase::Run),
             "models/widgets.yml".to_string(),
             None,
@@ -1434,7 +1456,7 @@ mod tests {
             true,
             None,
         );
-        node.plugin_type = Some("widget".to_string());
+        node.experimental_type = Some("widget".to_string());
         assert_eq!(
             NodeProcessedStart {
                 node: &node,
@@ -1452,7 +1474,7 @@ mod tests {
         }
         .to_string();
         assert!(line.contains("widget orders_widget"), "got {line}");
-        assert!(!line.contains("plugin"), "got {line}");
+        assert!(!line.contains("experimental"), "got {line}");
         assert!(!line.contains("analytics"), "got {line}");
         assert!(!line.contains("(analysis)"), "got {line}");
     }
@@ -1702,74 +1724,6 @@ mod tests {
         assert!(output.contains("Failed"));
         assert!(output.contains("(models/marts/orders.yml:37:13)"));
         assert!(!output.contains("Batched"));
-    }
-
-    fn model_processed(adapter: Option<&str>) -> NodeProcessed {
-        let mut node = NodeProcessed::start(
-            "model.project.customers".to_string(),
-            "customers".to_string(),
-            None,
-            Some("analytics".to_string()),
-            Some("customers".to_string()),
-            Some(NodeMaterialization::Table),
-            None,
-            NodeType::Model,
-            Some(ExecutionPhase::Run),
-            "models/customers.sql".to_string(),
-            None,
-            None,
-            "checksum".to_string(),
-            true,
-            None,
-        );
-        node.adapter = adapter.map(str::to_string);
-        node.set_node_outcome(NodeOutcome::Success);
-        node
-    }
-
-    #[test]
-    fn adapter_renders_alongside_materialization() {
-        let output = NodeProcessedEnd {
-            node: &model_processed(Some("snowflake")),
-            duration: std::time::Duration::from_millis(250),
-            colorize: false,
-        }
-        .to_string();
-
-        assert!(
-            output.contains("analytics.customers (table, snowflake)"),
-            "{output}"
-        );
-    }
-
-    #[test]
-    fn missing_adapter_keeps_materialization_alone() {
-        let output = NodeProcessedEnd {
-            node: &model_processed(None),
-            duration: std::time::Duration::from_millis(250),
-            colorize: false,
-        }
-        .to_string();
-
-        assert!(output.contains("analytics.customers (table) "), "{output}");
-    }
-
-    #[test]
-    fn adapter_renders_for_tests_without_materialization() {
-        let mut node = test_processed(TestOutcome::Passed, 0, None, None);
-        node.adapter = Some("snowflake".to_string());
-
-        let output = NodeProcessedEnd {
-            node: &node,
-            duration: std::time::Duration::from_millis(250),
-            colorize: false,
-        }
-        .to_string();
-
-        assert!(
-            output.contains("accepted_values_orders_is_today_order__True (snowflake) "),
-            "{output}"
-        );
     }
 
     #[test]
@@ -2048,21 +2002,6 @@ mod tests {
         .to_string();
 
         assert!(output.contains("(snowflake - 2 batched)"), "{output}");
-    }
-
-    #[test]
-    fn aggregated_group_member_shows_adapter() {
-        let mut node = test_processed(TestOutcome::Passed, 0, None, Some(BATCH_UNIQUE_ID));
-        node.adapter = Some("snowflake".to_string());
-
-        let output = AggregatedTestGroupMember {
-            node: &node,
-            is_last: false,
-            colorize: false,
-        }
-        .to_string();
-
-        assert!(output.ends_with("(snowflake)"), "{output}");
     }
 
     #[test]

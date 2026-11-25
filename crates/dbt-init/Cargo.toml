@@ -18,6 +18,7 @@ dbt-cloud-api = { workspace = true }
 dbt-cloud-config = { workspace = true }
 dbt-common = { workspace = true }
 dbt-error = { workspace = true }
+dbt-flags = { workspace = true }
 dbt-jinja-utils = { workspace = true }
 dbt-loader = { workspace = true }
 dbt-profile-schemas = { workspace = true }
@@ -33,9 +34,17 @@ dbt-yaml = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
-rust-embed = { workspace = true }
+tar = { workspace = true }
+zstd-safe = { workspace = true }
 
 dbt-fusion-workspace-hack = { version = "0.1" }
+
+[build-dependencies]
+tar = { workspace = true }
+zstd-safe = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lib]
 name = "dbt_init"

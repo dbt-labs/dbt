@@ -1,0 +1,14 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+function-paths: ["functions"]
+
+functions:
+  test:
+    # The function materialization does not read `+grants` yet, so apply the
+    # grants from a post-hook. It passes the same relation the materialization
+    # passes, `this.incorporate(type=this.Function)`, so the GRANT is rendered
+    # by the same macros.
+    +post-hook: "{{ apply_and_show_function_grants(this.incorporate(type=this.Function)) }}"

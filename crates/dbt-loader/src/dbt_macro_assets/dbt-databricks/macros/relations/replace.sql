@@ -43,12 +43,15 @@
     {% endif %}
   {% endif %}
 
+  {#- Hive Metastore rejects ALTER TABLE RENAME for managed Delta tables on S3, so never rename an existing HMS table. -#}
+  {% set existing_can_be_renamed = existing_relation.can_be_renamed and not (existing_relation.is_table and existing_relation.is_hive_metastore()) %}
+
   {# If safe_replace, then we know that anything that would have been caught above is instead caught here #}
-  {% if target_relation.can_be_renamed and existing_relation.can_be_renamed %}
+  {% if target_relation.can_be_renamed and existing_can_be_renamed %}
     {{ return(safely_replace(existing_relation, target_relation, sql)) }}
   {% elif target_relation.can_be_renamed %}
     {{ return(stage_then_replace(existing_relation, target_relation, sql)) }}
-  {% elif existing_relation.can_be_renamed %}
+  {% elif existing_can_be_renamed %}
     {{ return(backup_and_create_in_place(existing_relation, target_relation, sql)) }}
   {% else %}
     {{ return(drop_and_create(existing_relation, target_relation, sql)) }}
@@ -78,6 +81,7 @@
   {% call statement(name="main") %}
     {{ get_create_sql(staging_relation, sql) }}
   {% endcall %}
+  {% do adapter.cache_dropped(existing_relation) %}
 
   {{ return([
     get_drop_sql(existing_relation),

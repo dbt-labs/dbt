@@ -13,12 +13,16 @@ pub mod serde;
 /// Module containing utility functions and helpers
 pub mod utils;
 
+/// Text edits and how they move macro spans.
+pub mod edit_mapping;
+
 /// The `info_schema()` Jinja helper for project quality checks
 pub mod info_schema;
 
 /// Module for functions implementations for the dbt jinja context
 mod functions;
 pub use functions::ConfiguredVar;
+pub use functions::DocMacro;
 pub use functions::Var;
 pub use functions::env_var;
 pub use functions::register_base_functions;

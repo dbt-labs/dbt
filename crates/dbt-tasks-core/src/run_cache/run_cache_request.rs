@@ -27,12 +27,12 @@ use dbt_state::hash::node_state_hashes;
 use dbt_state::materialization;
 use dbt_state::proto::query_cache::{
     DbtNodeState, QueryDependency, StaleUpstreamPolicy, SubmitEnrichedSqlRequest,
-    SubmitValuesRequest, TableModifiedInfo, TableProperties,
+    SubmitValuesRequest, TableModifiedInfo, TableProperties, TableSchema,
 };
 use dbt_state::request_builder::{
     ExecutionTypeInput, NodeIdentity, RequestBuildError, SemanticExtraConfig, SemanticExtras,
     SubmitEnrichedSqlRequestInput, SubmitValuesRequestInput, execution_type_from_input,
-    seed_semantic_extras, sql_semantic_extras,
+    seed_semantic_extras, sql_semantic_extras, target_table_missing,
 };
 use dbt_telemetry::NodeType;
 use serde::Serialize;
@@ -127,6 +127,16 @@ pub struct SqlRunCacheRequestContext {
     /// run. Folded into the model-level cache key so an unchanged window no-ops
     /// and a different window executes. `None` for non-microbatch nodes.
     pub microbatch_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    /// Resolved `compare_selected_columns` (column-aware reuse). Always false
+    /// for views.
+    pub compare_selected_columns: bool,
+    /// Schemas of the edge tables the SQL reads. Empty unless
+    /// `compare_selected_columns` is set on a non-speculative submit that asks
+    /// for decisions.
+    pub table_schemas: Vec<TableSchema>,
+    /// Whether the target relation exists. `None` when unknown, and for
+    /// speculative requests and nodes without a target table.
+    pub target_exists: Option<bool>,
     pub dbt_project_info: DbtProjectInfo,
 }
 
@@ -373,7 +383,7 @@ pub fn build_seed_values_request<'a>(
     Ok(SubmitValuesRequestInput {
         target_table: target_table_for_node(context.adapter_type, seed)?,
         dialect: context.dialect,
-        default_catalog: seed.database(),
+        default_catalog: seed.database().to_string(),
         values_hash,
         semantic_extras,
         last_modified_epoch: context.last_modified_epoch,
@@ -575,7 +585,7 @@ fn build_sql_request_input(
     Ok(SubmitEnrichedSqlRequestInput {
         target_table: Some(target_table_for_node(context.adapter_type, node)?),
         dialect: context.dialect,
-        default_catalog: node.database(),
+        default_catalog: node.database().to_string(),
         default_schema: Some(context.default_schema),
         execution_type,
         sql: context.sql,
@@ -597,6 +607,14 @@ fn build_sql_request_input(
         allow_clones: context.allow_clones,
         is_defer_to_profile: context.is_defer_to_profile,
         defer_enabled: context.defer_enabled,
+        target_table_missing: target_table_missing(
+            context.compare_selected_columns,
+            execution_type,
+            context.microbatch_window.is_some(),
+            context.target_exists,
+        ),
+        table_schemas: context.table_schemas,
+        compare_selected_columns: context.compare_selected_columns,
     })
 }
 
@@ -905,7 +923,8 @@ mod tests {
         CommonAttributes, DbtModelAttr, DbtSeedAttr, DbtSnapshotAttr, DbtTestAttr,
         IntrospectionKind, NodeBaseAttributes,
     };
-    use dbt_state::proto::query_cache::ModelExecutionType;
+    use dbt_state::proto::query_cache::table_modified_info::DependencyKind;
+    use dbt_state::proto::query_cache::{ColumnInfo, ModelExecutionType, TableSchema};
     use dbt_state::request_builder::execution_type_from_input;
     use dbt_yaml::Spanned;
     use indexmap::IndexMap;
@@ -1065,6 +1084,7 @@ mod tests {
             tables: vec![TableModifiedInfo {
                 name: "raw.orders".to_string(),
                 last_modified_epoch: Some(123),
+                kind: DependencyKind::Unknown as i32,
             }],
             query_dependencies: vec![],
             freshness_tolerance_seconds: 2700,
@@ -1079,6 +1099,9 @@ mod tests {
             default_schema: "marts".to_string(),
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             microbatch_window: None,
+            compare_selected_columns: false,
+            table_schemas: Vec::new(),
+            target_exists: None,
             dbt_project_info: make_project_info(),
             allow_clones: Some(true),
             is_defer_to_profile: false,
@@ -1127,6 +1150,50 @@ mod tests {
             "[\"status\",\"updated_at\"]"
         );
         assert_eq!(request.semantic_extras.get("unique_key").unwrap(), "\"id\"");
+    }
+
+    #[test]
+    fn model_request_sets_target_table_missing_for_incremental_first_run() {
+        let schemas = vec![TableSchema {
+            name: "raw.orders".to_string(),
+            columns: vec![ColumnInfo {
+                name: "ID".to_string(),
+                r#type: "NUMBER(38,0)".to_string(),
+            }],
+        }];
+        let first_run_context = || {
+            let mut context = sql_context(false);
+            context.compare_selected_columns = true;
+            context.table_schemas = schemas.clone();
+            context.target_exists = Some(false);
+            context
+        };
+
+        let incremental = make_model(DbtMaterialization::Incremental);
+        let request = build_model_sql_request(
+            &incremental,
+            first_run_context(),
+            &test_materialization_resolver(),
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(request.execution_type, ModelExecutionType::Merge as i32);
+        assert!(request.target_table_missing);
+        assert!(request.compare_selected_columns);
+        assert_eq!(request.table_schemas, schemas);
+
+        let table = make_model(DbtMaterialization::Table);
+        let request = build_model_sql_request(
+            &table,
+            first_run_context(),
+            &test_materialization_resolver(),
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(request.execution_type, ModelExecutionType::Full as i32);
+        assert!(!request.target_table_missing);
+        assert!(request.compare_selected_columns);
+        assert_eq!(request.table_schemas, schemas);
     }
 
     #[test]
@@ -1503,7 +1570,7 @@ mod tests {
         let mut test = make_test();
         test.__base_attr__.schema = "ANALYTICS".to_string();
         let mut context = sql_context(false);
-        context.default_schema = test.schema();
+        context.default_schema = test.schema().to_string();
 
         let request = build_test_sql_request(&test, context, |_| None).unwrap();
 

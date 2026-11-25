@@ -258,3 +258,135 @@ mod clone {
         );
     }
 }
+
+mod get_columns_in_query {
+    use super::*;
+
+    fn render_column_names(columns: Vec<&'static str>) -> (MacroTestHarness, String) {
+        let harness = build_harness(None);
+        harness.mock().on("get_column_schema_from_query", move |_| {
+            Ok(Value::from_serialize(
+                columns
+                    .iter()
+                    .map(|name| BTreeMap::from([("name", *name)]))
+                    .collect::<Vec<_>>(),
+            ))
+        });
+        let rendered = harness
+            .render(
+                "{{ clickhouse__get_columns_in_query('select * from src -- trailing') | join('|') }}",
+                BTreeMap::<String, Value>::new(),
+            )
+            .expect("render should succeed");
+        (harness, rendered)
+    }
+
+    /// Names come back in schema order, one per top-level column: a `Tuple` stays
+    /// whole and a flattened `Nested` keeps its dotted names.
+    #[test]
+    fn returns_schema_column_names_in_order() {
+        let (harness, rendered) = render_column_names(vec!["id", "payload", "n.a", "n.b"]);
+
+        assert_eq!(rendered.trim(), "id|payload|n.a|n.b");
+        let calls = harness.mock().observed_calls();
+        let sqls: Vec<_> = calls
+            .to("get_column_schema_from_query")
+            .map(|call| call.args[0].to_string())
+            .collect();
+        assert_eq!(sqls, ["select * from src -- trailing"]);
+    }
+
+    #[test]
+    fn returns_an_empty_list_when_the_query_has_no_columns() {
+        let (_harness, rendered) = render_column_names(vec![]);
+
+        assert_eq!(rendered.trim(), "");
+    }
+}
+
+mod persist_docs {
+    use super::*;
+    use crate::macro_test_harness::executed_sql;
+
+    /// A documented column the relation lacks is warned about once and skipped, and
+    /// every comment is dollar-quoted so `;` survives inside the single ALTER.
+    #[test]
+    fn warns_about_missing_columns_and_dollar_quotes_comments() {
+        let exceptions = Arc::new(MockJinjaObject::new());
+        exceptions.on("warn", |_| Ok(Value::UNDEFINED));
+        let harness = MacroTestHarness::for_adapter(AdapterType::ClickHouse)
+            .load_all_macros()
+            .with_stub_functions()
+            .with_global("exceptions", Value::from_dyn_object(exceptions.clone()))
+            .build()
+            .expect("harness should build");
+        harness
+            .mock()
+            .on("get_clickhouse_cluster_name", |_| Ok(Value::from(())));
+        harness.mock().on("get_columns_in_relation", |_| {
+            Ok(Value::from(vec![Value::from_serialize(BTreeMap::from([
+                ("name", "id"),
+            ]))]))
+        });
+        let config = Arc::new(MockJinjaObject::new());
+        config.on("persist_relation_docs", |_| Ok(Value::from(true)));
+        config.on("persist_column_docs", |_| Ok(Value::from(true)));
+        let model = Value::from_serialize(BTreeMap::from([
+            (
+                "description",
+                Value::from("Table description; with 'quotes' and \"doubles\""),
+            ),
+            (
+                "columns",
+                Value::from_serialize(BTreeMap::from([
+                    (
+                        "id",
+                        BTreeMap::from([("description", "id description; semicolon")]),
+                    ),
+                    (
+                        "missing",
+                        BTreeMap::from([("description", "documented but absent")]),
+                    ),
+                ])),
+            ),
+        ]));
+        let ctx = BTreeMap::from([
+            (
+                "relation".to_string(),
+                relation_value(&harness, "my_schema", "my_model"),
+            ),
+            ("model".to_string(), model),
+            ("config".to_string(), Value::from_dyn_object(config)),
+            ("execute".to_string(), Value::from(true)),
+        ]);
+        let relation = harness
+            .render("{{ relation }}", ctx.clone())
+            .expect("render should succeed");
+
+        harness
+            .render(
+                "{{ clickhouse__persist_docs(relation, model, true, true) }}",
+                ctx,
+            )
+            .expect("render should succeed");
+
+        let sql = executed_sql(harness.mock());
+        assert_eq!(sql.len(), 1, "{sql:?}");
+        assert_eq!(
+            normalize(&sql[0]),
+            format!(
+                "alter table {relation} modify comment \
+                 $dbt_comment_literal_block$Table description; with 'quotes' and \"doubles\"$dbt_comment_literal_block$, \
+                 comment column `id` $dbt_comment_literal_block$id description; semicolon$dbt_comment_literal_block$"
+            )
+        );
+        let calls = exceptions.observed_calls();
+        let warnings: Vec<_> = calls.to("warn").collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let message = warnings[0].args[0].to_string();
+        assert!(
+            message.contains("not present in the database: missing"),
+            "{message}"
+        );
+    }
+}

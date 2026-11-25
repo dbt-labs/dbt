@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use dbt_adapter::sql_types::TypeOps;
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
+use dbt_common::io_args::ReplayMode;
 use dbt_common::stats::NodeStatus;
 use dbt_dag::schedule::Schedule;
 use dbt_schemas::schemas::manifest::DbtSavedQuery;
@@ -13,6 +14,7 @@ use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{DbtUnitTest, InternalDbtNodeAttributes, Nodes};
+use dbt_state::node_session::ExecutionGuard;
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::render_task_hooks::RenderTaskHooks;
 use dbt_tasks_core::run_cache::run_cache_service::RunCacheServiceDecision;
@@ -50,6 +52,18 @@ fn selects_lake_compute(nodes: &Nodes, unique_id: &str) -> bool {
     nodes
         .get_node(unique_id)
         .is_some_and(|node| node.node_adapter() == AdapterType::LakeCompute)
+}
+
+/// True when the run replays a recording (Mantle, FS or time machine) or the
+/// base adapter is a replay adapter.
+pub fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
+    ctx.inner.arg.replay.as_ref().is_some_and(|mode| {
+        matches!(mode, ReplayMode::MantleReplay(_) | ReplayMode::FsReplay(_))
+            || mode.is_time_machine_replay()
+    }) || ctx
+        .env
+        .get_base_adapter()
+        .is_some_and(|adapter| adapter.as_replay().is_some())
 }
 
 pub fn effective_unit_test_execute(unit_test: &DbtUnitTest, execute: Execute) -> Execute {
@@ -211,6 +225,14 @@ impl RunTaskHooks for DefaultRunTaskHooks {
         _sql: &str,
     ) -> FsResult<RunCacheServiceDecision> {
         Ok(RunCacheServiceDecision::Disabled)
+    }
+
+    async fn acquire_state_lock(
+        &self,
+        _ctx: &TaskRunnerCtx,
+        _node: Arc<dyn InternalDbtNodeAttributes>,
+    ) -> Option<ExecutionGuard> {
+        None
     }
 
     async fn run_lake_compute_sidecar(

@@ -16,8 +16,7 @@ clap = { workspace = true, optional = true }
 dbt-common = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 flate2 = "1.0.28"
-futures-core = { workspace = true }
-futures-util = { workspace = true }
+futures = { workspace = true }
 regex = { workspace = true }
 tar = "0.4.40"
 thiserror = "2.0.12"

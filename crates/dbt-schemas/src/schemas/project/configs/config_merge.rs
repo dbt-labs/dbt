@@ -138,6 +138,7 @@ impl DefaultTo for Option<ModelState> {
             execute_hooks_on_any_reuse,
             compare_unrendered_code,
             ignore_external_modifications,
+            compare_selected_columns,
         } = state;
         *lag_tolerance = lag_tolerance
             .take()
@@ -152,6 +153,8 @@ impl DefaultTo for Option<ModelState> {
         *compare_unrendered_code = compare_unrendered_code.or(parent_state.compare_unrendered_code);
         *ignore_external_modifications =
             ignore_external_modifications.or(parent_state.ignore_external_modifications);
+        *compare_selected_columns =
+            compare_selected_columns.or(parent_state.compare_selected_columns);
     }
 }
 
@@ -170,12 +173,15 @@ impl DefaultTo for Option<DataTestState> {
             require_fresh_data_from,
             evaluate_volatile_sql,
             compare_unrendered_code,
+            compare_selected_columns,
         } = state;
         *require_fresh_data_from = require_fresh_data_from
             .take()
             .or_else(|| parent_state.require_fresh_data_from.clone());
         *evaluate_volatile_sql = evaluate_volatile_sql.or(parent_state.evaluate_volatile_sql);
         *compare_unrendered_code = compare_unrendered_code.or(parent_state.compare_unrendered_code);
+        *compare_selected_columns =
+            compare_selected_columns.or(parent_state.compare_selected_columns);
     }
 }
 
@@ -346,6 +352,20 @@ impl DefaultTo for crate::schemas::project::configs::common::WarehouseSpecificNo
     }
 }
 
+/// Inheriting from a default parent changes nothing, and a default child inherits a copy of the
+/// parent, so only the case where both are allocated merges field by field.
+impl DefaultTo for crate::schemas::project::configs::common::LazyWarehouseSpecificNodeConfig {
+    fn inherit_from(&mut self, parent: &Self) {
+        let Some(parent_config) = parent.get() else {
+            return;
+        };
+        match self.get_mut() {
+            Some(config) => config.inherit_from(parent_config),
+            None => *self = parent.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ReplaceIfNone implementations for all config field types.
 // ---------------------------------------------------------------------------
@@ -363,7 +383,6 @@ impl<T: Clone> ReplaceIfNone for Spanned<T> {}
 // Free-form YmlValue fields (e.g. ClickHouse dictionary `lifetime`/`range`/`update_lag`)
 // replace wholesale — no deep merge.
 impl ReplaceIfNone for YmlValue {}
-impl ReplaceIfNone for dbt_yaml::Timestamp {}
 
 // std collections used as replace-if-none fields.
 // BTreeMap<String, YmlValue> is distinct from BTreeMap<Spanned<String>, String>

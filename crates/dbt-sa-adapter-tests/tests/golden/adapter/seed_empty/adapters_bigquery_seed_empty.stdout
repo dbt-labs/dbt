@@ -1,7 +1,7 @@
    dbt-oss 
    Loading profiles.yml
    Running ../scratch/target/run/seed_empty/seeds/users.sql
- Succeeded seed  adapters_bigquery_seed_empty.users (table) [1 of 1 in duration]
+ Succeeded seed  adapters_bigquery_seed_empty.users (table) [1 of 1 in duration, 0 rows]
 ==================== Execution Summary =====================
 Finished 'seed' successfully for target 'bigquery' [duration]
 Processed: 1 seed

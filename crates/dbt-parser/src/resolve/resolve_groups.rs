@@ -1,3 +1,6 @@
+use crate::resolve::properties_index::{IndexCtx, IndexedName};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
 use dbt_common::path::DbtPath;
@@ -12,12 +15,52 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
+
+/// How a package's groups resolve.
+pub(crate) struct Groups;
+
+#[async_trait]
+impl ResolvableNode for Groups {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["groups"]
+    }
+
+    /// The name of a group is not checked for forbidden characters.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        ctx: &IndexCtx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        let (name, name_span) = ctx.name(item)?;
+        Ok(vec![IndexedName {
+            key,
+            name,
+            name_span,
+        }])
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        let (groups, disabled_groups) = resolve_groups(
+            ctx.adapter_type,
+            &mut ctx.properties.take_entries("groups"),
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+        )
+        .await?;
+
+        ctx.nodes.groups.extend(groups);
+        ctx.disabled_nodes.groups.extend(disabled_groups);
+        Ok(())
+    }
+}
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_groups(
     adapter_type: AdapterType,
-    group_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    group_properties: &mut BTreeMap<String, PropertiesEntry>,
     package_name: &str,
     env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,

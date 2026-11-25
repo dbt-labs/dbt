@@ -100,32 +100,27 @@ pub struct ParseSafeView {
     pub cols: &'static [&'static str],
 }
 
-/// Columns every node-derived view exposes, in information-schema spelling.
+/// Columns every node-derived view exposes, in information-schema spelling. `$extra` lists
+/// the view's other columns and is spliced in before `ingested_at`, so that column stays
+/// last, matching [`super::schema`]'s `node_cols!`. Textual expansion for the same reason:
+/// const slices cannot be concatenated.
 ///
-/// `$extra` is spliced in before `ingested_at` so that column stays last, matching
-/// [`super::schema`]'s `node_cols!`. Textual expansion for the same reason: const slices
-/// cannot be concatenated.
-///
+/// Each view lists the columns of its information-schema table that are final at parse.
 /// Absent, and deliberately: `compiled_code`, `compiled_path` and `grain*` (written during
 /// compile); `classifiers` (partially written at parse,
 /// which is worse — a check filtering on it sees a subset and passes); `unique_key`,
 /// `pre_hook`, `post_hook`, `grants`, `persist_docs`, `incremental_strategy`,
-/// `on_schema_change`, `full_refresh`, `docs_show`, `time_spine` and
-/// `ai_context` (no writer fills them — their real values are inside the `config` JSON,
-/// which is here). `file_path` and `checksum` are absent because the information schema
-/// does not have them.
+/// `on_schema_change`, `full_refresh`, `docs_show` and `time_spine` (no writer fills
+/// them — their real values are inside the `config` JSON, which is here). `file_path` and
+/// `checksum` are absent because the information schema does not have them.
 ///
-/// `raw_code` is not here either, and it is the one column left out by *resource type* rather
-/// than by phase, which is why it cannot live in this macro at all: the views that carry it name
-/// it themselves.
+/// `raw_code` is left out by *resource type* rather than by phase: seeds and sources have
+/// no SQL and arrive as an empty string, which a check reads like NULL.
 ///
-/// It was excluded from `models` because the index left it NULL there — `trim_model_payload`
-/// drops it from `__common_attr__` for models only, their payloads being multi-KB mostly
-/// because of SQL — while every other node type with SQL kept it. Reading the epoch payloads
-/// removes that asymmetry: `raw_code` is populated for models there, which is why the
-/// information schema has always published it, and a rule developed in `dbt show --info` no
-/// longer returns rows there and nothing as a check. Offering it on `models` is a widening of
-/// the check surface rather than part of the port, so it is still left out here.
+/// `models` carries it. It was once excluded because the index left it NULL there --
+/// `trim_model_payload` drops it from `__common_attr__` for models only -- but the epoch
+/// payloads are read untrimmed, so it is populated, and the information schema has always
+/// published it. A check about a model's SQL is writable (dbt-labs/dbt#16802).
 macro_rules! node_cols {
     ($($extra:expr),* $(,)?) => {
         &[
@@ -135,26 +130,6 @@ macro_rules! node_cols {
             "package_name",
             "original_file_path",
             "fqn",
-            "alias",
-            "description",
-            "node_language",
-            "database_name",
-            "schema_name",
-            "relation_name",
-            "identifier",
-            "enabled",
-            "materialized",
-            "config",
-            "access",
-            "group",
-            "contract_enforced",
-            "version",
-            "latest_version",
-            "deprecation_date",
-            "primary_key",
-            "properties_yml_file_path",
-            "tags",
-            "meta",
             $($extra,)*
             "ingested_at",
         ]
@@ -167,9 +142,6 @@ macro_rules! node_cols {
 /// The information-schema tables deliberately absent, and why:
 ///
 /// - `column_lineage` — needs static analysis, so it is empty at parse.
-/// - `classifiers` — the information schema publishes the shape, but nothing writes the
-///   taxonomy yet.
-/// - `semantic_relationships` — same: a table in the schema with no writer behind it.
 ///
 /// Absent for reasons unrelated to the information schema:
 ///
@@ -182,7 +154,7 @@ pub const VIEWS: &[ParseSafeView] = &[
     // ── project metadata ────────────────────────────────────────────────
     // `schema_version` and `last_full_parse_at` are in the information schema but not
     // here: the writer fills them, there is no index column to read them from. `quoting`
-    // and `ai_context` are in the index's own project row and never written to it.
+    // is in the index's own project row and never written to it.
     ParseSafeView {
         name: "project",
         vocabulary: "project",
@@ -234,52 +206,138 @@ pub const VIEWS: &[ParseSafeView] = &[
         vocabulary: "models",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["model"]),
-        cols: node_cols!["constraints"],
+        cols: node_cols![
+            "alias",
+            "description",
+            "node_language",
+            "database_name",
+            "schema_name",
+            "relation_name",
+            "identifier",
+            "enabled",
+            "materialized",
+            "config",
+            "access",
+            "group",
+            "contract_enforced",
+            "version",
+            "latest_version",
+            "deprecation_date",
+            "primary_key",
+            "properties_yml_file_path",
+            "tags",
+            "meta",
+            "constraints",
+            "raw_code",
+        ],
     },
     ParseSafeView {
         name: "seeds",
         vocabulary: "seeds",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["seed"]),
-        cols: node_cols![],
+        cols: node_cols![
+            "alias",
+            "description",
+            "database_name",
+            "schema_name",
+            "relation_name",
+            "identifier",
+            "enabled",
+            "config",
+            "group",
+            "properties_yml_file_path",
+            "tags",
+            "meta",
+        ],
     },
     ParseSafeView {
         name: "snapshots",
         vocabulary: "snapshots",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["snapshot"]),
-        cols: node_cols!["raw_code"],
+        cols: node_cols![
+            "alias",
+            "description",
+            "node_language",
+            "database_name",
+            "schema_name",
+            "relation_name",
+            "identifier",
+            "enabled",
+            "config",
+            "group",
+            "properties_yml_file_path",
+            "tags",
+            "meta",
+            "raw_code",
+        ],
     },
     ParseSafeView {
         name: "functions",
         vocabulary: "functions",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["function"]),
-        cols: node_cols!["raw_code"],
+        cols: node_cols![
+            "alias",
+            "description",
+            "node_language",
+            "database_name",
+            "schema_name",
+            "relation_name",
+            "identifier",
+            "enabled",
+            "config",
+            "access",
+            "group",
+            "properties_yml_file_path",
+            "tags",
+            "meta",
+            "raw_code",
+        ],
     },
     ParseSafeView {
         name: "analyses",
         vocabulary: "analyses",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["analysis"]),
-        cols: node_cols!["raw_code"],
+        cols: node_cols![
+            "description",
+            "node_language",
+            "enabled",
+            "config",
+            "group",
+            "properties_yml_file_path",
+            "tags",
+            "meta",
+            "raw_code",
+        ],
     },
     ParseSafeView {
         name: "hooks",
         vocabulary: "hooks",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["operation", "sql_operation"]),
-        cols: node_cols!["raw_code"],
+        cols: node_cols!["node_language", "raw_code", "phase"],
     },
     // The source-only columns live here and nowhere else, as in the information schema:
     // on a model row they would always be NULL. `loaded_at_query`, `freshness`,
-    // `external`, `source_meta` and `quoting` are the source columns no writer fills.
+    // `external` and `quoting` are the source columns no writer fills.
     ParseSafeView {
         name: "sources",
         vocabulary: "sources",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["source"]),
         cols: node_cols![
+            "description",
+            "database_name",
+            "schema_name",
+            "relation_name",
+            "identifier",
+            "enabled",
+            "config",
+            "tags",
+            "meta",
             "source_name",
             "source_description",
             "loader",
@@ -332,7 +390,6 @@ pub const VIEWS: &[ParseSafeView] = &[
             "ingested_at",
         ],
     },
-    // `created_at` is in the information schema but unwritten here.
     ParseSafeView {
         name: "unit_tests",
         vocabulary: "unit_tests",
@@ -361,7 +418,16 @@ pub const VIEWS: &[ParseSafeView] = &[
         vocabulary: "checks",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["check"]),
-        cols: node_cols!["raw_code"],
+        cols: node_cols![
+            "description",
+            "node_language",
+            "enabled",
+            "config",
+            "properties_yml_file_path",
+            "tags",
+            "meta",
+            "raw_code",
+        ],
     },
     // ── everything else declared in YAML ────────────────────────────────
     ParseSafeView {
@@ -381,7 +447,6 @@ pub const VIEWS: &[ParseSafeView] = &[
             "docs_show",
             "properties_yml_file_path",
             "meta",
-            "created_at",
             "ingested_at",
         ],
     },
@@ -428,8 +493,6 @@ pub const VIEWS: &[ParseSafeView] = &[
             "ingested_at",
         ],
     },
-    // `semantic_model_name` and `ai_context` are in the information schema but unwritten
-    // here.
     ParseSafeView {
         name: "metrics",
         vocabulary: "metrics",
@@ -505,7 +568,6 @@ pub const VIEWS: &[ParseSafeView] = &[
             "unique_id",
             "name",
             "model",
-            "label",
             "description",
             "fqn",
             "node_relation",
@@ -528,7 +590,6 @@ pub const VIEWS: &[ParseSafeView] = &[
             "entity_type",
             "description",
             "label",
-            "entity_role",
             "expr",
             "config",
             "ingested_at",
@@ -608,8 +669,8 @@ pub const VIEWS: &[ParseSafeView] = &[
     },
     // `data_type_inferred` needs static analysis, `data_type_actual` (and so the resolved
     // `data_type`) needs `dbt docs generate`, and `classifiers` is only partly written at
-    // parse. `column_index`, `label`, `quote`, `granularity` and `tests` are filled by
-    // the same later merges. What is left is what YAML declared.
+    // parse. `column_index`, `quote` and `granularity` are filled by the same later
+    // merges. What is left is what YAML declared.
     ParseSafeView {
         name: "node_columns",
         vocabulary: "node_columns",
@@ -677,7 +738,13 @@ impl ParseSafeView {
             // A column the information schema declares but assembles in code has no
             // source name to borrow; the index column is the one that shares its name.
             let src = if col.src.is_empty() { col.out } else { col.src };
-            selects.push(format!("{} AS {}", self.qualify(src)?, quote(out)));
+            let value = self.qualify(src)?;
+            let value = if col.first {
+                format!("list_extract({value}, 1)")
+            } else {
+                value
+            };
+            selects.push(format!("{value} AS {}", quote(out)));
         }
 
         let from = match self.src {

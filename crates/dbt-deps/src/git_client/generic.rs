@@ -96,6 +96,7 @@ fn parse_git_clone_error(stderr: &str, repo: &str, revision: Option<&str>) -> (E
 
     if stderr.contains("Authentication failed")
         || stderr.contains("could not read Username")
+        || stderr.contains("could not read Password")
         || stderr.contains("Invalid username or password")
         || stderr.contains("terminal prompts disabled")
     {
@@ -147,8 +148,9 @@ fn parse_git_clone_error(stderr: &str, repo: &str, revision: Option<&str>) -> (E
         );
     }
 
-    // Sanitize stderr to avoid leaking credentials from git error messages
-    let sanitized_stderr = crate::utils::sanitize_git_url(stderr.trim());
+    // git repeats the URL it was given, credentials included, in messages such as
+    // `fatal: unable to access 'https://<token>@github.com/org/repo.git/'`.
+    let sanitized_stderr = crate::utils::strip_url_credentials(stderr.trim());
     (
         ErrorCode::PackageDownloadFailed,
         format!(
@@ -194,21 +196,25 @@ async fn checkout_revision(
     // Intentionally ignore `run_git` errors here only (see `run_git` doc).
     if let Some(subdir) = subdirectory {
         let _ = run_git(
-            &["sparse-checkout", "set", "--no-cone", subdir],
+            &["sparse-checkout", "set", "--no-cone", "--", subdir],
             Some(clone_dir),
         )
         .await;
     }
 
-    run_git(&["fetch", "--depth=1", repo, revision], Some(clone_dir))
-        .await
-        .map_err(|e| match e {
-            GitErr::Io(e) => fs_err!(ErrorCode::GitError, "Error fetching: {e}"),
-            GitErr::Failed { stderr } => {
-                let (code, msg) = parse_git_clone_error(&stderr, repo, Some(revision));
-                fs_err!(code, "{}", msg)
-            }
-        })?;
+    // `--` keeps git from parsing the package URL or revision as an option.
+    run_git(
+        &["fetch", "--depth=1", "--", repo, revision],
+        Some(clone_dir),
+    )
+    .await
+    .map_err(|e| match e {
+        GitErr::Io(e) => fs_err!(ErrorCode::GitError, "Error fetching: {e}"),
+        GitErr::Failed { stderr } => {
+            let (code, msg) = parse_git_clone_error(&stderr, repo, Some(revision));
+            fs_err!(code, "{}", msg)
+        }
+    })?;
 
     run_git(&["checkout", "FETCH_HEAD"], Some(clone_dir))
         .await
@@ -217,7 +223,7 @@ async fn checkout_revision(
             GitErr::Failed { stderr } => fs_err!(
                 ErrorCode::PackageDownloadFailed,
                 "Failed to checkout: {}",
-                crate::utils::sanitize_git_url(&stderr)
+                crate::utils::strip_url_credentials(&stderr)
             ),
         })?;
 
@@ -239,7 +245,7 @@ async fn checkout_revision(
 /// Resolve a ref to its 40-char SHA via `git ls-remote`. No rate limit.
 async fn ls_remote_resolve(repo_url: &str, revision: &str) -> FsResult<String> {
     let sanitized = crate::utils::sanitize_git_url(repo_url);
-    let stdout = run_git(&["ls-remote", repo_url, revision], None)
+    let stdout = run_git(&["ls-remote", "--", repo_url, revision], None)
         .await
         .map_err(|e| match e {
             GitErr::Io(e) => fs_err!(ErrorCode::GitError, "git ls-remote failed: {e}"),
@@ -261,4 +267,67 @@ async fn ls_remote_resolve(repo_url: &str, revision: &str) -> FsResult<String> {
         ErrorCode::PackageDownloadFailed,
         "Could not resolve ref '{revision}' via ls-remote"
     ))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// When the token in the package URL is rejected and git can't prompt for a password
+    /// (no terminal, as in a container), git's stderr repeats the token. That is an
+    /// authentication failure, and its message has nothing from git's stderr.
+    #[test]
+    fn password_prompt_failure_is_an_auth_error_without_the_token() {
+        let repo = "https://ghp_token123@github.com/org/private-repo.git";
+        for reason in ["No such device or address", "Device not configured"] {
+            let stderr = format!(
+                "fatal: could not read Password for 'https://ghp_token123@github.com': {reason}"
+            );
+            let (code, message) = parse_git_clone_error(&stderr, repo, Some("v1.0.0"));
+            assert_eq!(code, ErrorCode::AuthFailed);
+            assert_eq!(
+                message,
+                "Authentication failed for repository 'https://github.com/org/private-repo.git'. \
+                 Please check your credentials or access token."
+            );
+        }
+    }
+
+    /// A git error we don't recognize is shown as git wrote it. git repeats the URL it
+    /// was given, token included. The message we build from it must not.
+    #[test]
+    fn clone_error_does_not_repeat_the_token_from_git_stderr() {
+        let repo = "https://ghp_token123@github.com/org/private-repo.git";
+        let stderr = "fatal: unable to access 'https://ghp_token123@github.com/org/private-repo.git/': \
+                      Could not resolve host: github.com";
+        let (code, message) = parse_git_clone_error(stderr, repo, Some("v1.0.0"));
+        assert_eq!(code, ErrorCode::PackageDownloadFailed);
+        assert_eq!(
+            message,
+            "Git clone failed for 'https://github.com/org/private-repo.git': \
+             fatal: unable to access 'https://github.com/org/private-repo.git/': \
+             Could not resolve host: github.com"
+        );
+    }
+
+    /// The URL and revision come from `packages.yml`, so git must not parse
+    /// them as options.
+    #[tokio::test]
+    async fn package_url_and_revision_are_not_git_options() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("marker");
+        let option = format!("--upload-pack=touch {};false", marker.display());
+        let repo = "file:///nonexistent/repo.git";
+
+        for (url, revision) in [(repo, option.as_str()), (option.as_str(), repo)] {
+            let clone_dir = tempfile::tempdir().unwrap();
+            assert!(
+                checkout_revision(url, clone_dir.path(), revision, None)
+                    .await
+                    .is_err()
+            );
+            assert!(ls_remote_resolve(url, revision).await.is_err());
+        }
+        assert!(!marker.exists(), "git ran a command from a package field");
+    }
 }

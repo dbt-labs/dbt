@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use crate::materialize::materialize_unit_test_fast_pass;
@@ -76,7 +75,7 @@ fn execute_unit_test_remote_inner(
     unit_test: &DbtUnitTest,
     ctx: &TaskRunnerCtx,
     sql_instruction: &SqlInstruction,
-    base_context: &BTreeMap<String, Value>,
+    base_context: &Value,
 ) -> FsResult<UnitTestExecutionResult> {
     let unique_id = &unit_test.common().unique_id;
 
@@ -91,12 +90,23 @@ fn execute_unit_test_remote_inner(
         ctx.env.clone(),
         base_context,
         &ctx.inner.arg.io,
+        &|| ctx.is_cancelled(unit_test),
     ) {
-        Ok((is_test_succeed, diff_num_rows, diff)) => Ok(UnitTestExecutionResult {
-            passed: is_test_succeed,
-            diff_num_rows,
-            diff,
-        }),
+        Ok((is_test_succeed, diff_num_rows, diff, main_response)) => {
+            if let Some(main_response) = main_response {
+                ctx.inner
+                    .main_adapter_responses
+                    .upsert_sync(unique_id.to_string(), main_response);
+            }
+            Ok(UnitTestExecutionResult {
+                passed: is_test_succeed,
+                diff_num_rows,
+                diff,
+            })
+        }
+        // Cancelled with the run: the visitor skips the test (`--fail-fast`) or leaves it out
+        // (Ctrl+C), so record nothing here.
+        Err(e) if e.code.is_cancellation() && ctx.is_cancelled(unit_test) => Err(e),
         Err(e) => {
             // Collect the error and continue with other tests
             find_and_record_span_status_with_attrs(

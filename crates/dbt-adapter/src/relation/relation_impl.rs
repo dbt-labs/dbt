@@ -6,6 +6,7 @@ use crate::relation::redshift::materialized_view_config::{
     DescribeMaterializedViewResults, RedshiftMaterializedViewConfig,
     RedshiftMaterializedViewConfigChangeset,
 };
+use crate::relation::relation_object::{parse_relation_type, parse_relation_type_value};
 use crate::relation::snowflake::config::relation_types::{dynamic_table, interactive_table};
 use crate::relation::snowflake::config::{
     DYNAMIC_TABLE_KEY, INTERACTIVE_TABLE_KEY, SnowflakeDescribeResults, components,
@@ -41,7 +42,7 @@ use std::sync::Arc;
 
 fn include_policy(adapter_type: AdapterType, path: &RelationPath) -> Policy {
     match adapter_type {
-        AdapterType::DuckDB => Policy::new(
+        AdapterType::DuckDB | AdapterType::MotherDuck => Policy::new(
             path.database.as_ref().is_some_and(|db| {
                 !db.is_empty()
                     && !db.eq_ignore_ascii_case("main")
@@ -117,8 +118,13 @@ impl StaticBaseRelation for RelationStatic {
                     _ => TableFormat::Default,
                 };
 
+                let relation_type = relation_type
+                    .as_deref()
+                    .map(parse_relation_type)
+                    .transpose()?;
+
                 let relation = Relation::new(AdapterType::Snowflake, database, schema, identifier)
-                    .with_relation_type(relation_type.map(|s| RelationType::from(s.as_str())))
+                    .with_relation_type(relation_type)
                     .with_quoting(custom_quoting)
                     .with_table_format(table_format)
                     .validate()?;
@@ -147,13 +153,7 @@ impl StaticBaseRelation for RelationStatic {
                     });
 
                 let relation = Relation::new(AdapterType::ClickHouse, database, schema, identifier)
-                    .with_relation_type(relation_type.and_then(|v: Value| {
-                        if v.is_none() || v.is_undefined() {
-                            None
-                        } else {
-                            Some(RelationType::from(v.as_str().unwrap_or_default()))
-                        }
-                    }))
+                    .with_relation_type(parse_relation_type_value(relation_type)?)
                     .with_quoting(custom_quoting.unwrap_or(self.quoting))
                     .with_temporary(temporary.unwrap_or(false))
                     .with_can_exchange(can_exchange.unwrap_or(false))
@@ -184,13 +184,7 @@ impl StaticBaseRelation for RelationStatic {
                     });
 
                 Relation::new(self.adapter_type, database, schema, identifier)
-                    .with_relation_type(relation_type.and_then(|v: Value| {
-                        if v.is_none() || v.is_undefined() {
-                            None
-                        } else {
-                            Some(RelationType::from(v.as_str().unwrap_or_default()))
-                        }
-                    }))
+                    .with_relation_type(parse_relation_type_value(relation_type)?)
                     .with_quoting(custom_quoting.unwrap_or(self.quoting))
                     .with_temporary(temporary.unwrap_or(false))
                     .with_is_staging(is_staging.unwrap_or(false))
@@ -258,7 +252,7 @@ pub struct Relation {
     pub refreshable_append: bool,
     /// The location/region for this relation (BigQuery only, e.g., "US", "EU").
     pub location: Option<String>,
-    /// DuckDB external source location, rendered in place of schema/table.
+    /// DuckDB and MotherDuck external source location, rendered in place of schema/table.
     pub external: Option<String>,
     /// The table format of the relation
     pub table_format: TableFormat,
@@ -333,7 +327,7 @@ impl BaseRelationProperties for Relation {
             }
         };
 
-        let schema = if self.quote_policy().database {
+        let schema = if self.quote_policy().schema {
             schema_str
         } else {
             match self.adapter_type {
@@ -343,7 +337,7 @@ impl BaseRelationProperties for Relation {
             }
         };
 
-        let ident = if self.quote_policy().database {
+        let ident = if self.quote_policy().identifier {
             ident_str
         } else {
             match self.adapter_type {
@@ -855,6 +849,7 @@ impl BaseRelation for Relation {
         .with_is_shallow_clone(self.is_shallow_clone)
         .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
+        .with_table_format(self.table_format)
         .with_can_exchange(self.can_exchange)
         .with_can_on_cluster(self.can_on_cluster)
         .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
@@ -1261,10 +1256,13 @@ impl BaseRelation for Relation {
     }
 
     fn render_self_as_str(&self) -> String {
-        if self.adapter_type == AdapterType::DuckDB
-            && let Some(external) = &self.external
-        {
-            return external.clone();
+        match self.adapter_type {
+            AdapterType::DuckDB | AdapterType::MotherDuck => {
+                if let Some(external) = &self.external {
+                    return external.clone();
+                }
+            }
+            _ => {}
         }
 
         // Render BigQuery INFORMATION_SCHEMA view names using proper qualifiers
@@ -1274,6 +1272,7 @@ impl BaseRelation for Relation {
                 .schema
                 .as_deref()
                 .expect("INFORMATION_SCHEMA relation needs dataset");
+            let dataset = dbt_adapter_sql::ident::bigquery::Ident::new(dataset).to_string();
             let view_name = self.path.identifier.as_deref();
 
             // Detect if user has set `project == location` and normalize
@@ -1285,7 +1284,7 @@ impl BaseRelation for Relation {
 
             let fqn_no_project = if let Some(view_name) = view_name {
                 bigquery_metadata::generate_system_table_fqn(
-                    dataset,
+                    &dataset,
                     view_name,
                     self.location.as_deref(),
                 )
@@ -1297,7 +1296,7 @@ impl BaseRelation for Relation {
             };
 
             let fqn = if let Some(project) = &project {
-                format!("`{project}`.{fqn_no_project}")
+                format!("{}.{fqn_no_project}", self.quoted(project))
             } else {
                 fqn_no_project
             };
@@ -1681,6 +1680,7 @@ mod tests {
         fn test_render_with_run_filter_empty() {
             let run_filter = RunFilter {
                 empty: true,
+                empty_marker: false,
                 sample: None,
             };
             let result = filter_relation().render_with_run_filter(&run_filter, &None);
@@ -1691,9 +1691,46 @@ mod tests {
         }
 
         #[test]
+        fn test_render_with_run_filter_empty_marker() {
+            let run_filter = RunFilter {
+                empty: true,
+                empty_marker: true,
+                sample: None,
+            };
+            let result = filter_relation().render_with_run_filter(&run_filter, &None);
+            assert_eq!(result, "/*dbt-empty*/my_db.my_schema.my_table");
+        }
+
+        #[test]
+        fn test_render_with_run_filter_empty_marker_and_sample() {
+            let run_filter = RunFilter {
+                empty: true,
+                empty_marker: true,
+                sample: Some(Sample {
+                    start: Some(DateTime::<Utc>::from_naive_utc_and_offset(
+                        NaiveDate::from_ymd_opt(2024, 7, 1)
+                            .unwrap()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap(),
+                        Utc,
+                    )),
+                    end: None,
+                }),
+            };
+            let result = filter_relation()
+                .render_with_run_filter(&run_filter, &Some("created_at".to_string()));
+            // The marker stays right before the table, inside the sample subquery.
+            assert!(
+                result.starts_with("(select * from /*dbt-empty*/my_db.my_schema.my_table where "),
+                "{result}"
+            );
+        }
+
+        #[test]
         fn test_render_with_run_filter_no_sample() {
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: None,
             };
             let event_time = Some("created_at".to_string());
@@ -1719,6 +1756,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1744,6 +1782,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1769,6 +1808,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1789,6 +1829,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1811,6 +1852,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(sample),
             };
 
@@ -1836,6 +1878,7 @@ mod tests {
 
             let run_filter = RunFilter {
                 empty: true,
+                empty_marker: false,
                 sample: Some(sample),
             };
             let event_time = Some("created_at".to_string());
@@ -1872,6 +1915,7 @@ mod tests {
                 inner,
                 RunFilter {
                     empty: true,
+                    empty_marker: false,
                     sample: None,
                 },
                 Some("event_date".to_string()),
@@ -1880,6 +1924,7 @@ mod tests {
             // Microbatch overwrites the filter with a batch window (empty: false)
             let batch_filter = RunFilter {
                 empty: false,
+                empty_marker: false,
                 sample: Some(Sample {
                     start: Some(start),
                     end: Some(end),
@@ -1967,6 +2012,35 @@ mod tests {
             assert_eq!(
                 relation.inner().render_self_as_str(),
                 "`dbt`.`dbt_staging`.`stg_pinterest_campaign_int`"
+            );
+        }
+
+        #[test]
+        fn test_render_escapes_adapter_identifier_delimiters() {
+            let relation = |adapter_type, identifier: &str| {
+                Relation::new(adapter_type, None, None, Some(identifier.to_string()))
+                    .with_quoting(ResolvedQuoting::trues())
+            };
+
+            assert_eq!(
+                relation(AdapterType::Snowflake, "a\"b").render_self_as_str(),
+                r#""a""b""#
+            );
+            assert_eq!(
+                relation(AdapterType::Databricks, "a`b").render_self_as_str(),
+                "`a``b`"
+            );
+            assert_eq!(
+                relation(AdapterType::Bigquery, r"a\`b").render_self_as_str(),
+                r"`a\\\`b`"
+            );
+            assert_eq!(
+                relation(AdapterType::ClickHouse, r"a\`b").render_self_as_str(),
+                r"`a\\``b`"
+            );
+            assert_eq!(
+                relation(AdapterType::ClickHouse, "trail\\").render_self_as_str(),
+                r"`trail\\`"
             );
         }
 
@@ -2178,6 +2252,27 @@ mod tests {
             );
         }
 
+        #[test]
+        fn test_information_schema_escapes_project_and_dataset() {
+            let relation = Relation::new(
+                AdapterType::Bigquery,
+                "project`; SELECT 1; --".to_string(),
+                "dataset`; SELECT 2; --".to_string(),
+                "table".to_string(),
+            )
+            .with_relation_type(RelationType::Table)
+            .with_quoting(DEFAULT_RESOLVED_QUOTING);
+
+            let rendered = relation
+                .information_schema("TABLES")
+                .unwrap()
+                .render_self_as_str();
+            assert_eq!(
+                rendered,
+                r"`project\`; SELECT 1; --`.`dataset\`; SELECT 2; --`.INFORMATION_SCHEMA.TABLES"
+            );
+        }
+
         /// See: https://github.com/dbt-labs/dbt-core/issues/15157
         #[test]
         fn test_information_schema_with_region_as_database_regression_15157() {
@@ -2200,16 +2295,22 @@ mod tests {
         use super::*;
         #[test]
         fn test_external_relation_renders_location() {
-            let relation = Relation::new(
-                AdapterType::DuckDB,
-                "main".to_string(),
-                "raw".to_string(),
-                "orders".to_string(),
-            )
-            .with_quoting(DEFAULT_RESOLVED_QUOTING)
-            .with_external("'data/RawOrders.csv'");
+            for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+                let relation = Relation::new(
+                    adapter_type,
+                    "main".to_string(),
+                    "raw".to_string(),
+                    "orders".to_string(),
+                )
+                .with_quoting(DEFAULT_RESOLVED_QUOTING)
+                .with_external("'data/RawOrders.csv'");
 
-            assert_eq!(relation.render_self_as_str(), "'data/RawOrders.csv'");
+                assert_eq!(
+                    relation.render_self_as_str(),
+                    "'data/RawOrders.csv'",
+                    "{adapter_type:?}"
+                );
+            }
         }
 
         fn path_from_db(db: Option<&str>) -> RelationPath {
@@ -2222,18 +2323,23 @@ mod tests {
 
         #[test]
         fn test_include_policy_for_attached_catalog() {
-            assert!(
-                include_policy(AdapterType::DuckDB, &path_from_db(Some("stocks_dev"))).database
-            );
+            for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+                assert!(
+                    include_policy(adapter_type, &path_from_db(Some("stocks_dev"))).database,
+                    "{adapter_type:?}"
+                );
+            }
         }
 
         #[test]
         fn test_should_not_include_database_for_default_catalog() {
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(Some("main"))).database);
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(Some("memory"))).database);
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(Some("MEMORY"))).database);
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(Some(""))).database);
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(None)).database);
+            for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+                assert!(!include_policy(adapter_type, &path_from_db(Some("main"))).database);
+                assert!(!include_policy(adapter_type, &path_from_db(Some("memory"))).database);
+                assert!(!include_policy(adapter_type, &path_from_db(Some("MEMORY"))).database);
+                assert!(!include_policy(adapter_type, &path_from_db(Some(""))).database);
+                assert!(!include_policy(adapter_type, &path_from_db(None)).database);
+            }
         }
     }
 
@@ -2343,6 +2449,30 @@ mod tests {
             assert_eq!(relation.relation_type, None);
             assert_eq!(relation.table_format, TableFormat::Default);
             assert_eq!(relation.render_self_as_str(), r#""d"."s"."i""#);
+        }
+
+        // Each part keeps its case only when its own quote policy quotes it.
+        #[test]
+        fn test_canonical_fqn_cases_each_part_by_its_own_quote_policy() {
+            for (policy, expected) in [
+                (Policy::new(true, false, false), "analytics.STAGING.ORDERS"),
+                (Policy::new(false, true, false), "ANALYTICS.Staging.ORDERS"),
+                (Policy::new(false, false, true), "ANALYTICS.STAGING.Orders"),
+                (Policy::new(false, true, true), "ANALYTICS.Staging.Orders"),
+            ] {
+                let relation = Relation::new(
+                    AdapterType::Snowflake,
+                    "analytics".to_string(),
+                    "Staging".to_string(),
+                    "Orders".to_string(),
+                )
+                .with_quoting(policy);
+                assert_eq!(
+                    relation.get_canonical_fqn().unwrap().to_string(),
+                    expected,
+                    "{policy:?}"
+                );
+            }
         }
 
         #[test]
@@ -2486,6 +2616,14 @@ mod tests {
             let iceberg = snowflake_relation(RelationType::InteractiveTable, TableFormat::Iceberg);
             assert!(!iceberg.can_be_renamed());
             assert!(iceberg.can_be_replaced());
+        }
+
+        #[test]
+        fn quote_preserves_table_format() {
+            let iceberg = snowflake_relation(RelationType::Table, TableFormat::Iceberg);
+            let quoted = iceberg.quote(Some(true), Some(false), Some(true)).unwrap();
+            assert!(quoted.is_iceberg_format());
+            assert_eq!(quoted.quote_policy(), Policy::new(true, false, true));
         }
 
         #[test]

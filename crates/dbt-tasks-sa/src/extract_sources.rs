@@ -7,8 +7,12 @@ use std::collections::{BTreeSet, HashSet};
 
 use core::ops::ControlFlow;
 use dbt_adapter::AdapterType;
-use dbt_frontend_common::{FullyQualifiedName, ident::Identifier};
-use sqlparser::ast::{ObjectName, Query, TableFactor, Visit, Visitor};
+use dbt_common::adapter::dialect_of;
+use dbt_frontend_common::{
+    Dialect, FullyQualifiedName, ident::Identifier, table_functions::is_pure_generator,
+};
+use dbt_sqlparser_compat::{Flow, Visitor, visit};
+use sqlparser::ast::{Expr, ObjectName, Query, TableFactor};
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::Token;
 
@@ -41,29 +45,40 @@ pub fn extract_sources_from_str(
     default_catalog: &str,
     default_schema: &str,
 ) -> Result<BTreeSet<FullyQualifiedName>, ExtractSourcesError> {
-    let statements = Parser::parse_sql(sqlparser_dialect_for(adapter_type), sql)
-        .map_err(|e| ExtractSourcesError::Parse(e.to_string()))?;
-
-    let mut visitor = SourceExtractor {
-        adapter_type,
-        default_catalog,
-        default_schema,
-        cte_scopes: Vec::new(),
-        sources: BTreeSet::new(),
-    };
-    let _ = statements.visit(&mut visitor);
-    Ok(visitor.sources)
+    extract_from_str(sql, adapter_type, default_catalog, default_schema).map(|found| found.sources)
 }
 
-/// Extract upstream table references from a complete SQL expression rather
-/// than a full statement. Custom materializations may wrap expression-only
-/// model SQL in their own executable statement.
-pub(crate) fn extract_sources_from_standalone_expression(
+/// What the SQL extractor found: upstream tables and table-valued functions.
+#[derive(Debug, Default)]
+pub(crate) struct Extraction {
+    pub sources: BTreeSet<FullyQualifiedName>,
+    pub table_functions: BTreeSet<String>,
+}
+
+/// Like [`extract_sources_from_str`], also reporting table-valued functions.
+pub(crate) fn extract_from_str(
     sql: &str,
     adapter_type: AdapterType,
     default_catalog: &str,
     default_schema: &str,
-) -> Result<BTreeSet<FullyQualifiedName>, ExtractSourcesError> {
+) -> Result<Extraction, ExtractSourcesError> {
+    let statements = Parser::parse_sql(sqlparser_dialect_for(adapter_type), sql)
+        .map_err(|e| ExtractSourcesError::Parse(e.to_string()))?;
+
+    let mut visitor = SourceExtractor::new(adapter_type, default_catalog, default_schema);
+    let _ = visit(&statements, &mut visitor);
+    Ok(visitor.into_extraction())
+}
+
+/// Extract upstream tables and table-valued functions from a complete SQL expression rather
+/// than a full statement. Custom materializations may wrap expression-only
+/// model SQL in their own executable statement.
+pub(crate) fn extract_from_standalone_expression(
+    sql: &str,
+    adapter_type: AdapterType,
+    default_catalog: &str,
+    default_schema: &str,
+) -> Result<Extraction, ExtractSourcesError> {
     let mut parser = Parser::new(sqlparser_dialect_for(adapter_type))
         .try_with_sql(sql)
         .map_err(|e| ExtractSourcesError::Parse(e.to_string()))?;
@@ -78,15 +93,9 @@ pub(crate) fn extract_sources_from_standalone_expression(
             )));
         }
     }
-    let mut visitor = SourceExtractor {
-        adapter_type,
-        default_catalog,
-        default_schema,
-        cte_scopes: Vec::new(),
-        sources: BTreeSet::new(),
-    };
-    let _ = expr.visit(&mut visitor);
-    Ok(visitor.sources)
+    let mut visitor = SourceExtractor::new(adapter_type, default_catalog, default_schema);
+    let _ = visit(&expr, &mut visitor);
+    Ok(visitor.into_extraction())
 }
 
 struct SourceExtractor<'a> {
@@ -100,12 +109,12 @@ struct SourceExtractor<'a> {
     /// matching the existing extractor's behavior across dialects.
     cte_scopes: Vec<HashSet<Identifier>>,
     sources: BTreeSet<FullyQualifiedName>,
+    dialect: Option<Dialect>,
+    table_functions: BTreeSet<String>,
 }
 
 impl Visitor for SourceExtractor<'_> {
-    type Break = ();
-
-    fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
+    fn pre_visit_query(&mut self, query: &Query) -> Flow {
         // Register all CTE names defined by this query up-front, so any
         // reference to one (in any CTE body OR the main body) is filtered.
         //
@@ -123,20 +132,64 @@ impl Visitor for SourceExtractor<'_> {
         ControlFlow::Continue(())
     }
 
-    fn post_visit_query(&mut self, _query: &Query) -> ControlFlow<()> {
+    fn post_visit_query(&mut self, _query: &Query) -> Flow {
         self.cte_scopes.pop();
         ControlFlow::Continue(())
     }
 
-    fn pre_visit_table_factor(&mut self, table_factor: &TableFactor) -> ControlFlow<()> {
-        if let TableFactor::Table { name, .. } = table_factor {
-            self.record_source(name);
+    fn pre_visit_table_factor(&mut self, table_factor: &TableFactor) -> Flow {
+        match table_factor {
+            // `name(args)` in FROM is a table-valued function, not a table.
+            TableFactor::Table {
+                name,
+                args: Some(_),
+                ..
+            }
+            | TableFactor::Function { name, .. } => self.record_table_function(name.to_string()),
+            TableFactor::Table { name, .. } => self.record_source(name),
+            // Snowflake `TABLE(f(...))`.
+            TableFactor::TableFunction { expr, .. } => {
+                let name = match expr {
+                    Expr::Function(function) => function.name.to_string(),
+                    other => other.to_string(),
+                };
+                self.record_table_function(name);
+            }
+            _ => {}
         }
         ControlFlow::Continue(())
     }
 }
 
-impl SourceExtractor<'_> {
+impl<'a> SourceExtractor<'a> {
+    fn new(adapter_type: AdapterType, default_catalog: &'a str, default_schema: &'a str) -> Self {
+        Self {
+            adapter_type,
+            default_catalog,
+            default_schema,
+            cte_scopes: Vec::new(),
+            sources: BTreeSet::new(),
+            dialect: dialect_of(adapter_type),
+            table_functions: BTreeSet::new(),
+        }
+    }
+
+    fn into_extraction(self) -> Extraction {
+        Extraction {
+            sources: self.sources,
+            table_functions: self.table_functions,
+        }
+    }
+
+    fn record_table_function(&mut self, name: String) {
+        let pure = self
+            .dialect
+            .is_some_and(|dialect| is_pure_generator(dialect, &name));
+        if !pure {
+            self.table_functions.insert(name);
+        }
+    }
+
     fn record_source(&mut self, name: &ObjectName) {
         let parts = object_name_parts(name, self.adapter_type);
         if parts.is_empty() {
@@ -439,33 +492,57 @@ mod tests {
 
     #[test]
     fn standalone_literal_expression_is_valid() {
-        let sources = extract_sources_from_standalone_expression(
-            "'alice'",
-            AdapterType::Snowflake,
-            "db",
-            "s",
-        )
-        .unwrap();
+        let sources =
+            extract_from_standalone_expression("'alice'", AdapterType::Snowflake, "db", "s")
+                .unwrap()
+                .sources;
         assert!(sources.is_empty());
     }
 
     #[test]
     fn standalone_subquery_expression_extracts_sources() {
-        let sources = extract_sources_from_standalone_expression(
+        let sources = extract_from_standalone_expression(
             "(select max(id) from raw.users)",
             AdapterType::Snowflake,
             "db",
             "s",
         )
-        .unwrap();
+        .unwrap()
+        .sources;
         assert_eq!(sources.len(), 1);
         assert!(sources.contains(&fqn("db", "RAW", "USERS")));
     }
 
     #[test]
+    fn standalone_expression_reports_table_functions() {
+        let found = extract_from_standalone_expression(
+            "(select max(_commit_version) from table_changes('c.s.t', 1))",
+            AdapterType::Databricks,
+            "c",
+            "s",
+        )
+        .unwrap();
+        assert!(found.sources.is_empty());
+        assert_eq!(
+            found.table_functions.iter().collect::<Vec<_>>(),
+            ["table_changes"]
+        );
+
+        let found = extract_from_standalone_expression(
+            "(select count(*) from explode((select collect_list(id) from c.s.u)))",
+            AdapterType::Databricks,
+            "c",
+            "s",
+        )
+        .unwrap();
+        assert!(found.sources.contains(&fqn("c", "s", "u")));
+        assert!(found.table_functions.is_empty());
+    }
+
+    #[test]
     fn standalone_expression_must_consume_full_input() {
         assert!(
-            extract_sources_from_standalone_expression(
+            extract_from_standalone_expression(
                 "'alice' from raw.users",
                 AdapterType::Snowflake,
                 "db",
@@ -473,5 +550,142 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn table_functions_are_reported_not_treated_as_tables() {
+        use AdapterType::{Databricks, Postgres, Redshift, Snowflake};
+        // (adapter, sql, expected tables (catalog, schema, table), expected table functions)
+        let cases: &[(AdapterType, &str, &[(&str, &str, &str)], &[&str])] = &[
+            (
+                Databricks,
+                "select * from table_changes('c.s.t', 1)",
+                &[],
+                &["table_changes"],
+            ),
+            (
+                Databricks,
+                "select * from read_files('/x')",
+                &[],
+                &["read_files"],
+            ),
+            (Databricks, "select * from range(10)", &[], &[]),
+            (Databricks, "select * from explode(array(1,2))", &[], &[]),
+            (Databricks, "select * from posexplode(array(1,2))", &[], &[]),
+            (
+                Databricks,
+                "select * from inline(array(struct(1, 2)))",
+                &[],
+                &[],
+            ),
+            (Databricks, "select * from stack(2, 1, 2)", &[], &[]),
+            (
+                Databricks,
+                "select * from explode((select collect_list(id) from c.s.t))",
+                &[("c", "s", "t")],
+                &[],
+            ),
+            (
+                Databricks,
+                "select * from table_changes((select max(n) from c.s.u), 1)",
+                &[("c", "s", "u")],
+                &["table_changes"],
+            ),
+            (
+                Databricks,
+                "select * from c.s.t lateral view explode(t.arr) e as x",
+                &[("c", "s", "t")],
+                &[],
+            ),
+            (
+                Databricks,
+                "select * from c.s.t lateral view explode((select collect_list(id) from c.s.u)) e as x",
+                &[("c", "s", "t"), ("c", "s", "u")],
+                &[],
+            ),
+            (
+                Databricks,
+                "select explode((select collect_list(id) from c.s.u)) from c.s.t",
+                &[("c", "s", "t"), ("c", "s", "u")],
+                &[],
+            ),
+            (
+                Snowflake,
+                "select * from table(my_udtf(1))",
+                &[],
+                &["my_udtf"],
+            ),
+            (
+                Snowflake,
+                "select * from table(db.sch.my_udtf(1))",
+                &[],
+                &["db.sch.my_udtf"],
+            ),
+            (
+                Snowflake,
+                "select * from table(result_scan(last_query_id()))",
+                &[],
+                &["result_scan"],
+            ),
+            (
+                Snowflake,
+                "select * from table(information_schema.query_history())",
+                &[],
+                &["information_schema.query_history"],
+            ),
+            (
+                Snowflake,
+                "select * from table(flatten(input => parse_json('[1]')))",
+                &[],
+                &[],
+            ),
+            (
+                Snowflake,
+                "select * from table(generator(rowcount => 10))",
+                &[],
+                &[],
+            ),
+            (
+                Snowflake,
+                "select * from db.s.t t, lateral flatten(input => t.v)",
+                &[("DB", "S", "T")],
+                &[],
+            ),
+            (
+                Snowflake,
+                "select * from table(generator(rowcount => (select count(*) from db.s.t)))",
+                &[("DB", "S", "T")],
+                &[],
+            ),
+            (
+                AdapterType::Bigquery,
+                "select * from p.d.t t, unnest(t.arr)",
+                &[("p", "d", "t")],
+                &[],
+            ),
+            (Postgres, "select * from generate_series(1,10)", &[], &[]),
+            (Redshift, "select * from generate_series(1,10)", &[], &[]),
+        ];
+        let mut failures = Vec::new();
+        for (adapter, sql, tables, functions) in cases {
+            let found = extract_from_str(sql, *adapter, "c", "s").unwrap();
+            let expected_tables: BTreeSet<FullyQualifiedName> = tables
+                .iter()
+                .map(|(c, s, t)| FullyQualifiedName::new(c, s, t))
+                .collect();
+            let expected_fns: BTreeSet<String> = functions.iter().map(|f| f.to_string()).collect();
+            let actual_fns: BTreeSet<String> = found
+                .table_functions
+                .iter()
+                .map(|f| f.to_lowercase())
+                .collect();
+            if found.sources != expected_tables || actual_fns != expected_fns {
+                failures.push(format!(
+                    "{adapter:?}: {sql}: tables {:?}, functions {:?}",
+                    found.sources, found.table_functions
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 }

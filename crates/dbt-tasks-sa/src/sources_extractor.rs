@@ -1,11 +1,10 @@
 //! Source-available [SourcesExtractor] implementation.
 
+use crate::extract_sources::Extraction;
 use dbt_adapter_core::AdapterType;
 use dbt_common::adapter::dialect_of;
-use dbt_common::sources_extractor::SourcesExtractor;
-use dbt_frontend_common::FullyQualifiedName;
+use dbt_common::sources_extractor::{ExtractedUpstreams, SourcesExtractor};
 use dbt_frontend_common::error::{CodeLocation, ErrorCode, FrontendError, FrontendResult};
-use dbt_frontend_common::named_reference::NamedReference;
 
 #[derive(Default)]
 pub struct DefaultSourcesExtractor;
@@ -40,6 +39,15 @@ fn normalize_default_catalog_schema(
     Ok((normalized_catalog, normalized_schema))
 }
 
+impl From<Extraction> for ExtractedUpstreams {
+    fn from(found: Extraction) -> Self {
+        ExtractedUpstreams {
+            tables: found.sources.into_iter().map(Into::into).collect(),
+            table_functions: found.table_functions,
+        }
+    }
+}
+
 impl SourcesExtractor for DefaultSourcesExtractor {
     fn extract_upstreams(
         &self,
@@ -48,10 +56,10 @@ impl SourcesExtractor for DefaultSourcesExtractor {
         default_catalog: &str,
         default_schema: &str,
         _quoted_name_ignore_case: bool,
-    ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+    ) -> FrontendResult<ExtractedUpstreams> {
         let (normalized_catalog, normalized_schema) =
             normalize_default_catalog_schema(adapter_type, default_catalog, default_schema)?;
-        Ok(crate::extract_sources::extract_sources_from_str(
+        let found = crate::extract_sources::extract_from_str(
             sql,
             adapter_type,
             &normalized_catalog,
@@ -63,10 +71,8 @@ impl SourcesExtractor for DefaultSourcesExtractor {
                 CodeLocation::default(),
                 e.to_string(),
             ))
-        })?
-        .into_iter()
-        .map(|entity| entity.into())
-        .collect::<Vec<_>>())
+        })?;
+        Ok(found.into())
     }
 
     fn extract_standalone_expression_upstreams(
@@ -76,27 +82,23 @@ impl SourcesExtractor for DefaultSourcesExtractor {
         default_catalog: &str,
         default_schema: &str,
         _quoted_name_ignore_case: bool,
-    ) -> FrontendResult<Vec<NamedReference<FullyQualifiedName>>> {
+    ) -> FrontendResult<ExtractedUpstreams> {
         let (normalized_catalog, normalized_schema) =
             normalize_default_catalog_schema(adapter_type, default_catalog, default_schema)?;
-        Ok(
-            crate::extract_sources::extract_sources_from_standalone_expression(
-                sql,
-                adapter_type,
-                &normalized_catalog,
-                &normalized_schema,
-            )
-            .map_err(|e| {
-                Box::new(FrontendError::new(
-                    ErrorCode::Unexpected,
-                    CodeLocation::default(),
-                    e.to_string(),
-                ))
-            })?
-            .into_iter()
-            .map(|entity| entity.into())
-            .collect::<Vec<_>>(),
+        let found = crate::extract_sources::extract_from_standalone_expression(
+            sql,
+            adapter_type,
+            &normalized_catalog,
+            &normalized_schema,
         )
+        .map_err(|e| {
+            Box::new(FrontendError::new(
+                ErrorCode::Unexpected,
+                CodeLocation::default(),
+                e.to_string(),
+            ))
+        })?;
+        Ok(found.into())
     }
 }
 
@@ -116,8 +118,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(sources.len(), 1);
-        let source = sources.into_iter().next().unwrap().into_inner();
+        assert_eq!(sources.tables.len(), 1);
+        let source = sources.tables.into_iter().next().unwrap().into_inner();
         assert_eq!(source.catalog().name(), "DEVELOPMENT");
         assert_eq!(source.schema().name(), "ANALYTICS");
         assert_eq!(source.table().name(), "USERS");

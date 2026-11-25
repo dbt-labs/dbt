@@ -1,6 +1,9 @@
 {% macro bigquery__scalar_function_create_replace_signature_sql(target_relation) %}
     CREATE OR REPLACE FUNCTION {{ target_relation.render() }} ({{ formatted_scalar_function_args_sql()}})
+    {#- BigQuery infers a SQL function's return type when `returns` is omitted. #}
+    {% if model.returns and model.returns.data_type %}
     RETURNS {{ model.returns.data_type }}
+    {% endif %}
     {{ scalar_function_volatility_sql() }}
     AS
 {% endmacro %}

@@ -2,6 +2,9 @@
 
 pub const AUTH_TYPE: &str = "adbc.bigquery.sql.auth_type";
 pub const API_ENDPOINT: &str = "adbc.bigquery.sql.api_endpoint";
+// Storage Read API (gRPC) endpoint as `host:port`. Only the Foundry driver
+// reads this key; the canonical driver ignores it.
+pub const STORAGE_READ_API_ENDPOINT: &str = "bigquery.storage_endpoint";
 pub const LOCATION: &str = "adbc.bigquery.sql.location";
 pub const PROJECT_ID: &str = "adbc.bigquery.sql.project_id";
 pub const DATASET_ID: &str = "adbc.bigquery.sql.dataset_id";
@@ -78,6 +81,8 @@ pub const QUERY_PREFETCH_CONCURRENCY: &str = "adbc.bigquery.sql.query.prefetch_c
 
 pub const QUERY_LINK_FAILED_JOB: &str = "adbc.bigquery.sql.query.link_failed_job";
 
+pub const ERROR_DETAIL_JOB_ERROR_REASON: &str = "adbc.bigquery.job.error_reason";
+
 // When true, GetObjects at depth Tables lists tables with tables.list only (table
 // name and type) instead of issuing one tables.get per table. Constraints are not
 // returned. Depths that include columns are unaffected.
@@ -98,10 +103,13 @@ pub const UPDATE_TABLE_COLUMNS_POLICY_TAGS: &str = "adbc.bigquery.table.update_c
 pub const UPDATE_TABLE_DESCRIPTION: &str = "adbc.bigquery.table.update_description";
 pub const UPDATE_DATASET_AUTHORIZE_VIEW_TO_DATASETS: &str =
     "adbc.bigquery.dataset.authorize_view_to_datasets";
+// JSON {project, dataset}: the query returns the dataset's `location` (no row if
+// it doesn't exist), read with datasets.get rather than INFORMATION_SCHEMA.
+pub const GET_DATASET_LOCATION: &str = "bigquery.dataset.get_location";
 
 pub const DATAPROC_REGION: &str = "adbc.bigquery.dataproc.compute_region";
 pub const DATAPROC_PROJECT: &str = "adbc.bigquery.dataproc.project";
-pub const DATAPROC_POOLING_TIMEOUT: &str = "adbc.bigquery.dataproc.pooling_timeout";
+pub const DATAPROC_POOLING_TIMEOUT: &str = "adbc.bigquery.dataproc.pooling_timeout"; // i64
 pub const CREATE_BATCH_REQ_PARENT: &str = "adbc.bigquery.create_batch.parent";
 pub const CREATE_BATCH_REQ_BATCH_YML: &str = "adbc.bigquery.create_batch.batch_yml";
 pub const CREATE_BATCH_REQ_BATCH_ID: &str = "adbc.bigquery.create_batch.batch_id";

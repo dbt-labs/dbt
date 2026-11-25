@@ -1,0 +1,7 @@
+kind: Fixes
+body: A feature flag that turns on an experimental is a known flag, so setting it with `--feature` or `DBT_ENGINE_FEATURES` no longer warns that it is unknown and has no effect
+time: 2026-11-04T12:00:00.000000-08:00
+custom:
+    author: eliasdefaria
+    issue: ' '
+    project: dbt-core

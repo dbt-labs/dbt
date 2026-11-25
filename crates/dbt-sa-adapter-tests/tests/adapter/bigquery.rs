@@ -617,3 +617,22 @@ async fn adapters_bigquery_hidden_dataset() -> FsResult<()> {
     )
     .await
 }
+
+/// Grants on a function name the object as a function
+/// (https://github.com/dbt-labs/fs/issues/17585). BigQuery GRANT does not accept
+/// functions, so the build fails with a clear error instead of sending one.
+#[dbt_runtime::test]
+async fn adapters_bigquery_function_grants() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/function_grants",
+        AdapterType::Bigquery.as_ref(),
+        None,
+        &["build"],
+        None,
+        &[],
+    )
+    .await
+}

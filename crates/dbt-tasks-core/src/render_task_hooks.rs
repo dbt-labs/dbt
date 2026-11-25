@@ -19,6 +19,16 @@ pub trait RenderTaskHooks: Send + Sync {
         type_ops: &Arc<dyn TypeOps>,
     ) -> FsResult<()>;
 
+    /// Optionally infer SQL fixture columns for model Jinja introspection.
+    fn try_infer_unit_test_fixture_schema(
+        &self,
+        _ctx: &TaskRunnerCtx,
+        _unit_test: &DbtUnitTest,
+        _sql: &str,
+    ) -> FsResult<Option<SchemaRef>> {
+        Ok(None)
+    }
+
     /// Optionally infer the tested model's schema without an adapter query.
     fn try_infer_unit_test_schema(
         &self,

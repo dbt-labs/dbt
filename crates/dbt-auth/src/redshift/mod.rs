@@ -206,16 +206,6 @@ impl<'a> RedshiftAuthIR<'a> {
                 port,
                 database,
             } => {
-                builder.with_named_option(AUTH_PROVIDER, AUTH_PROVIDER_IDP_TOKEN)?;
-                builder.with_named_option(
-                    AUTH_TOKEN_ENDPOINT_REQUEST_URL,
-                    token_endpoint.request_url.clone(),
-                )?;
-                builder.with_named_option(
-                    AUTH_TOKEN_ENDPOINT_REQUEST_DATA,
-                    token_endpoint.request_data.clone(),
-                )?;
-
                 let headers =
                     token_service::token_endpoint_headers(&token_endpoint).map_err(|e| {
                         AuthError::config(format!("Failed to build token headers: {e}"))
@@ -224,6 +214,15 @@ impl<'a> RedshiftAuthIR<'a> {
                     AuthError::config(format!("Failed to serialize token endpoint headers: {e}"))
                 })?;
 
+                builder.with_named_option(AUTH_PROVIDER, AUTH_PROVIDER_IDP_TOKEN)?;
+                builder.with_named_option(
+                    AUTH_TOKEN_ENDPOINT_REQUEST_URL,
+                    token_endpoint.request_url,
+                )?;
+                builder.with_named_option(
+                    AUTH_TOKEN_ENDPOINT_REQUEST_DATA,
+                    token_endpoint.request_data,
+                )?;
                 builder.with_named_option(AUTH_TOKEN_ENDPOINT_REQUEST_HEADERS, headers_json)?;
 
                 let connection_str = build_connection_uri(host, &port, database, None);

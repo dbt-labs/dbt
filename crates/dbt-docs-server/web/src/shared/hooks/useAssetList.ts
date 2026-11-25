@@ -1,8 +1,7 @@
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMetadataDataSource } from 'dbt-docs-lib';
+import type { AssetSummary } from 'dbt-docs-lib/domain';
 
-import { useMetadataDataSource } from '../context/MetadataDataProvider';
 import type { AssetFilter, ListArgs } from '../typings/args';
-import type { AssetSummary } from '../typings/domain/asset';
 import { listKey } from '../util/queryKeys';
 import { UNSUPPORTED_SURFACE_MESSAGE } from './unsupportedSurface';
 

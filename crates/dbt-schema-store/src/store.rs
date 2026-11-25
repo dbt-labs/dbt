@@ -6,8 +6,8 @@
 //! external) and maps them to their respective on-disk namespaces.
 
 use crate::{
-    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaEntry, SchemaStoreResult,
-    SchemaStoreTrait, parquet_cache::ParquetSchemaCache,
+    CanonicalFqn, CanonicalIdentifier, DataStoreTrait, SchemaChanges, SchemaEntry, SchemaOwner,
+    SchemaStoreResult, SchemaStoreTrait, parquet_cache::ParquetSchemaCache,
 };
 use arrow::array::RecordBatch;
 use arrow_schema::{ArrowError, Schema, SchemaRef};
@@ -16,7 +16,7 @@ use futures::StreamExt;
 use parquet::arrow::ArrowWriter as ParquetArrowWriter;
 use scc::{HashMap as SccHashMap, HashSet as SccHashSet};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, RwLock},
     time::{Duration, SystemTime},
@@ -369,6 +369,62 @@ impl SchemaStoreState {
     }
 }
 
+/// The most changes [`ChangeLog`] keeps. A reader further behind gets every
+/// entry instead, so a long-lived store's log stays bounded.
+const CHANGE_LOG_CAP: usize = 16 * 1024;
+
+/// One change [`SchemaStore::changes_since`] reports.
+#[derive(Debug, Clone)]
+enum Change {
+    Registered(CanonicalFqn),
+    LookupError(CanonicalFqn, String),
+}
+
+/// The changes made after the store was built, newest last.
+///
+/// Generation `g` means "has seen the first `g - 1` changes": 0 is a reader
+/// that has seen nothing, and 1 is the store as built, whose entries were
+/// not logged.
+#[derive(Debug)]
+struct ChangeLog {
+    /// The generation before `changes[0]`.
+    base: u64,
+    changes: VecDeque<Change>,
+}
+
+impl Default for ChangeLog {
+    fn default() -> Self {
+        Self {
+            base: 1,
+            changes: VecDeque::new(),
+        }
+    }
+}
+
+impl ChangeLog {
+    fn generation(&self) -> u64 {
+        self.base + self.changes.len() as u64
+    }
+
+    fn push(&mut self, change: Change) {
+        if self.changes.len() == CHANGE_LOG_CAP {
+            self.changes.pop_front();
+            self.base += 1;
+        }
+        self.changes.push_back(change);
+    }
+
+    /// The changes after `generation`, or `None` when the log no longer
+    /// holds them all (or never did).
+    fn since(&self, generation: u64) -> Option<Vec<Change>> {
+        if generation < self.base || generation > self.generation() {
+            return None;
+        }
+        let skip = (generation - self.base) as usize;
+        Some(self.changes.iter().skip(skip).cloned().collect())
+    }
+}
+
 /// Primary filesystem-backed implementation of [`SchemaStoreTrait`].
 #[derive(Debug)]
 pub struct SchemaStore {
@@ -378,6 +434,10 @@ pub struct SchemaStore {
     external: SccHashSet<CanonicalFqn>,
     local: BiMap<CanonicalFqn, UniqueId>,
     state: SchemaStoreState,
+    lookup_errors: RwLock<HashMap<CanonicalFqn, String>>,
+    /// Every insert into `state.cached_entries` and `lookup_errors` after
+    /// construction, logged once it is visible to readers.
+    changes: RwLock<ChangeLog>,
 }
 
 impl SchemaStore {
@@ -427,6 +487,8 @@ impl SchemaStore {
             external: SccHashSet::new(),
             local: local.into_iter().collect(),
             state,
+            lookup_errors: RwLock::new(HashMap::new()),
+            changes: RwLock::new(ChangeLog::default()),
         };
 
         // Register local schemas during construction
@@ -439,6 +501,55 @@ impl SchemaStore {
         }
 
         store
+    }
+
+    /// Retains a metadata lookup failure for this invocation only.
+    pub fn register_lookup_error(&self, cfqn: CanonicalFqn, message: String) {
+        self.lookup_errors
+            .write()
+            .expect("lookup errors lock poisoned")
+            .insert(cfqn.clone(), message.clone());
+        self.log(Change::LookupError(cfqn, message));
+    }
+
+    fn log(&self, change: Change) {
+        self.changes
+            .write()
+            .expect("changes lock poisoned")
+            .push(change);
+    }
+
+    /// Every entry and lookup error the store holds, as of `generation`.
+    fn all_changes(&self, generation: u64) -> SchemaChanges {
+        let mut seen = HashSet::new();
+        let mut registered = Vec::new();
+        self.state.cached_entries.iter_sync(|entry, _| {
+            let cfqn = match entry {
+                LookupEntry::Selected(unique_id) => self.selected.get_by_right(unique_id).cloned(),
+                LookupEntry::Frontier(cfqn)
+                | LookupEntry::Deferred(cfqn)
+                | LookupEntry::External(cfqn)
+                | LookupEntry::Local(cfqn) => Some(cfqn.clone()),
+            };
+            if let Some(cfqn) = cfqn
+                && seen.insert(cfqn.clone())
+            {
+                registered.push(cfqn);
+            }
+            true
+        });
+        let lookup_errors = self
+            .lookup_errors
+            .read()
+            .expect("lookup errors lock poisoned")
+            .iter()
+            .map(|(cfqn, message)| (cfqn.clone(), message.clone()))
+            .collect();
+        SchemaChanges {
+            generation,
+            registered,
+            lookup_errors,
+        }
     }
 
     /// Finds the [`LookupEntry`] corresponding to a canonical FQN.
@@ -496,8 +607,10 @@ impl SchemaStore {
         for (cfqn, uid) in deferred {
             if !guard.contains_left(&cfqn) {
                 guard.insert(cfqn.clone(), uid);
-                let entry = LookupEntry::Deferred(cfqn);
-                self.state.try_register_entry(&entry);
+                let entry = LookupEntry::Deferred(cfqn.clone());
+                if self.state.try_register_entry(&entry).is_some() {
+                    self.log(Change::Registered(cfqn));
+                }
                 changed = true;
             }
         }
@@ -597,6 +710,7 @@ impl SchemaStore {
             .state
             .cached_entries
             .upsert_sync(frontier_entry, wrapper);
+        self.log(Change::Registered(cfqn.clone()));
 
         Ok(())
     }
@@ -623,6 +737,14 @@ impl SchemaStore {
 
 #[async_trait::async_trait]
 impl SchemaStoreTrait for SchemaStore {
+    fn lookup_error(&self, cfqn: &CanonicalFqn) -> Option<String> {
+        self.lookup_errors
+            .read()
+            .expect("lookup errors lock poisoned")
+            .get(cfqn)
+            .cloned()
+    }
+
     fn exists(&self, cfqn: &CanonicalFqn) -> bool {
         let entry = self.resolve_lookup_entry_by_cfqn(cfqn);
         entry.as_ref().is_some_and(|entry| self.state.exists(entry))
@@ -633,6 +755,30 @@ impl SchemaStoreTrait for SchemaStore {
             self.state.exists_async(&entry).await
         } else {
             false
+        }
+    }
+
+    fn schema_owner(&self, cfqn: &CanonicalFqn) -> Option<SchemaOwner> {
+        match self.resolve_lookup_entry_by_cfqn(cfqn)? {
+            LookupEntry::Selected(unique_id) => Some(SchemaOwner::Current(unique_id)),
+            LookupEntry::Local(cfqn) => self
+                .local
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Current),
+            LookupEntry::Frontier(cfqn) => self
+                .frontier
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Current),
+            LookupEntry::Deferred(cfqn) => self
+                .deferred
+                .read()
+                .expect("deferred lock poisoned")
+                .get_by_left(&cfqn)
+                .cloned()
+                .map(SchemaOwner::Deferred),
+            LookupEntry::External(_) => None,
         }
     }
 
@@ -686,9 +832,15 @@ impl SchemaStoreTrait for SchemaStore {
         let result = self
             .state
             .register_schema(&entry, original_schema, schema, overwrite)?;
+        self.lookup_errors
+            .write()
+            .expect("lookup errors lock poisoned")
+            .remove(cfqn);
         if let LookupEntry::External(cfqn) = entry {
             let _ = self.external.insert_sync(cfqn);
         }
+        // Last, so a reader of the log can resolve the entry.
+        self.log(Change::Registered(cfqn.clone()));
         Ok(result)
     }
 
@@ -726,6 +878,46 @@ impl SchemaStoreTrait for SchemaStore {
             }
         });
         tables.into_iter().collect()
+    }
+
+    /// Reads the generation before the entries, so a change made meanwhile
+    /// is at worst reported twice, never lost: each change is logged only
+    /// after it is visible.
+    fn changes_since(&self, generation: u64) -> SchemaChanges {
+        let (current, logged) = {
+            let log = self.changes.read().expect("changes lock poisoned");
+            let logged = (generation > 0).then(|| log.since(generation)).flatten();
+            (log.generation(), logged)
+        };
+        let Some(logged) = logged else {
+            return self.all_changes(current);
+        };
+        let mut seen = HashSet::new();
+        let mut registered = Vec::new();
+        let mut lookup_errors = Vec::new();
+        for change in logged {
+            match change {
+                Change::Registered(cfqn) => {
+                    if seen.insert(cfqn.clone()) {
+                        registered.push(cfqn);
+                    }
+                }
+                Change::LookupError(cfqn, message) => {
+                    // Only an error the store still holds: a later
+                    // registration clears it, and a later error replaces it.
+                    if self.lookup_error(&cfqn).as_ref() == Some(&message)
+                        && !lookup_errors.iter().any(|(seen, _)| seen == &cfqn)
+                    {
+                        lookup_errors.push((cfqn, message));
+                    }
+                }
+            }
+        }
+        SchemaChanges {
+            generation: current,
+            registered,
+            lookup_errors,
+        }
     }
 }
 
@@ -909,4 +1101,160 @@ pub fn read_cached_schema_from_parquet(
         SchemaEntry::from_sdf_arrow_schema(None, arrow_schema),
         timestamp,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LocalSchemaEntry;
+    use arrow_schema::{DataType, Field};
+    use std::collections::HashSet;
+    use tempfile::TempDir;
+
+    fn schema(column: &str) -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new(column, DataType::Utf8, false)]))
+    }
+
+    fn cfqn(table: &str) -> CanonicalFqn {
+        CanonicalFqn::new(
+            &CanonicalIdentifier::new("db"),
+            &CanonicalIdentifier::new("s"),
+            &CanonicalIdentifier::new(table),
+        )
+    }
+
+    fn empty_store(dir: &TempDir) -> SchemaStore {
+        SchemaStore::new(
+            dir.path().to_path_buf(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+            HashMap::new(),
+        )
+    }
+
+    #[test]
+    fn changes_since_zero_lists_every_entry() {
+        let dir = TempDir::new().unwrap();
+        let local = cfqn("local_src");
+        let frontier = cfqn("frontier_src");
+        let external = cfqn("external_t");
+        let deferred = cfqn("deferred_t");
+        let frontier_ids = HashMap::from([(frontier.clone(), "source.pkg.frontier_src".into())]);
+        let deferred_ids = HashMap::from([(deferred.clone(), "model.pkg.deferred_t".into())]);
+
+        // A previous run leaves a frontier and a deferred entry in the remote epoch.
+        {
+            let previous = SchemaStore::new(
+                dir.path().to_path_buf(),
+                HashMap::new(),
+                frontier_ids.clone(),
+                HashMap::new(),
+                vec![],
+                HashMap::new(),
+            );
+            previous
+                .register_schema(&frontier, None, schema("f"), true)
+                .unwrap();
+            previous.set_deferred(deferred_ids.clone());
+            previous
+                .register_schema(&deferred, None, schema("d"), true)
+                .unwrap();
+            previous.save(dir.path()).unwrap();
+        }
+
+        let store = SchemaStore::new(
+            dir.path().to_path_buf(),
+            HashMap::new(),
+            frontier_ids,
+            HashMap::from([(local.clone(), "source.pkg.local_src".into())]),
+            vec![LocalSchemaEntry {
+                cfqn: local.clone(),
+                unique_id: "source.pkg.local_src".into(),
+                schema: schema("l"),
+            }],
+            HashMap::new(),
+        );
+        store
+            .register_schema(&external, None, schema("e"), true)
+            .unwrap();
+        store.set_deferred(deferred_ids);
+
+        let changes = store.changes_since(0);
+        let registered: HashSet<_> = changes.registered.iter().cloned().collect();
+        assert_eq!(
+            registered.len(),
+            changes.registered.len(),
+            "no duplicates: {:?}",
+            changes.registered
+        );
+        assert_eq!(
+            registered,
+            HashSet::from([local, frontier, external, deferred])
+        );
+        for cfqn in &changes.registered {
+            assert!(store.get_schema(cfqn).is_some(), "{cfqn}");
+        }
+        assert!(changes.lookup_errors.is_empty());
+    }
+
+    #[test]
+    fn changes_since_lists_only_later_registrations_and_errors() {
+        let dir = TempDir::new().unwrap();
+        let store = empty_store(&dir);
+        let (earlier, later, missing) = (cfqn("earlier"), cfqn("later"), cfqn("missing"));
+        store
+            .register_schema(&earlier, None, schema("a"), true)
+            .unwrap();
+
+        let generation = store.changes_since(0).generation;
+        store
+            .register_schema(&later, None, schema("b"), true)
+            .unwrap();
+        store.register_lookup_error(missing.clone(), "the pull failed".into());
+
+        let changes = store.changes_since(generation);
+        assert_eq!(changes.registered, vec![later.clone()]);
+        assert_eq!(
+            changes.lookup_errors,
+            vec![(missing.clone(), "the pull failed".to_string())]
+        );
+
+        let none = store.changes_since(changes.generation);
+        assert!(none.registered.is_empty(), "{:?}", none.registered);
+        assert!(none.lookup_errors.is_empty(), "{:?}", none.lookup_errors);
+        assert_eq!(none.generation, changes.generation);
+
+        // A new consumer gets the errors recorded so far, too.
+        let everything = store.changes_since(0);
+        assert_eq!(
+            everything.registered.iter().collect::<HashSet<_>>(),
+            HashSet::from([&earlier, &later])
+        );
+        assert_eq!(
+            everything.lookup_errors,
+            vec![(missing, "the pull failed".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_reader_behind_the_log_gets_everything() {
+        let dir = TempDir::new().unwrap();
+        let store = empty_store(&dir);
+        // Two past the cap, so the log has dropped generation 1 and its tail
+        // (at most the cap) is shorter than the full enumeration.
+        let count = CHANGE_LOG_CAP + 2;
+        for i in 0..count {
+            store
+                .register_schema(&cfqn(&format!("t{i}")), None, schema("c"), true)
+                .unwrap();
+        }
+        let changes = store.changes_since(1);
+        assert_eq!(changes.registered.len(), count);
+        assert_eq!(
+            changes.registered.iter().collect::<HashSet<_>>().len(),
+            count
+        );
+    }
 }

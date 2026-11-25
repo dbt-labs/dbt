@@ -520,6 +520,68 @@ fn latest_group_supersedes_the_whole_group() {
     );
 }
 
+/// `Supersede::LatestBy` keeps the first row of the newest epoch, as the ingest does,
+/// with the lookup inline or as a table. The epoch writer does not deduplicate, so one
+/// epoch can hold a key twice.
+#[test]
+fn latest_by_keeps_the_first_row_of_the_newest_epoch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().join("parse/nodes");
+    std::fs::create_dir_all(&dir).expect("create_dir_all");
+
+    let mut db = Db::open_memory().expect("open_memory");
+    db.execute_update("CREATE SCHEMA IF NOT EXISTS dbt_internal")
+        .expect("create schema");
+    let mut write = |file: &str, rows: &str| {
+        let path = dir.join(file);
+        db.execute_update(&format!(
+            "COPY ({rows}) TO '{}' (FORMAT parquet)",
+            path.display()
+        ))
+        .unwrap_or_else(|e| panic!("writing {file}: {e}"));
+    };
+    write(
+        "v1_0.parquet",
+        "SELECT * FROM (VALUES ('a', 'old'), ('b', 'kept')) AS t(unique_id, v)",
+    );
+    write(
+        "v1_1.parquet",
+        "SELECT * FROM (VALUES ('a', 'first'), ('a', 'second')) AS t(unique_id, v)",
+    );
+
+    let rel = epoch::EpochRelation {
+        view: "epoch_latest_test",
+        dir: "parse/nodes",
+        single_file: false,
+        supersede: epoch::Supersede::LatestBy("unique_id"),
+        backfill: &[],
+    };
+    for (lookup, stmts) in [
+        ("inline", vec![rel.create_view_sql(tmp.path())]),
+        (
+            "table",
+            rel.create_sql(tmp.path(), epoch::LatestLookup::Table),
+        ),
+    ] {
+        for stmt in &stmts {
+            db.execute_update(stmt)
+                .unwrap_or_else(|e| panic!("executing\n{stmt}\n{e}"));
+        }
+        let batches = db
+            .execute_query(
+                "SELECT unique_id || '=' || v FROM dbt_internal.epoch_latest_test ORDER BY 1",
+            )
+            .expect("query");
+        let mut got: Vec<String> = Vec::new();
+        for batch in &batches {
+            for i in 0..batch.num_rows() {
+                got.push(cell_to_string(batch, i, 0));
+            }
+        }
+        assert_eq!(got, ["a=first", "b=kept"], "lookup {lookup}");
+    }
+}
+
 /// A metadata directory holding the parse relations and nothing else.
 ///
 /// The files are empty: `generate` decides which views to emit from whether an epoch file
@@ -633,6 +695,39 @@ fn each_check_view_offers_exactly_its_declared_columns() {
         );
     }
     assert!(seen > 0, "no parse-safe view was published to compare");
+}
+
+/// Only the COPY writer creates the latest-row lookups as tables.
+///
+/// The check views keep only the `CREATE OR REPLACE VIEW dbt_internal.<relation>` statements,
+/// so a lookup table in [`epoch_views::generate`]'s output would drop out of them and every
+/// check view would fail to bind.
+#[test]
+fn only_the_copy_writer_creates_lookup_tables() {
+    let tmp = parse_corpus();
+    let dir = tmp.path();
+
+    let views = epoch_views::generate(dir).expect("generate");
+    assert!(
+        views
+            .statements
+            .iter()
+            .all(|s| !s.starts_with("CREATE OR REPLACE TABLE")),
+        "generate must create views only"
+    );
+
+    let copy = epoch_views::generate_with(dir, epoch::LatestLookup::Table).expect("generate_with");
+    let tables: Vec<&str> = copy
+        .statements
+        .iter()
+        .filter_map(|s| s.strip_prefix("CREATE OR REPLACE TABLE dbt_internal."))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .collect();
+    assert_eq!(
+        tables,
+        ["epoch_parse_nodes_latest"],
+        "the parse corpus has one LatestBy relation"
+    );
 }
 
 /// A backfilled column binds even when no file on disk has it yet, reading NULL

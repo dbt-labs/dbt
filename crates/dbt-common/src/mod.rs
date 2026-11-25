@@ -27,6 +27,7 @@ pub use dbt_error::{
 };
 pub mod behavior_flags;
 pub mod embedded_install_scripts;
+pub mod env_secrets;
 pub mod fail_fast;
 pub mod infer_schema_registry;
 pub mod io_args;
@@ -40,6 +41,7 @@ pub mod status_reporter;
 pub mod time;
 pub mod tracing;
 pub mod user_defined_schema_registry;
+pub mod version;
 pub mod warn_error_options;
 
 // Re-export span creation functions that were previously exported as macros

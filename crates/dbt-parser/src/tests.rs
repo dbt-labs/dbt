@@ -452,7 +452,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -474,7 +474,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -497,7 +497,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -520,7 +520,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -546,7 +546,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -569,7 +569,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -593,7 +593,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -618,7 +618,7 @@ mod tests {
         let result = render_sql(
             sql_error,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         );
@@ -638,7 +638,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -1065,7 +1065,7 @@ mod tests {
         let rendered = render_sql(
             sql,
             &env,
-            &BTreeMap::new(),
+            &BTreeMap::<String, Value>::new(),
             &DefaultRenderingEventListenerFactory::default(),
             &PathBuf::from("test"),
         )
@@ -1634,7 +1634,7 @@ mod tests {
     }
 
     /// `sql`'s `config()` calls under `aliasing`, in source order.
-    fn inline_config_calls(sql: &str, aliasing: InlineConfigAliasing) -> Vec<Box<ModelConfig>> {
+    fn inline_config_calls(sql: &str, aliasing: InlineConfigAliasing) -> Vec<ModelConfig> {
         let (env, sql_resources, init_config) = setup_test_env();
         let mut context = build_resolve_model_context(
             &init_config,
@@ -1670,6 +1670,9 @@ mod tests {
         let resources = sql_resources.lock().unwrap().clone();
         crate::sql_file_info::SqlFileInfo::from_sql_resources(resources, Default::default(), false)
             .config_calls
+            .into_iter()
+            .map(|call| *call)
+            .collect()
     }
 
     /// A Snowflake default that also declares BigQuery.
@@ -1691,7 +1694,7 @@ mod tests {
         let fqn = vec!["my_model".to_string()];
         let layers = crate::dbt_project_config::NodeLayers::new(&fqn, &[]);
         let calls = inline_config_calls(sql, resolver.inline_config_aliasing(&layers));
-        let calls: Vec<&ModelConfig> = calls.iter().map(|call| call.as_ref()).collect();
+        let calls: Vec<&ModelConfig> = calls.iter().collect();
         let inline = resolver.fold_inline_calls(&layers, &calls);
         resolver.with_configs(&fqn, &[inline.as_ref()])
     }
@@ -2689,7 +2692,7 @@ mod tests {
         );
 
         // No Jinja at all, but YAML 1.1: PyYAML resolves this to `True` before dbt-core ever
-        // renders it, so core walks the children; dbt-yaml's `yaml_11` feature does the same.
+        // renders it, so core walks the children; the YAML 1.1 bool resolver does the same.
         assert_eq!(selector_children_flag("yes", Value::from(true)), Ok(true));
     }
 
@@ -2815,8 +2818,8 @@ mod tests {
             Resolved(Some(false))
         );
 
-        // No Jinja at all, but YAML 1.1. The render pass leaves it alone, and dbt-yaml's
-        // `yaml_11` feature resolves it, as it does for the graph-walk flags.
+        // No Jinja at all, but YAML 1.1. The render pass leaves it alone, and the YAML 1.1
+        // bool resolver resolves it, as it does for the graph-walk flags.
         assert_eq!(
             selector_default("yes", Value::from(true)),
             Resolved(Some(true))

@@ -37,6 +37,10 @@ pub enum LakeComputeCatalogAttachOutcome {
     /// mints no credential either, so nothing was attempted. Not a failure.
     NothingToCheck {
         pat_hygiene: Option<PatHygieneReport>,
+        /// Declared catalogs the implementation did not probe, named so the
+        /// caller can report them instead of reporting that nothing was declared.
+        /// A run that probed another catalog reports only what it attached.
+        unprobed_catalogs: Vec<String>,
     },
 }
 

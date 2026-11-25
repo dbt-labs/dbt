@@ -2,6 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+use crate::args::ResolveArgs;
 use crate::utils::{RawProjectConfig, extract_resource_config_from_raw_project};
 use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
@@ -16,7 +17,7 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::DbtQuoting;
 use dbt_schemas::schemas::project::AdapterProjectConfig;
-use dbt_schemas::state::ProfileAdapter;
+use dbt_schemas::state::{ProfileAdapter, resolve_effective_propagation_target};
 use indexmap::IndexMap;
 
 /// Validate the root project's `adapters:` block. Called once per run.
@@ -416,6 +417,29 @@ pub(crate) fn resolve_node_quoting(
         None => quoting,
     };
     resolve_package_quoting(Some(quoting), adapter)
+}
+
+/// The explicit or implicitly selected propagation target for a Lake Compute node. Returns `None`
+/// for any other adapter, an invalid selection, missing `profile_adapter_types` in `arg`,
+/// or no applicable target.
+/// Parsing stays best-effort: invalid selections are reported only for nodes that run.
+pub(crate) fn node_effective_propagation_target(
+    arg: &ResolveArgs,
+    selected_adapter: AdapterType,
+    default_adapter: AdapterType,
+    propagate: &[AdapterType],
+    catalog_requires_snowflake: bool,
+) -> Option<AdapterType> {
+    if selected_adapter != AdapterType::LakeCompute {
+        return None;
+    }
+    let profile_adapter_types = arg.profile_adapter_types.as_ref()?;
+    resolve_effective_propagation_target(
+        propagate,
+        profile_adapter_types,
+        default_adapter,
+        catalog_requires_snowflake,
+    )
 }
 
 #[cfg(test)]

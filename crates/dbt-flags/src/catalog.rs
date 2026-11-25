@@ -8,7 +8,7 @@ pub static GIT_DEPS_FAST_PATH: FlagDef = FlagDef {
     name: "git_deps_fast_path",
     description: "Use host-specific fast paths (GitHub archive download and GraphQL ref \
                   resolution) for git packages, falling back to git clone.",
-    stage: Stage::Internal,
+    stage: Stage::Experimental,
     default: false,
     remote: Remote::Default,
     aliases: &[],
@@ -49,11 +49,13 @@ pub static LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT: FlagDef = FlagDef {
     docs_url: None,
 };
 
-/// Load the SQL frontend from a dynamic library instead of the built-in one.
-pub static FRONTEND_LIBRARY: FlagDef = FlagDef {
-    name: "frontend_library",
-    description: "Load the SQL frontend from a dynamic library instead of the built-in one.",
-    stage: Stage::Internal,
+/// Call the SQL frontend through its protocol (serialized requests to a
+/// frontend session) instead of calling it directly.
+pub static FRONTEND_PROTOCOL: FlagDef = FlagDef {
+    name: "frontend_protocol",
+    description: "Call the SQL frontend through its protocol (serialized requests to a \
+                  frontend session) instead of calling it directly.",
+    stage: Stage::Experimental,
     default: false,
     remote: Remote::Never,
     aliases: &[],
@@ -69,11 +71,100 @@ pub static LOCK_WITH_STATE: FlagDef = FlagDef {
     name: "lock_with_state",
     description: "Take the per-model task-cache lock before asking dbt State whether to \
                   build a node, so concurrent runs do not build it twice.",
-    stage: Stage::Internal,
+    stage: Stage::Experimental,
     default: false,
     remote: Remote::Force,
     aliases: &[],
     legacy_env: &["DBT_ENGINE_LOCK_WITH_STATE"],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
+/// Whether `dbt init` offers, for a Snowflake profile, a `lakecompute` output
+/// beside the Snowflake one.
+pub static LAKECOMPUTE_PROFILE_SETUP: FlagDef = FlagDef {
+    name: "lakecompute_profile_setup",
+    description: "In dbt init, offer a lakecompute output beside a Snowflake profile's output.",
+    stage: Stage::Experimental,
+    default: false,
+    remote: Remote::Default,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
+/// Whether `--empty` empties the tables a model reads by rewriting the model's
+/// compiled SQL. Off, each relation renders as a zero-row subquery.
+pub static USE_V2_EMPTY_SQL_REWRITE: FlagDef = FlagDef {
+    name: "use_v2_empty_sql_rewrite",
+    description: "Apply --empty by rewriting the compiled SQL to read zero rows from each \
+                  table, which keeps implicit table aliases, instead of rendering each \
+                  relation as a zero-row subquery.",
+    stage: Stage::Behavior,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
+/// Models written in MetricFlow's semantic SQL.
+pub static METRICFLOW_V2: FlagDef = FlagDef {
+    name: "metricflow_v2",
+    description: "MetricFlow SQL: models written in MetricFlow's semantic SQL.",
+    stage: Stage::Beta,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
+/// Selecting the adapter a node runs on: the `+adapter` config and `--adapter`.
+pub static MULTI_ADAPTER: FlagDef = FlagDef {
+    name: "multi_adapter",
+    description: "Select the adapter a node runs on, with the +adapter config and --adapter.",
+    stage: Stage::Experimental,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
+/// `+compute: local` (or its `sidecar` spelling) on an individual unit test. The run-wide
+/// `--compute` flag is a separate, older knob and is not covered by this flag.
+pub static LOCAL_UNIT_TESTS: FlagDef = FlagDef {
+    name: "local_unit_tests",
+    description: "Run an individual unit test on local compute, with +compute: local.",
+    stage: Stage::Experimental,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
+/// Whether static analysis also knows the user-defined functions that the warehouse lists.
+pub static LIST_UDFS: FlagDef = FlagDef {
+    name: "list_udfs",
+    description: "List the warehouse's user-defined functions, so static analysis knows them.",
+    stage: Stage::Experimental,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
     tracking: None,
     remove_by: None,
     docs_url: None,
@@ -84,8 +175,14 @@ pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
     &REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT,
     &LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT,
-    &FRONTEND_LIBRARY,
+    &FRONTEND_PROTOCOL,
     &LOCK_WITH_STATE,
+    &LAKECOMPUTE_PROFILE_SETUP,
+    &USE_V2_EMPTY_SQL_REWRITE,
+    &METRICFLOW_V2,
+    &MULTI_ADAPTER,
+    &LOCAL_UNIT_TESTS,
+    &LIST_UDFS,
 ];
 
 #[cfg(test)]
@@ -109,12 +206,28 @@ mod tests {
             if let Some(remove_by) = def.remove_by {
                 assert!(
                     current < parse_version(remove_by),
-                    "flag '{}' was due to be removed or graduated by {remove_by} \
+                    "flag '{}' was due to be graduated, abandoned, or removed by {remove_by} \
                      (current version {})",
                     def.name,
                     env!("CARGO_PKG_VERSION")
                 );
             }
+        }
+    }
+
+    #[test]
+    fn defaults_match_stages() {
+        for def in ALL {
+            let expected = match def.stage {
+                Stage::Experimental | Stage::Beta | Stage::Abandoned => false,
+                Stage::Graduated => true,
+                Stage::Behavior => continue,
+            };
+            assert_eq!(
+                def.default, expected,
+                "flag '{}' is {:?}, so its default must be {expected}",
+                def.name, def.stage
+            );
         }
     }
 

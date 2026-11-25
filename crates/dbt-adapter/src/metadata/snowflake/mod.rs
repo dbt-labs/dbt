@@ -6,7 +6,6 @@ use crate::metadata::freshness_overrides::{
     run_override_sql,
 };
 use crate::metadata::{CatalogAndSchema, *};
-use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field};
 use crate::time_machine::{
@@ -15,7 +14,10 @@ use crate::time_machine::{
 };
 use crate::{AdapterEngine, AdapterResult, AdapterType};
 use dbt_adapter_engine::cow::uppercase;
-use dbt_adapter_sql::ident::{escape_string_literal, quote_identifier};
+use dbt_adapter_engine::record_batch::RecordBatchExt;
+use dbt_adapter_sql::ident::snowflake::Ident;
+use dbt_adapter_sql::join_dotted;
+use dbt_adapter_sql::literal::escape_string_literal;
 
 use arrow_array::{
     Array, BooleanArray, Decimal128Array, RecordBatch, StringArray, TimestampMillisecondArray,
@@ -171,12 +173,115 @@ fn require_snowflake_metadata_component<'a>(
     ))
 }
 
-/// Render a schema name as a single-quoted SQL string literal, escaping embedded
-/// single quotes so a schema containing `'` stays well-formed.
-fn snowflake_schema_literal(schema: &str) -> String {
+fn snowflake_string_literal(value: &str) -> String {
+    format!("'{}'", escape_string_literal(value, AdapterType::Snowflake))
+}
+
+/// Render a Snowflake identifier without changing the case-folding behavior of
+/// ordinary unquoted names. Names that cannot be a single unquoted identifier
+/// are quoted and any embedded quotes are doubled.
+fn snowflake_metadata_identifier(value: &str) -> Ident {
+    let mut chars = value.chars();
+    let is_safe_unquoted = chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c == '$' || c.is_ascii_alphanumeric());
+    if is_safe_unquoted {
+        Ident::new(value)
+    } else {
+        Ident::from_unquoted(value)
+    }
+}
+
+pub(crate) fn snowflake_relation_identifier(value: &str, quote: bool) -> Ident {
+    if quote {
+        Ident::from_unquoted(value)
+    } else {
+        snowflake_metadata_identifier(value)
+    }
+}
+
+fn snowflake_show_objects_sql(
+    db_schema: &CatalogAndSchema,
+    limit: usize,
+    from_name: Option<&str>,
+) -> String {
+    let from_clause = from_name
+        .map(|name| format!(" FROM {}", snowflake_string_literal(name)))
+        .unwrap_or_default();
+    let scope = match (
+        db_schema.resolved_catalog.is_empty(),
+        db_schema.resolved_schema.is_empty(),
+    ) {
+        (true, _) => Ident::from_unquoted(db_schema.resolved_schema.as_str()).to_string(),
+        (_, true) => Ident::from_unquoted(db_schema.resolved_catalog.as_str()).to_string(),
+        (false, false) => format!(
+            "{}.{}",
+            Ident::from_unquoted(db_schema.resolved_catalog.as_str()),
+            Ident::from_unquoted(db_schema.resolved_schema.as_str())
+        ),
+    };
+    format!("SHOW OBJECTS IN SCHEMA {scope} LIMIT {limit}{from_clause}")
+}
+
+fn snowflake_show_user_functions_sql(catalog: &str, schema: &str) -> String {
     format!(
-        "'{}'",
-        escape_string_literal(schema, AdapterType::Snowflake)
+        "SHOW USER FUNCTIONS IN SCHEMA {}.{}",
+        snowflake_metadata_identifier(catalog),
+        snowflake_metadata_identifier(schema)
+    )
+}
+
+fn snowflake_relation_sql_name(relation: &dyn BaseRelation) -> String {
+    let include = relation.include_policy();
+    let quoting = relation.quote_policy();
+    let mut parts = Vec::with_capacity(3);
+    let mut push = |value: Option<&str>, include: bool, quote: bool| {
+        if include
+            && let Some(value) = value
+            && !value.is_empty()
+        {
+            parts.push(snowflake_relation_identifier(value, quote));
+        }
+    };
+    push(relation.database(), include.database, quoting.database);
+    push(relation.schema(), include.schema, quoting.schema);
+    push(
+        relation.identifier(),
+        include.identifier,
+        quoting.identifier,
+    );
+    join_dotted(&parts)
+}
+
+fn snowflake_relation_patterns_sql(database: &str, patterns: &[&RelationPattern]) -> String {
+    let predicates = patterns
+        .iter()
+        .map(|pat| {
+            format!(
+                "(TABLE_SCHEMA ILIKE {} AND TABLE_NAME ILIKE {})",
+                snowflake_string_literal(&pat.schema_pattern),
+                snowflake_string_literal(&pat.table_pattern)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let database = snowflake_metadata_identifier(database);
+    format!(
+        "SELECT
+    TABLE_CATALOG,
+    TABLE_SCHEMA,
+    TABLE_NAME,
+    COLUMN_NAME,
+    DATA_TYPE,
+    IS_NULLABLE,
+    CHARACTER_MAXIMUM_LENGTH,
+    NUMERIC_PRECISION,
+    NUMERIC_SCALE,
+    COMMENT
+FROM {database}.INFORMATION_SCHEMA.COLUMNS
+WHERE {predicates}
+ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
     )
 }
 
@@ -186,7 +291,7 @@ fn snowflake_schema_literal(schema: &str) -> String {
 fn snowflake_schema_count_sql(database: &str, limit: usize) -> String {
     format!(
         "SHOW TERSE SCHEMAS IN DATABASE {} LIMIT {limit}",
-        quote_identifier(database, AdapterType::Snowflake)
+        Ident::from_unquoted(database)
     )
 }
 
@@ -250,6 +355,7 @@ fn schema_probe_decision(num_schemas: usize, observed: Option<usize>) -> bool {
 
 fn snowflake_freshness_sql(database: &str, where_clauses: &[String]) -> AdapterResult<String> {
     let database = require_snowflake_metadata_component("database", database)?;
+    let database = Ident::from_unquoted(database);
     Ok(format!(
         "SELECT
                 table_schema,
@@ -284,17 +390,16 @@ fn is_table_ddl(ddl: &str) -> bool {
     TABLE_REGEX.is_match(ddl).unwrap_or(false)
 }
 
-/// Render the anonymous block (the body that goes inside `EXECUTE IMMEDIATE $$...$$`)
-/// that calls `GET_DDL` over a list of FQNs and captures per-object errors as
-/// part of the result set.
+/// Render the anonymous block that calls `GET_DDL` over a list of FQNs and
+/// captures per-object errors as part of the result set.
 ///
-/// The caller is responsible for wrapping the returned string in
-/// `EXECUTE IMMEDIATE $$ ... $$`. The rendered block accepts no parameters
-/// and returns a result set with columns (fqn, view_definition, error).
+/// The caller is responsible for rendering the returned block as a safe string
+/// literal for `EXECUTE IMMEDIATE`. The block accepts no parameters and returns
+/// a result set with columns (fqn, view_definition, error).
 fn build_view_definition_script(fqns: &[String]) -> String {
     let array_literals = fqns
         .iter()
-        .map(|fqn| format!("'{}'", fqn.replace('\'', "''")))
+        .map(|fqn| snowflake_string_literal(fqn))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -475,7 +580,10 @@ fn build_relations_from_show_objects(
             // all supported dbt operations (SELECT *, DROP TABLE, etc.).
             Some(RelationType::Table)
         } else {
-            Some(RelationType::from(table_kind))
+            Some(
+                RelationType::from_adapter_type(AdapterType::Snowflake, table_kind)
+                    .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?,
+            )
         };
 
         let table_format = if try_canonicalize_bool_column_field(is_iceberg)? {
@@ -511,14 +619,7 @@ pub fn list_relations(
     let mut from_name = None;
     let mut batches = Vec::new();
     loop {
-        let sql = format!(
-            "SHOW OBJECTS IN SCHEMA {} LIMIT {}{}",
-            db_schema,
-            limit_size,
-            from_name
-                .map(|name| format!(" FROM '{name}'"))
-                .unwrap_or_default()
-        );
+        let sql = snowflake_show_objects_sql(db_schema, limit_size, from_name.as_deref());
         let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token.clone())?;
 
         // From the RecordBatch, get the last row of the vector of name 'name'
@@ -975,7 +1076,7 @@ impl SnowflakeMetadataAdapter {
                     )
                 })?;
                 require_snowflake_metadata_component("schema", &schema)
-                    .map(snowflake_schema_literal)
+                    .map(snowflake_string_literal)
             })
             .collect();
         let quoted_schemas = match quoted_schemas {
@@ -1283,7 +1384,7 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             .flat_map(|(catalog, schemas)| {
                 schemas
                     .iter()
-                    .map(move |schema| format!("SHOW USER FUNCTIONS IN SCHEMA {catalog}.{schema}"))
+                    .map(move |schema| snowflake_show_user_functions_sql(catalog, schema))
             })
             .collect::<Vec<_>>();
 
@@ -1377,7 +1478,12 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
 
         let keys: Vec<(String, String)> = relations
             .iter()
-            .map(|relation| (relation.semantic_fqn(), relation.render_self_as_str()))
+            .map(|relation| {
+                (
+                    relation.semantic_fqn(),
+                    snowflake_relation_sql_name(relation.as_ref()),
+                )
+            })
             .collect();
 
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
@@ -1538,35 +1644,7 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
 
         let queries = patterns_by_database
             .into_iter()
-            .map(|(database, patterns)| {
-                // Build the query for all relations in this database
-                let predicates = patterns
-                    .iter()
-                    .map(|pat| {
-                        format!(
-                            "(TABLE_SCHEMA ILIKE '{}' AND TABLE_NAME ILIKE '{}')",
-                            pat.schema_pattern, pat.table_pattern
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let predicates_union = predicates.join(" OR ");
-                format!(
-                    "SELECT
-    TABLE_CATALOG,
-    TABLE_SCHEMA,
-    TABLE_NAME,
-    COLUMN_NAME,
-    DATA_TYPE,
-    IS_NULLABLE,
-    CHARACTER_MAXIMUM_LENGTH,
-    NUMERIC_PRECISION,
-    NUMERIC_SCALE,
-    COMMENT
-FROM {database}.INFORMATION_SCHEMA.COLUMNS
-WHERE {predicates_union}
-ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
-                )
-            });
+            .map(|(database, patterns)| snowflake_relation_patterns_sql(&database, &patterns));
 
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
@@ -1704,7 +1782,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         };
 
         // Schema-only WHERE clause — no per-table filtering.
-        let where_clause = format!("table_schema = {}", snowflake_schema_literal(schema));
+        let where_clause = format!("table_schema = {}", snowflake_string_literal(schema));
         let sql = match snowflake_freshness_sql(database, &[where_clause]) {
             Ok(sql) => sql,
             Err(e) => {
@@ -1996,7 +2074,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
                           script: &String|
               -> AdapterResult<Arc<RecordBatch>> {
             let ctx = QueryCtx::default().with_desc("Fetch view definitions");
-            let sql = format!("EXECUTE IMMEDIATE $${script}$$");
+            let sql = format!("EXECUTE IMMEDIATE {}", snowflake_string_literal(script));
             let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
             Ok(table.original_record_batch())
         };
@@ -2022,7 +2100,7 @@ fn discover_database_identifier_case_sensitivity(
 ) -> AdapterResult<Option<IdentifierCaseSensitivity>> {
     let show_sql = format!(
         "show databases like {};",
-        snowflake_schema_literal(database)
+        snowflake_string_literal(database)
     );
     let show_ctx = QueryCtx::new_metadata().with_desc("Get database kind");
     let (_, databases) = adapter.query(&show_ctx, conn, &show_sql, None, token.clone())?;
@@ -2041,7 +2119,7 @@ fn discover_database_identifier_case_sensitivity(
 
     let config_sql = format!(
         "select system$get_catalog_linked_database_config({}) as \"config\";",
-        snowflake_schema_literal(database)
+        snowflake_string_literal(database)
     );
     let config_ctx = QueryCtx::new_metadata().with_desc("Get identifier resolution policy");
     let (_, config) = adapter.query(&config_ctx, conn, &config_sql, None, token)?;
@@ -2238,6 +2316,7 @@ mod tests {
     use super::*;
     use crate::connection::tlocal_slot_occupied;
     use crate::engine::NoopConnection;
+    use crate::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
     use arrow_schema::{DataType, Field};
 
     #[test]
@@ -2615,7 +2694,7 @@ mod tests {
         let sql =
             snowflake_freshness_sql(" RAW ", &["table_schema = 'PUBLIC'".to_string()]).unwrap();
 
-        assert!(sql.contains("FROM RAW.INFORMATION_SCHEMA.TABLES"));
+        assert!(sql.contains(r#"FROM "RAW".INFORMATION_SCHEMA.TABLES"#));
     }
 
     #[test]
@@ -2626,20 +2705,143 @@ mod tests {
             snowflake_freshness_sql("RAW", &["table_schema IN ('S0', 'S1', 'S2')".to_string()])
                 .unwrap();
 
-        assert!(sql.contains("FROM RAW.INFORMATION_SCHEMA.TABLES"));
+        assert!(sql.contains(r#"FROM "RAW".INFORMATION_SCHEMA.TABLES"#));
         assert!(sql.contains("WHERE table_schema IN ('S0', 'S1', 'S2')"));
     }
 
     #[test]
-    fn snowflake_schema_literal_escapes_single_quotes() {
-        assert_eq!(snowflake_schema_literal("PUBLIC"), "'PUBLIC'");
+    fn snowflake_string_literal_escapes_single_quotes() {
+        assert_eq!(snowflake_string_literal("PUBLIC"), "'PUBLIC'");
         // A schema name containing `'` is escaped by doubling so the string
         // literal stays well-formed.
-        let schema = snowflake_schema_literal("o'brien");
+        let schema = snowflake_string_literal("o'brien");
         assert_eq!(schema, "'o''brien'");
 
         let sql = snowflake_freshness_sql("RAW", &[format!("table_schema = {schema}")]).unwrap();
         assert!(sql.contains("WHERE table_schema = 'o''brien'"));
+    }
+
+    #[test]
+    fn snowflake_show_objects_sql_escapes_identifiers_and_warehouse_name() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            r#"DB"; select 1; --"#.to_string(),
+            r#"SCHEMA"; select 2; --"#.to_string(),
+            String::new(),
+        )
+        .with_quoting(ResolvedQuoting::trues());
+        let db_schema = CatalogAndSchema::from(&relation as &dyn BaseRelation);
+        let sql = snowflake_show_objects_sql(&db_schema, 10_000, Some(r"T\'; select 3; --"));
+
+        assert!(sql.contains(r#"IN SCHEMA "DB""; select 1; --"."SCHEMA""; select 2; --""#));
+        assert!(sql.contains(r"FROM 'T\\''; select 3; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.trim_end_matches(';')]
+        );
+    }
+
+    #[test]
+    fn snowflake_relation_patterns_escape_literals_and_quote_database() {
+        let pattern = RelationPattern::new(
+            r#"db"; drop table customers; --"#.to_string(),
+            r"S\'; select 1; --".to_string(),
+            r"T\'; select 2; --".to_string(),
+        );
+        let sql = snowflake_relation_patterns_sql(&pattern.database, &[&pattern]);
+
+        assert!(sql.contains(r#"FROM "db""; drop table customers; --".INFORMATION_SCHEMA"#));
+        assert!(sql.contains(r"TABLE_SCHEMA ILIKE 'S\\''; select 1; --'"));
+        assert!(sql.contains(r"TABLE_NAME ILIKE 'T\\''; select 2; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.as_str()]
+        );
+
+        let lowercase_database =
+            RelationPattern::new("analytics".to_string(), "%".to_string(), "%".to_string());
+        let sql =
+            snowflake_relation_patterns_sql(&lowercase_database.database, &[&lowercase_database]);
+        assert!(sql.contains("FROM analytics.INFORMATION_SCHEMA.COLUMNS"));
+
+        let punctuation_database =
+            RelationPattern::new("a,b".to_string(), "%".to_string(), "%".to_string());
+        let sql = snowflake_relation_patterns_sql(
+            &punctuation_database.database,
+            &[&punctuation_database],
+        );
+        assert!(sql.contains(r#"FROM "a,b".INFORMATION_SCHEMA.COLUMNS"#));
+    }
+
+    #[test]
+    fn snowflake_user_functions_sql_escapes_catalog_and_schema_identifiers() {
+        let sql =
+            snowflake_show_user_functions_sql(r#"DB"; select 1; --"#, r#"SCHEMA"; select 2; --"#);
+
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.as_str()]
+        );
+        assert!(sql.contains(r#""DB""; select 1; --"."SCHEMA""; select 2; --""#));
+
+        assert_eq!(
+            snowflake_show_user_functions_sql("analytics", "dbt_user"),
+            "SHOW USER FUNCTIONS IN SCHEMA analytics.dbt_user"
+        );
+    }
+
+    #[test]
+    fn snowflake_describe_table_name_quotes_unsafe_unquoted_components() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            r#"DB"; select 1; --"#.to_string(),
+            r#"SCHEMA"; select 2; --"#.to_string(),
+            r#"TABLE"; select 3; --"#.to_string(),
+        )
+        .with_quoting(ResolvedQuoting::falses());
+        let sql = format!("describe table {};", snowflake_relation_sql_name(&relation));
+
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.trim_end_matches(';')]
+        );
+        assert!(
+            sql.contains(
+                r#""DB""; select 1; --"."SCHEMA""; select 2; --"."TABLE""; select 3; --""#
+            )
+        );
+    }
+
+    #[test]
+    fn snowflake_freshness_sql_quotes_untrusted_database() {
+        let sql = snowflake_freshness_sql(
+            r#"db"; drop table customers; --"#,
+            &["table_schema = 'PUBLIC'".to_string()],
+        )
+        .unwrap();
+
+        assert!(sql.contains(r#"FROM "db""; drop table customers; --".INFORMATION_SCHEMA.TABLES"#));
+    }
+
+    #[test]
+    fn snowflake_freshness_query_keeps_untrusted_leaf_name_in_one_statement() {
+        let relation = Arc::new(
+            Relation::new(
+                AdapterType::Snowflake,
+                "RAW".to_string(),
+                "PUBLIC".to_string(),
+                r"T\'; select 1; --".to_string(),
+            )
+            .with_quoting(ResolvedQuoting::trues()),
+        ) as Arc<dyn BaseRelation>;
+        let (where_clauses, _) = build_relation_clauses(&[relation]).unwrap();
+        let sql = snowflake_freshness_sql("RAW", &where_clauses["RAW"]).unwrap();
+
+        assert!(sql.contains(r"table_name = 'T\\''; select 1; --'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.as_str()]
+        );
     }
 
     #[test]
@@ -2872,5 +3074,34 @@ mod tests {
         assert!(script.contains("OBJECT_NAME"));
         assert!(script.contains("DEFINITION"));
         assert!(script.contains("ERROR"));
+    }
+
+    #[test]
+    fn view_definition_query_keeps_untrusted_fqn_in_one_statement() {
+        let fqn = r#""RAW"."PUBLIC"."T\'); DROP TABLE CUSTOMERS; $$ --""#.to_string();
+        let script = build_view_definition_script(&[fqn]);
+        let sql = format!("EXECUTE IMMEDIATE {}", snowflake_string_literal(&script));
+
+        assert!(script.contains("'\"RAW\".\"PUBLIC\".\"T\\\\''); DROP TABLE CUSTOMERS; $$ --\"'"));
+        assert_eq!(
+            DefaultStmtSplitter.split(&sql, AdapterType::Snowflake),
+            vec![sql.as_str()]
+        );
+    }
+
+    #[test]
+    fn snowflake_relation_identifier_safely_honors_quote_policy() {
+        assert_eq!(
+            snowflake_relation_identifier(r#"db"; SELECT 1; --"#, false).to_string(),
+            r#""db""; SELECT 1; --""#
+        );
+        assert_eq!(
+            snowflake_relation_identifier("analytics", false).to_string(),
+            "analytics"
+        );
+        assert_eq!(
+            snowflake_relation_identifier("analytics", true).to_string(),
+            r#""analytics""#
+        );
     }
 }

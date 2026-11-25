@@ -15,6 +15,7 @@
  * line up when a story wires several fixtures into the same graph.
  */
 
+import { RestProject } from '../../data-sources/mappers/fromWire';
 import type { NodeSummary } from '../../types';
 import type {
   AssetColumn,
@@ -37,7 +38,6 @@ import type { ColumnLineageGraph, LineageGraph } from '../typings/domain/lineage
 import type { ProjectOverview } from '../typings/domain/overview';
 import type { SearchHit } from '../typings/domain/search';
 import { makeFakeModelAsset } from './createFakeDataSource';
-import { RestProject } from '../../data-sources/mappers/fromWire';
 
 export interface BootstrapData {
   /** Every node in the project, shaped exactly like the former `GET /api/v1/nodes`. */

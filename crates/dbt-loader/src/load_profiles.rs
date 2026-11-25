@@ -154,7 +154,8 @@ pub fn load_profiles(
             emit_warn_log_message(
                 ErrorCode::InvalidConfig,
                 format!(
-                    "target '{}' declares {} connections for adapter '{}'; only '{}' is used.                      Selecting a connection is not supported yet, so the others are ignored.",
+                    "target '{}' declares {} connections for adapter '{}'; only '{}' is used. \
+                     Selecting a connection is not supported yet, so the others are ignored.",
                     resolved.target_name,
                     adapter.connections.len(),
                     adapter.adapter_type,
@@ -405,6 +406,8 @@ mod tests {
             msg.contains("DBT_ALLOW_EXPERIMENTAL_ADAPTERS=true"),
             "expected env-var hint, got: {msg}"
         );
+        // Not experimental: loads without the env var.
+        assert!(enforce_adapter_gating(AdapterType::LakeCompute, false).is_ok());
     }
 
     #[test]

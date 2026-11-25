@@ -21,6 +21,7 @@ use crate::IndexError;
 use crate::db::Db;
 use crate::ingest::timings;
 
+use super::epoch::LatestLookup;
 use super::schema::INFO_SCHEMA;
 use super::spec::TableSpec;
 use super::{
@@ -37,7 +38,9 @@ pub(super) fn write_via_copy(
     metadata_dir: &Path,
     info_schema_dir: &Path,
 ) -> Result<usize, IndexError> {
-    let generated = epoch_views::generate(metadata_dir)?;
+    // Every table below is read once, so each latest-row lookup that several of
+    // them join is computed once, as a table.
+    let generated = epoch_views::generate_with(metadata_dir, LatestLookup::Table)?;
     let out_dir = versioned_dir(info_schema_dir);
     std::fs::create_dir_all(&out_dir)?;
 
@@ -49,9 +52,7 @@ pub(super) fn write_via_copy(
 
     if !to_copy.is_empty() {
         timings::time(timings::Stage::Copy, || -> Result<(), IndexError> {
-            let mut db = Db::open_memory().map_err(|e| {
-                IndexError::Other(format!("info schema COPY: DuckDB driver unavailable: {e}"))
-            })?;
+            let mut db = open_copy_db()?;
             for stmt in &generated.statements {
                 db.execute_update(stmt).map_err(|e| {
                     IndexError::Other(format!("info schema COPY: executing view DDL: {e}"))
@@ -116,6 +117,24 @@ pub(super) fn write_via_copy(
         views::write_views_sql(&out_dir)
     })?;
     Ok(INFO_SCHEMA.len())
+}
+
+/// DuckDB runs the write on one thread per core by default, and its peak memory
+/// grows with the thread count.
+const MAX_COPY_THREADS: usize = 4;
+
+/// The in-memory database the write runs on, with at most [`MAX_COPY_THREADS`]
+/// threads.
+fn open_copy_db() -> Result<Db, IndexError> {
+    let mut db = Db::open_memory().map_err(|e| {
+        IndexError::Other(format!("info schema COPY: DuckDB driver unavailable: {e}"))
+    })?;
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(MAX_COPY_THREADS);
+    db.execute_update(&format!("SET threads = {threads}"))
+        .map_err(|e| IndexError::Other(format!("info schema COPY: setting threads: {e}")))?;
+    Ok(db)
 }
 
 fn copy_table(db: &mut Db, spec: &TableSpec, path: &Path, with_kv: bool) -> Result<(), IndexError> {
@@ -188,7 +207,27 @@ fn after_copy_kv(kv_in_copy: bool, file_has_kv: bool) -> (bool, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::after_copy_kv;
+    use super::{MAX_COPY_THREADS, after_copy_kv, open_copy_db};
+    use crate::db::Db;
+
+    fn threads(db: &mut Db) -> usize {
+        db.query_scalar("SELECT current_setting('threads')", 0)
+            .expect("threads setting")
+            .parse()
+            .expect("thread count")
+    }
+
+    /// The cap applies to the write's own database only.
+    #[test]
+    fn copy_db_runs_at_most_max_copy_threads() {
+        let default = threads(&mut Db::open_memory().expect("open_memory"));
+        let mut copy_db = open_copy_db().expect("open_copy_db");
+        let capped = threads(&mut copy_db);
+        let after = threads(&mut Db::open_memory().expect("open_memory"));
+
+        assert!((1..=MAX_COPY_THREADS).contains(&capped), "{capped} threads");
+        assert_eq!(after, default, "another database keeps DuckDB's default");
+    }
 
     #[test]
     fn after_copy_keeps_requesting_kv_when_the_file_has_it() {

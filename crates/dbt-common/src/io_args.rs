@@ -664,6 +664,8 @@ pub struct EvalArgs {
     pub local_execution_backend: LocalExecutionBackendKind,
     /// Does not apply to interactive checkpoints.
     pub skip_checkpoints: bool,
+    /// An extension command's own options, by name, for the experimental that owns the command.
+    pub command_options: BTreeMap<String, Vec<String>>,
     /// Skip installation of private dependencies (useful for build conformance testing)
     pub skip_private_deps: bool,
     /// Skip dependency resolution entirely (`dbt lint --no-deps`)
@@ -681,6 +683,9 @@ pub struct EvalArgs {
     /// Mirrors the `--classify-with-warehouse-tags` CLI flag.
     pub classify_with_warehouse_tags: bool,
     pub skip_post_hooks: bool,
+    /// Don't run on-run-start hooks: for a caller that compiles only to read
+    /// the compiled nodes, with no warehouse to run them against.
+    pub skip_on_run_start_hooks: bool,
     /// Write metadata parquet epoch files (parse/nodes, compile/nodes, compile/columns, etc.)
     pub write_metadata: bool,
     /// Also write snapshot index parquet to target/private/index/ (implies write_metadata)
@@ -696,6 +701,10 @@ pub struct EvalArgs {
     pub metadata_dir: Option<PathBuf>,
     /// Write the dbt information schema to target/info_schema/ (implies write_metadata)
     pub generate_info_schema: bool,
+    /// True when `generate_info_schema` came from a command's default rather than from the
+    /// command line. Same role as `write_index_implied`: suppresses advisories naming flags
+    /// the user never passed.
+    pub generate_info_schema_implied: bool,
     /// Directory for information schema parquet output (default: <target>/info_schema/)
     pub info_schema_dir: Option<PathBuf>,
     /// Whether to skip creating generic tests
@@ -960,8 +969,44 @@ pub enum ClapResourceType {
     SavedQuery,
     Check,
     Exposure,
-    /// Nodes added by plugins.
-    Plugin,
+    /// Nodes added by experimentals.
+    Experimental,
+    All,
+    /// Selects the resource types a command uses when no filter is given.
+    Default,
+}
+
+impl ClapResourceType {
+    /// Expand the `all` and `default` shorthands into resource types.
+    ///
+    /// `defaults` is the calling command's own default set and is only used
+    /// when `default` was requested.
+    pub fn resolve(requested: &[ClapResourceType], defaults: &[ClapResourceType]) -> Vec<Self> {
+        let mut resolved = Vec::new();
+        for resource_type in requested {
+            match resource_type {
+                ClapResourceType::All => resolved.extend([
+                    ClapResourceType::Model,
+                    ClapResourceType::Source,
+                    ClapResourceType::Seed,
+                    ClapResourceType::Snapshot,
+                    ClapResourceType::Test,
+                    ClapResourceType::UnitTest,
+                    ClapResourceType::Analysis,
+                    ClapResourceType::Function,
+                    ClapResourceType::SemanticModel,
+                    ClapResourceType::Metric,
+                    ClapResourceType::SavedQuery,
+                    ClapResourceType::Check,
+                    ClapResourceType::Exposure,
+                    ClapResourceType::Experimental,
+                ]),
+                ClapResourceType::Default => resolved.extend_from_slice(defaults),
+                resource_type => resolved.push(*resource_type),
+            }
+        }
+        resolved
+    }
 }
 
 impl Display for ClapResourceType {
@@ -980,7 +1025,9 @@ impl Display for ClapResourceType {
             ClapResourceType::SavedQuery => "saved_query",
             ClapResourceType::Check => "check",
             ClapResourceType::Exposure => "exposure",
-            ClapResourceType::Plugin => "plugin",
+            ClapResourceType::Experimental => "experimental",
+            ClapResourceType::All => "all",
+            ClapResourceType::Default => "default",
         };
         write!(f, "{s}")
     }
@@ -1002,7 +1049,13 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
             ClapResourceType::Check => NodeType::Check,
             ClapResourceType::Exposure => NodeType::Exposure,
-            ClapResourceType::Plugin => NodeType::Plugin,
+            ClapResourceType::Experimental => NodeType::Experimental,
+            // `all` and `default` are expanded by `resolve` before conversion.
+            ClapResourceType::All | ClapResourceType::Default => {
+                unreachable!(
+                    "{value} is not a NodeType; expand `all`/`default` with ClapResourceType::resolve first"
+                )
+            }
         }
     }
 }
@@ -1381,6 +1434,7 @@ pub enum Runtime {
     ValueEnum,
     Display,
     Serialize,
+    Deserialize,
     JsonSchema,
 )]
 #[serde(rename_all = "lowercase")]
@@ -1388,59 +1442,14 @@ pub enum Runtime {
 pub enum StaticAnalysisKind {
     #[value(hide = true)]
     Unsafe,
+    #[serde(alias = "False", alias = "false", alias = "FALSE")]
     Off,
     Strict,
     #[default]
     Baseline,
     #[value(hide = true)]
+    #[serde(alias = "True", alias = "true", alias = "TRUE")]
     On,
-}
-
-/// Accepts a boolean alongside the mode names, since YAML 1.1 resolves an unquoted `on`/`off`
-/// to `true`/`false`. The boolean spellings are also accepted as strings to accommodate
-/// dbt-core, which writes them (e.g. `"False"`) rather than `"on"`/`"off"` into manifests.
-impl<'de> Deserialize<'de> for StaticAnalysisKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct StaticAnalysisKindVisitor;
-
-        impl serde::de::Visitor<'_> for StaticAnalysisKindVisitor {
-            type Value = StaticAnalysisKind;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a static analysis mode or a boolean")
-            }
-
-            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
-                Ok(if v {
-                    StaticAnalysisKind::On
-                } else {
-                    StaticAnalysisKind::Off
-                })
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                match v {
-                    "unsafe" => Ok(StaticAnalysisKind::Unsafe),
-                    "off" | "False" | "false" | "FALSE" => Ok(StaticAnalysisKind::Off),
-                    "strict" => Ok(StaticAnalysisKind::Strict),
-                    "baseline" => Ok(StaticAnalysisKind::Baseline),
-                    "on" | "True" | "true" | "TRUE" => Ok(StaticAnalysisKind::On),
-                    _ => Err(E::unknown_variant(
-                        v,
-                        &["unsafe", "off", "strict", "baseline", "on"],
-                    )),
-                }
-            }
-        }
-
-        deserializer.deserialize_any(StaticAnalysisKindVisitor)
-    }
 }
 
 #[derive(
@@ -1666,39 +1675,23 @@ pub fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Opts in to selecting the adapter a node runs on: the `+adapter` config and `--adapter`.
+/// Opts in to selecting the adapter a node runs on: the `+adapter` config and `--adapter`. The
+/// environment variable of the `multi_adapter` flag.
 pub const MULTI_ADAPTER_ENV: &str = "DBT_ENGINE_EXPERIMENTAL_MULTI_ADAPTER";
 
 /// Opts in to `+compute: local` (or its `sidecar` spelling) on an individual unit test. The
-/// run-wide `--compute` flag is a separate, older knob and is not covered by this gate.
+/// run-wide `--compute` flag is a separate, older knob and is not covered by this gate. The
+/// environment variable of the `local_unit_tests` flag.
 pub const LOCAL_UNIT_TESTS_ENV: &str = "DBT_ENGINE_EXPERIMENTAL_LOCAL_UNIT_TESTS";
-
-/// Whether an experimental feature's opt-in environment variable is set. Unset or malformed
-/// reads as off; a malformed value also warns.
-///
-/// Names passed here must be registered in `USED_ENGINE_ENV_VARS` (`dbt-main/src/vars.rs`),
-/// or `validate_engine_env_vars` rejects them at startup.
-fn experimental_gate_enabled(name: &str) -> bool {
-    match env_flag_enabled(name) {
-        Ok(enabled) => enabled,
-        Err(e) => {
-            crate::tracing::dbt_emit::emit_warn_log_message(
-                crate::ErrorCode::InvalidConfig,
-                e.to_string(),
-            );
-            false
-        }
-    }
-}
 
 /// Whether multi-adapter support is opted in to. See [`MULTI_ADAPTER_ENV`].
 pub fn multi_adapter_enabled() -> bool {
-    experimental_gate_enabled(MULTI_ADAPTER_ENV)
+    dbt_flags::MULTI_ADAPTER.enabled()
 }
 
 /// Whether per-unit-test local execution is opted in to. See [`LOCAL_UNIT_TESTS_ENV`].
 pub fn local_unit_tests_enabled() -> bool {
-    experimental_gate_enabled(LOCAL_UNIT_TESTS_ENV)
+    dbt_flags::LOCAL_UNIT_TESTS.enabled()
 }
 
 pub const LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV: &str =
@@ -1706,7 +1699,7 @@ pub const LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV: &str =
 
 pub fn resolve_latest_version_pointer_enabled_by_default(project_flags: Option<&Value>) -> bool {
     dbt_flags::LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT
-        .resolve_with_project(&project_flag_bool(project_flags))
+        .resolve_with_project(&project_flag_lookup(project_flags))
         .value
 }
 
@@ -1734,7 +1727,7 @@ pub fn resolve_require_ref_searches_node_package_before_root(
     project_flags: Option<&Value>,
 ) -> bool {
     dbt_flags::REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT
-        .resolve_with_project(&project_flag_bool(project_flags))
+        .resolve_with_project(&project_flag_lookup(project_flags))
         .value
 }
 
@@ -1750,13 +1743,41 @@ fn resolve_require_ref_searches_node_package_before_root_with_env_lookup(
     )
 }
 
-/// Reads a boolean from the root project's `flags:` block, for
-/// [`dbt_flags::FlagDef::resolve_with_project`].
-pub fn project_flag_bool(project_flags: Option<&Value>) -> impl Fn(&str) -> Option<bool> + '_ {
-    move |name| {
-        project_flags
+/// The root project's `flags:` block, for [`dbt_flags::FlagDef::resolve_with_project`].
+pub fn project_flag_lookup(project_flags: Option<&Value>) -> impl dbt_flags::ProjectFlags + '_ {
+    RootProjectFlags(project_flags)
+}
+
+struct RootProjectFlags<'a>(Option<&'a Value>);
+
+impl dbt_flags::ProjectFlags for RootProjectFlags<'_> {
+    fn value(&self, name: &str) -> Option<bool> {
+        self.0
             .and_then(|flags| project_flags_get_value(flags, name))
             .and_then(Value::as_bool)
+    }
+
+    fn beta_features(&self, visit: &mut dyn FnMut(&str, Option<bool>)) {
+        match self
+            .0
+            .and_then(|flags| project_flags_get_value(flags, "beta_features"))
+        {
+            Some(Value::Mapping(features, _)) => {
+                for (name, value) in features.iter() {
+                    if let Some(name) = name.as_str() {
+                        visit(name, value.as_bool());
+                    }
+                }
+            }
+            // A list of names sets nothing: each is reported as an entry without a boolean.
+            Some(Value::Sequence(names, _)) => {
+                names
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .for_each(|name| visit(name, None));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1768,12 +1789,12 @@ fn resolve_flag_with_env_lookup(
     project_flags: Option<&Value>,
     get_env: impl Fn(&str) -> Option<OsString>,
 ) -> bool {
-    let env: Vec<(&str, OsString)> = def
+    let env: Vec<(String, OsString)> = def
         .legacy_env
         .iter()
-        .copied()
-        .chain([dbt_flags::FEATURES_ENV])
-        .filter_map(|name| get_env(name).map(|value| (name, value)))
+        .map(|name| (*name).to_string())
+        .chain([def.env_var()])
+        .filter_map(|name| get_env(&name).map(|value| (name, value)))
         .collect();
     dbt_flags::FlagSnapshot::builder()
         .env_lookup(move |name| {
@@ -1781,7 +1802,7 @@ fn resolve_flag_with_env_lookup(
                 .find_map(|(key, value)| (*key == name).then(|| value.clone()))
         })
         .build()
-        .resolve(def, &project_flag_bool(project_flags))
+        .resolve(def, &project_flag_lookup(project_flags))
         .value
 }
 
@@ -2006,6 +2027,52 @@ mod tests {
     }
 
     #[test]
+    fn resolve_all_expands_every_resource_type() {
+        let all = ClapResourceType::resolve(&[ClapResourceType::All], &[]);
+        for resource_type in [
+            ClapResourceType::Model,
+            ClapResourceType::Source,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Analysis,
+            ClapResourceType::Function,
+            ClapResourceType::SemanticModel,
+            ClapResourceType::Metric,
+            ClapResourceType::SavedQuery,
+            ClapResourceType::Check,
+            ClapResourceType::Exposure,
+            ClapResourceType::Experimental,
+        ] {
+            assert!(all.contains(&resource_type), "{resource_type} missing");
+        }
+        assert!(!all.contains(&ClapResourceType::All));
+        assert!(!all.contains(&ClapResourceType::Default));
+    }
+
+    #[test]
+    fn resolve_default_uses_caller_defaults() {
+        let defaults = [ClapResourceType::Model, ClapResourceType::Seed];
+        assert_eq!(
+            ClapResourceType::resolve(&[ClapResourceType::Default], &defaults),
+            defaults
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not a NodeType")]
+    fn converting_all_to_node_type_is_a_programming_error() {
+        let _ = NodeType::from(&ClapResourceType::All);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a NodeType")]
+    fn converting_default_to_node_type_is_a_programming_error() {
+        let _ = NodeType::from(&ClapResourceType::Default);
+    }
+
+    #[test]
     fn local_execution_backend_support_matrix() {
         let cases: &[(LocalExecutionBackendKind, &[AdapterType])] = &[
             (
@@ -2102,21 +2169,63 @@ mod tests {
     }
 
     #[test]
-    fn behavior_flags_can_be_set_through_the_features_env() {
+    fn experimental_gate_env_vars_are_the_variables_of_their_flags() {
+        assert_eq!(dbt_flags::MULTI_ADAPTER.env_var(), MULTI_ADAPTER_ENV);
+        assert_eq!(dbt_flags::LOCAL_UNIT_TESTS.env_var(), LOCAL_UNIT_TESTS_ENV);
+    }
+
+    #[test]
+    fn behavior_flags_can_be_set_through_their_own_env_var() {
         assert!(!require_ref_searches_node_package_before_root_with_env(
             None,
             &[(
-                dbt_flags::FEATURES_ENV,
-                "require_ref_searches_node_package_before_root=false"
+                "DBT_ENGINE_EXPERIMENTAL_REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT",
+                "false"
             )]
         ));
         assert!(latest_version_pointer_with_env(
             Some("latest_version_pointer_enabled_by_default: false\n"),
             &[(
-                dbt_flags::FEATURES_ENV,
-                "latest_version_pointer_enabled_by_default"
+                "DBT_ENGINE_EXPERIMENTAL_LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT",
+                "1"
             )]
         ));
+    }
+
+    #[test]
+    fn beta_features_are_read_from_the_project_flags_mapping() {
+        use dbt_flags::ProjectFlags as _;
+
+        fn entries(flags: Option<&Value>) -> Vec<(String, Option<bool>)> {
+            let mut entries = Vec::new();
+            project_flag_lookup(flags)
+                .beta_features(&mut |name, value| entries.push((name.to_string(), value)));
+            entries
+        }
+
+        let flags = dbt_yaml::from_str::<Value>(
+            "metricflow_v2: true\nbeta_features:\n  first: true\n  second: false\n  third: 3\n",
+        )
+        .unwrap();
+        assert_eq!(
+            entries(Some(&flags)),
+            [
+                ("first".to_string(), Some(true)),
+                ("second".to_string(), Some(false)),
+                ("third".to_string(), None),
+            ]
+        );
+        let project = project_flag_lookup(Some(&flags));
+        assert_eq!(project.value("metricflow_v2"), Some(true));
+        assert_eq!(project.value("beta_features"), None);
+
+        // A list sets nothing: its names are entries without a boolean.
+        let list = dbt_yaml::from_str::<Value>("beta_features: [first, second]\n").unwrap();
+        assert_eq!(
+            entries(Some(&list)),
+            [("first".to_string(), None), ("second".to_string(), None)]
+        );
+        assert!(entries(None).is_empty());
     }
 
     #[test]
@@ -2515,36 +2624,6 @@ mod tests {
             dbt_yaml::from_str::<StaticAnalysisKind>("\"True\"").unwrap(),
             StaticAnalysisKind::On
         );
-    }
-
-    /// YAML 1.1 resolves an unquoted `on`/`off` to a boolean, which must still select the mode,
-    /// both when deserialized from text and from an already-parsed `Value`.
-    #[test]
-    fn test_static_analysis_deserializes_yaml_11_bool_tokens() {
-        for (token, expected) in [
-            ("off", StaticAnalysisKind::Off),
-            ("on", StaticAnalysisKind::On),
-            ("false", StaticAnalysisKind::Off),
-            ("true", StaticAnalysisKind::On),
-            ("'off'", StaticAnalysisKind::Off),
-            ("strict", StaticAnalysisKind::Strict),
-        ] {
-            assert_eq!(
-                dbt_yaml::from_str::<StaticAnalysisKind>(token).unwrap(),
-                expected,
-                "from_str: {token}"
-            );
-            let value: Value = dbt_yaml::from_str(token).unwrap();
-            assert_eq!(
-                value
-                    .into_typed::<StaticAnalysisKind, _, _>(|_, _, _| {}, |_| Ok(None))
-                    .unwrap(),
-                expected,
-                "into_typed: {token}"
-            );
-        }
-
-        assert!(dbt_yaml::from_str::<StaticAnalysisKind>("maybe").is_err());
     }
 
     #[test]

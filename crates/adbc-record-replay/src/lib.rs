@@ -18,6 +18,10 @@ use std::sync::LazyLock;
 type SccHashMap<K, V> = scc::HashMap<K, V, dbt_base::MaybeStableHasherBuilder>;
 type SccHashSet<K> = scc::HashSet<K, dbt_base::MaybeStableHasherBuilder>;
 
+/// Schema metadata key of an `execute_update` recording that holds the
+/// driver's `rows_affected`. A recording without it replays as `None`.
+const UPDATE_ROWS_AFFECTED_META: &str = "rows_affected";
+
 /// Per-directory sequence counters for record/replay.
 ///
 /// Keyed by recordings directory path so that multiple adapters and

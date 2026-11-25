@@ -1,12 +1,20 @@
 //! Module containing the entrypoint for the resolve phase.
+pub(crate) mod properties;
+
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::strip_warehouse_keys_in_config_block;
+use crate::resolve::properties_extensions::{
+    self, ExtensionReader, Extensions, NoExtensions, ReadExtensions,
+};
+use crate::resolve::properties_index::{IndexCtx, IndexedName};
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::{canonicalize_source_config_keys, extract_config_map};
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
 use crate::validation::check_node_static_analysis;
+use async_trait::async_trait;
 
 use dbt_adapter::load_catalogs;
 use dbt_adapter::metadata::routed_source_databases;
@@ -37,10 +45,11 @@ use regex::Regex;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
 use super::resolve_tests::persist_generic_data_tests::{
     TestableNodeTrait, TestableTable, extract_test_unrendered_configs,
 };
@@ -205,6 +214,64 @@ fn build_source_unrendered_config(
     Ok(unrendered)
 }
 
+/// How a package's sources resolve. `E` names the extensions read beside a table's properties.
+pub(crate) struct Sources<E = NoExtensions>(PhantomData<E>);
+
+impl<E> Default for Sources<E> {
+    fn default() -> Self {
+        Sources(PhantomData)
+    }
+}
+
+#[async_trait]
+impl<E: Extensions> ResolvableNode for Sources<E> {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["sources"]
+    }
+
+    /// A source defines one name for each of its tables.
+    async fn index_item(
+        &self,
+        key: &'static str,
+        item: &dbt_yaml::Value,
+        ctx: &IndexCtx<'_>,
+    ) -> FsResult<Vec<IndexedName>> {
+        properties::index_source(key, item, ctx)
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        let extensions = ExtensionReader::of::<E::SourceTable>(ctx);
+        // Resolve sources based on the dbt_state, database, schema, and project name
+        let (sources, disabled_sources, extensions) = resolve_sources(
+            ctx.arg,
+            ctx.package,
+            ctx.root_package_name,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            properties::take_source_table_entries(
+                &mut ctx.properties,
+                &ctx.jinja_env,
+                &ctx.base_ctx,
+            ),
+            ctx.database,
+            ctx.adapter_type,
+            &ctx.base_ctx,
+            &ctx.jinja_env,
+            &mut ctx.collected_generic_tests,
+            ctx.test_name_truncations,
+            ctx.seen_generic_test_paths,
+            &mut ctx.node_resolver,
+            &extensions,
+        )
+        .await?;
+        ctx.nodes.sources.extend(sources);
+        ctx.disabled_nodes.sources.extend(disabled_sources);
+        properties_extensions::give_back(ctx, extensions, |ctx, unique_id| {
+            ctx.nodes.sources.get(unique_id).cloned()
+        })
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_sources(
     arg: &ResolveArgs,
@@ -212,7 +279,7 @@ pub async fn resolve_sources(
     root_package_name: &str,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    source_properties: BTreeMap<(String, String), MinimalPropertiesEntry>,
+    source_properties: BTreeMap<(String, String), PropertiesEntry>,
     database: &str,
     adapter_type: AdapterType,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
@@ -221,10 +288,14 @@ pub async fn resolve_sources(
     test_name_truncations: &mut HashMap<String, String>,
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     node_resolver: &mut NodeResolver,
+    extensions: &ExtensionReader,
 ) -> FsResult<(
     HashMap<String, Arc<DbtSource>>,
     HashMap<String, Arc<DbtSource>>,
+    Vec<(String, ReadExtensions)>,
 )> {
+    // The extensions of each table whose entry has some, by the unique id of the table's node.
+    let mut read_extensions: Vec<(String, ReadExtensions)> = Vec::new();
     let io_args = &arg.io;
     let mut sources: HashMap<String, Arc<DbtSource>> = HashMap::new();
     let mut disabled_sources: HashMap<String, Arc<DbtSource>> = HashMap::new();
@@ -374,6 +445,13 @@ pub async fn resolve_sources(
         let mut table_value = mpe.table_value.unwrap();
         strip_one_trailing_newline_at_keys(&mut table_value, &["name", "identifier"]);
 
+        // Read before the entry is typed as a table's.
+        let read = extensions.read(
+            &mut table_value,
+            jinja_env,
+            base_ctx,
+            dependency_package_name,
+        )?;
         let table: Tables = into_typed_with_jinja(
             table_value,
             false,
@@ -396,6 +474,9 @@ pub async fn resolve_sources(
             "source.{}.{}.{}",
             &package_name, source_name, &normalized_table_name
         );
+        if let Some(read) = read {
+            read_extensions.push((unique_id.clone(), read));
+        }
 
         let table_config = table.config.clone().unwrap_or_default();
 
@@ -678,7 +759,7 @@ pub async fn resolve_sources(
             ModelStatus::ParsingFailed => {}
         }
     }
-    Ok((sources, disabled_sources))
+    Ok((sources, disabled_sources, read_extensions))
 }
 
 /// Merge source-level and table-level schema.yml configs into a single `SourceConfig`.
@@ -734,7 +815,7 @@ fn merge_table_into_schema_config(
     )
     .map_err(|msg| {
         dbt_common::fs_err!(
-            ErrorCode::Unexpected,
+            ErrorCode::FreshnessConfigInvalid,
             "{} on source `{}.{}`",
             msg,
             source_name,

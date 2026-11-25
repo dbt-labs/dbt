@@ -1,0 +1,18 @@
+[package]
+name = "dbt-sqlparser-compat"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sqlparser = { workspace = true, features = ["visitor"] }
+
+dbt-fusion-workspace-hack = { version = "0.1" }

@@ -20,10 +20,11 @@ use dbt_common::{
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_telemetry::{
-    ExecutionPhase, NodeCacheDetail, NodeCacheReason, NodeErrorType, NodeEvaluated, NodeOutcome,
-    NodeOutcomeDetail, NodeProcessed, NodeSkipReason, NodeSkipUpstreamDetail, NodeType,
-    PhaseExecuted, TestEvaluationDetail, TestOutcome, set_node_warning_outcome_no_warnings,
-    set_node_warning_outcome_warned, update_dbt_core_event_code_for_node_processed_end,
+    ExecutionPhase, NodeCacheDetail, NodeCacheReason, NodeCancelReason, NodeErrorType,
+    NodeEvaluated, NodeOutcome, NodeOutcomeDetail, NodeProcessed, NodeSkipReason,
+    NodeSkipUpstreamDetail, NodeType, PhaseExecuted, TestEvaluationDetail, TestOutcome,
+    set_node_warning_outcome_no_warnings, set_node_warning_outcome_warned,
+    update_dbt_core_event_code_for_node_processed_end,
 };
 use dbt_tracing::StaticName as _;
 use petgraph::graph::DiGraph;
@@ -105,6 +106,9 @@ pub fn update_node_outcome_from_skip_reason(ev: &mut NodeEvaluated, skip_reason:
         SkipReason::FailedPhase => {
             ev.set_node_skip_reason(NodeSkipReason::PhaseSkipped);
         }
+        SkipReason::FailFast => {
+            ev.set_node_skip_reason(NodeSkipReason::FailFast);
+        }
         SkipReason::FailedUpstream(upstream_id) => {
             ev.set_node_skip_reason(NodeSkipReason::Upstream);
             ev.node_outcome_detail = Some(NodeOutcomeDetail::NodeSkipUpstreamDetail(
@@ -152,7 +156,7 @@ fn update_node_outcome_from_legacy_status(event: &mut NodeEvaluated, status: Nod
         NodeStatus::Errored => {
             if matches!(
                 event.node_type(),
-                NodeType::Test | NodeType::UnitTest | NodeType::Plugin
+                NodeType::Test | NodeType::UnitTest | NodeType::Experimental
             ) {
                 // Normally handled inside the task, but if node outcome is unspecified, set to
                 // error. This happens in some scenarios, e.g. statically analyzed error.
@@ -222,6 +226,10 @@ pub fn task_span_on_close(task_span: &tracing::Span, result: &FsResult<NodeStatu
         if let Some(ev) = attrs.downcast_mut::<NodeEvaluated>() {
             match result {
                 Ok(ns) => update_node_outcome_from_legacy_status(ev, ns.clone()),
+                Err(e) if e.code.is_cancellation() => {
+                    ev.set_node_outcome(NodeOutcome::Canceled);
+                    ev.set_node_cancel_reason(NodeCancelReason::UserCancelled);
+                }
                 Err(_) => {
                     ev.set_node_outcome(NodeOutcome::Error);
                     ev.set_node_error_type(NodeErrorType::Internal);
@@ -254,10 +262,67 @@ pub fn create_task_span_for_node(
         Some(Box::new(task_span_on_skip)),
     );
     builder.with_parent(SpanLevel::Info, phase_span_key(phase));
-    let key = node_processed_span_key(&node.unique_id());
+    let key = node_processed_span_key(node.unique_id());
     builder.add_related_span(SpanLevel::Info, &key);
     let request = builder.build();
     span_manager.get_task_span(request)
+}
+
+/// Builds the default `Task::telemetry_request` for `task`. See that method for the span tree.
+///
+/// `add_task_runtime_attrs` adds attributes that only the running task knows, on top of the
+/// ones derived from the node. It is not called when `skip_reason` is set.
+pub fn node_task_span_request<T: Task + ?Sized>(
+    task: &T,
+    in_dir: &Path,
+    out_dir: &Path,
+    skip_reason: Option<&SkipReason>,
+    add_task_runtime_attrs: impl FnOnce(&mut NodeEvaluated),
+) -> SpanTreeRequest<FsResult<NodeStatus>, SkipReason> {
+    let mut nodes = task.dbt_nodes().into_iter();
+
+    let Some(node) = nodes.next() else {
+        unreachable!("Task should always operate on at least a single node");
+    };
+
+    if nodes.next().is_some() {
+        // task for multiple nodes use current span as task span.
+        // Task inner code should create actual spans for themselves.
+        return SpanTreeRequest::use_current();
+    }
+
+    let Some(task_phase) = task.task_phase() else {
+        unreachable!("Task that doesn't belong to a phase should override telemetry_tree method");
+    };
+
+    let phase = task_phase.into();
+    let mut attrs = node.get_node_evaluated_event(phase, in_dir, out_dir);
+    if let Some(skip_reason) = skip_reason {
+        update_node_outcome_from_skip_reason(&mut attrs, skip_reason);
+    } else {
+        add_task_runtime_attrs(&mut attrs);
+    }
+
+    let task_span_level = match phase {
+        ExecutionPhase::Run | ExecutionPhase::Compare => SpanLevel::Info,
+        _ => SpanLevel::Debug,
+    };
+    let mut builder = SpanTreeRequest::builder(
+        task_span_level,
+        attrs.into(),
+        Some(Box::new(task_span_on_close)),
+        Some(Box::new(task_span_on_skip)),
+    );
+
+    // Reference Phase span as direct parent (must be pre-registered)
+    builder.with_parent(SpanLevel::Info, phase_span_key(phase));
+
+    // Reference NodeProcessed span as direct related span (must be pre-registered)
+    // Span manager will automatically create its parent (TuiAllProcessingNodesGroup)
+    let node_key = node_processed_span_key(node.unique_id());
+    builder.add_related_span(SpanLevel::Info, &node_key);
+
+    builder.build()
 }
 
 /// Information about node counts across phases, used for span creation.
@@ -348,7 +413,7 @@ fn update_node_processed_from_node_evaluated(sum_ev: &mut NodeProcessed, phase_e
     // the previous outcome recorded for this node in NodeProcessed.
     let update_previous = match phase_ev.node_outcome() {
         NodeOutcome::Skipped => match phase_ev.node_skip_reason() {
-            NodeSkipReason::Upstream => true,
+            NodeSkipReason::Upstream | NodeSkipReason::FailFast => true,
             NodeSkipReason::Cached => true,
             NodeSkipReason::NoOp => true,
             // If we skipped the phase, or skipped because the phase is disabled,
@@ -378,6 +443,8 @@ fn update_node_processed_from_node_evaluated(sum_ev: &mut NodeProcessed, phase_e
         .map(|d| d.clone().into());
     sum_ev.last_phase = phase_ev.phase;
     sum_ev.rows_affected = phase_ev.rows_affected;
+    sum_ev.compute_mode = phase_ev.compute_mode;
+    sum_ev.catalog_type = phase_ev.catalog_type.clone();
     sum_ev.adapter_response = phase_ev.adapter_response.clone();
 }
 

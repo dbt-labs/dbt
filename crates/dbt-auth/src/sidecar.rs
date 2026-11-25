@@ -16,7 +16,7 @@ impl Auth for DuckDBAuth {
         if let Some(path_value) = config.get("path") {
             if let Some(path) = path_value.as_str() {
                 if path != ":memory:" {
-                    builder.with_named_option("path", path.to_string())?;
+                    builder.with_named_option("path", path)?;
                 }
             }
         }

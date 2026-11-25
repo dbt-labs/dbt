@@ -1,15 +1,15 @@
-7fb651bd:
+b284229d:
 - sequence: 0
   type: execute
   sql: |-
     create schema if not exists "adapters_redshift_query_comment"
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "redshift"} */
-b04fe93c:
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "redshift"} */
+dac2b660:
 - sequence: 0
   type: execute
   sql: |-
     select distinct nspname from pg_namespace
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "redshift"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "redshift"} */
 model.test.a:
 - sequence: 0
   type: execute
@@ -74,14 +74,14 @@ model.test.a:
     create view "ci"."adapters_redshift_query_comment"."a__dbt_tmp" as (
     select 1 as id
     ) 
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "redshift"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "redshift"} */
 - sequence: 3
   type: execute
   sql: |-
     alter table "ci"."adapters_redshift_query_comment"."a__dbt_tmp" rename to "a"
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "redshift"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "redshift"} */
 - sequence: 4
   type: execute
   sql: |-
     drop view if exists "ci"."adapters_redshift_query_comment"."a__dbt_backup" cascade
-    /* {"app": "dbt", "dbt_version": "2.0.0", "profile_name": "fusion_tests", "target_name": "redshift"} */
+    /* {"app": "dbt", "dbt_version": "DBT_VERSION", "profile_name": "fusion_tests", "target_name": "redshift"} */

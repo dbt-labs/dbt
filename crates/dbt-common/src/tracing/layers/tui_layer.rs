@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt,
     io::{self, Write},
     sync::{
@@ -23,16 +24,17 @@ use dbt_tracing::{
 };
 use dbt_tui_progress::ProgressController;
 
-use dbt_error::ErrorCode;
+use dbt_error::{Delivery, ErrorCode, FutureError};
 use tracing::level_filters::LevelFilter;
 
 use crate::{
     constants::DBT_GENERIC_TESTS_DIR_NAME, tracing::event_classifiers::is_exit_with_status_log,
 };
 use crate::{
-    io_args::{FsCommand, LogFormat, ShowOptions},
+    io_args::{FsCommand, LogFormat, ShowOptions, multi_adapter_enabled},
     tracing::{
         data_provider::DataProvider,
+        dbt_metrics::CompatibilityProbe,
         formatters::{
             asset::AssetParsedStart,
             color::{BLUE, MaybeColored},
@@ -44,7 +46,7 @@ use crate::{
             },
             generic::{GenericOpEnd, GenericOpItemEnd, GenericOpItemStart, GenericOpStart},
             hook::{HookProcessedEnd, HookProcessedStart},
-            invocation::InvocationSummary,
+            invocation::{FutureChangeLine, InvocationSummary},
             layout::{CapitalizedFirst, Delimiter, RightAligned},
             log_message::LogMessageLine,
             node::{
@@ -60,6 +62,7 @@ use crate::{
             thread_pool_wait::{THREAD_POOL_WAIT_START, ThreadPoolWaitEnd},
         },
         fs_error_log::get_log_message,
+        future_incompatibility_log::FutureIncompatibilityLog,
         layer::{ConsumerLayer, TelemetryConsumer},
         private_events::print_event::{StderrMessage, StdoutMessage},
     },
@@ -70,6 +73,8 @@ pub struct TuiConfig {
     pub show_options: HashSet<ShowOptions>,
     pub command: FsCommand,
     pub quiet: bool,
+    /// Show every repeat of a future-change warning instead of the first one per invocation.
+    pub show_all_deprecations: bool,
 }
 
 pub fn build_tui_layer(
@@ -281,6 +286,7 @@ fn node_evaluated_progress_status(
             NodeSkipReason::Cached => Some("reused"),
             NodeSkipReason::NoOp => Some("no-op"),
             NodeSkipReason::Upstream
+            | NodeSkipReason::FailFast
             | NodeSkipReason::PhaseSkipped
             | NodeSkipReason::PhaseDisabled
             | NodeSkipReason::Unspecified => Some("skipped"),
@@ -309,6 +315,28 @@ struct DelayedMessage {
 pub(crate) struct DelayedMessages {
     test_failures: Vec<DelayedMessage>,
     errors_and_warnings: Vec<DelayedMessage>,
+}
+
+/// Future-change warnings seen in this invocation, for showing only the first of each.
+#[derive(Default)]
+struct FutureChangeRepeats {
+    /// Probes whose first warning has been shown.
+    shown: HashSet<CompatibilityProbe>,
+    /// Occurrences and hidden repeats, by code name.
+    counts: BTreeMap<&'static str, (u64, u64)>,
+}
+
+impl FutureChangeRepeats {
+    /// Records an occurrence of `probe`, warned with `code`. Returns true if it is a repeat.
+    fn record(&mut self, probe: CompatibilityProbe, code: ErrorCode) -> bool {
+        let repeat = !self.shown.insert(probe);
+        let (total, hidden) = self.counts.entry(code.name()).or_default();
+        *total += 1;
+        if repeat {
+            *hidden += 1;
+        }
+        repeat
+    }
 }
 
 #[cfg(test)]
@@ -370,6 +398,8 @@ pub struct TuiLayer {
     show_options: HashSet<ShowOptions>,
     command: FsCommand,
     quiet: bool,
+    /// Show every repeat of a future-change warning instead of the first one per invocation.
+    show_all_deprecations: bool,
     /// Track if we've emitted the list header yet
     list_header_emitted: AtomicBool,
     /// Whether to group skipped tests under TuiAllProcessingNodesGroup spans
@@ -477,6 +507,7 @@ impl TuiLayer {
             show_options,
             command,
             quiet,
+            show_all_deprecations,
         } = config;
 
         let group_skipped_tests = progress.is_some() && max_log_verbosity < LevelFilter::DEBUG;
@@ -494,6 +525,7 @@ impl TuiLayer {
             show_options,
             command,
             quiet,
+            show_all_deprecations,
             list_header_emitted: AtomicBool::new(false),
             group_skipped_tests,
             group_microbatches,
@@ -623,6 +655,9 @@ impl TelemetryConsumer for TuiLayer {
                 test_failures: Vec::new(),
                 errors_and_warnings: Vec::new(),
             });
+            if !self.show_all_deprecations {
+                data_provider.init_root(FutureChangeRepeats::default());
+            }
             if self.group_microbatches {
                 data_provider.init_root(PendingMicrobatches {
                     batches: HashMap::default(),
@@ -874,6 +909,25 @@ impl TuiLayer {
         invocation: &Invocation,
         data_provider: &mut DataProvider<'_>,
     ) {
+        // Notes on future-change repeats close the Errors and Warnings section
+        let mut future_change_notes = Vec::new();
+        data_provider.with_root::<FutureChangeRepeats>(|repeats| {
+            future_change_notes = repeats
+                .counts
+                .iter()
+                .filter(|(_, (_, hidden))| *hidden > 0)
+                .map(|(code_name, (total, hidden))| {
+                    FutureChangeLine {
+                        code_name,
+                        total: *total,
+                        hidden: *hidden,
+                        colorize: self.colorize,
+                    }
+                    .to_string()
+                })
+                .collect();
+        });
+
         // Print any delayed messages first
         data_provider.with_root::<DelayedMessages>(|delayed_messages| {
             self.with_stdout(|stdout| {
@@ -898,7 +952,9 @@ impl TuiLayer {
                     }
 
                     // Print errors and warnings with header if any exist (on stderr)
-                    if !delayed_messages.errors_and_warnings.is_empty() {
+                    if !delayed_messages.errors_and_warnings.is_empty()
+                        || !future_change_notes.is_empty()
+                    {
                         write!(
                             stderr,
                             "\n{}\n",
@@ -915,11 +971,15 @@ impl TuiLayer {
                                 .write_all(msg.message.as_bytes())
                                 .expect("failed to write to stderr");
                         }
+                        for note in &future_change_notes {
+                            writeln!(stderr, "{note}").expect("failed to write to stderr");
+                        }
                     }
 
                     // Flush streams if we had any messages
                     if !delayed_messages.test_failures.is_empty()
                         || !delayed_messages.errors_and_warnings.is_empty()
+                        || !future_change_notes.is_empty()
                     {
                         stderr.flush().expect("failed to write to stderr");
                         stdout.flush().expect("failed to write to stdout");
@@ -1372,7 +1432,10 @@ impl TuiLayer {
         // Determine if the current node is a skipped test
         let is_current_node_skipped_test = (node.node_type() == NodeType::Test
             || node.node_type() == NodeType::UnitTest)
-            && matches!(node.node_skip_reason(), NodeSkipReason::Upstream);
+            && matches!(
+                node.node_skip_reason(),
+                NodeSkipReason::Upstream | NodeSkipReason::FailFast
+            );
 
         // Check if we need to emit pending skipped tests summary before processing current node
         if !is_current_node_skipped_test
@@ -1529,10 +1592,12 @@ impl TuiLayer {
             duration: max_duration,
             // Every member shares the one invocation-wide denominator.
             node_count_total: members.first().and_then(|(node, _)| node.node_count_total),
-            // A group attaches to one model, so its members share an adapter.
+            // Batches are split by adapter, so members share one. Only named when nodes can
+            // run on different adapters.
             adapter: members
                 .first()
-                .and_then(|(node, _)| node.adapter.as_deref()),
+                .and_then(|(node, _)| node.adapter.as_deref())
+                .filter(|_| multi_adapter_enabled()),
             colorize: self.colorize,
         };
 
@@ -1565,11 +1630,19 @@ impl TuiLayer {
         log_record: &LogRecordInfo,
         data_provider: &mut DataProvider<'_>,
     ) {
+        let error_code = log_msg
+            .code
+            .and_then(|c| u16::try_from(c).ok())
+            .and_then(|c| ErrorCode::try_from(c).ok());
+        if let Some(code) = error_code
+            && self.is_future_change_repeat(code, log_record, data_provider)
+        {
+            // Counted in the invocation summary; the file log keeps every occurrence.
+            return;
+        }
+
         let message = LogMessageLine {
-            error_code: log_msg
-                .code
-                .and_then(|c| u16::try_from(c).ok())
-                .and_then(|c| ErrorCode::try_from(c).ok()),
+            error_code,
             message: &log_record.body,
             severity: log_record.severity_number,
             colorize: self.colorize,
@@ -1587,6 +1660,40 @@ impl TuiLayer {
             // Print info and below messages immediately
             self.write_stdout_line(&message);
         }
+    }
+
+    /// Whether `log_record` repeats a future-change warning already shown in this invocation.
+    ///
+    /// A repeat is the same probe: the same [`NamedProbe`](super::super::dbt_metrics::NamedProbe)
+    /// for [`ErrorCode::FutureIncompatibility`], the same code otherwise. Codes with
+    /// [`Delivery::Every`], and warnings promoted to errors, are never repeats.
+    fn is_future_change_repeat(
+        &self,
+        code: ErrorCode,
+        log_record: &LogRecordInfo,
+        data_provider: &mut DataProvider<'_>,
+    ) -> bool {
+        if self.show_all_deprecations || log_record.severity_number != SeverityNumber::Warn {
+            return false;
+        }
+        let probe = match log_record
+            .attributes
+            .downcast_ref::<FutureIncompatibilityLog>()
+        {
+            Some(future_incompatibility) => future_incompatibility.probe(),
+            None => match code.future_error() {
+                Some(FutureError {
+                    delivery: Delivery::FirstThenSummary,
+                    ..
+                }) => CompatibilityProbe::ErrorCode(code),
+                _ => return false,
+            },
+        };
+        let mut repeat = false;
+        data_provider.with_root_mut::<FutureChangeRepeats>(|repeats| {
+            repeat = repeats.record(probe, code);
+        });
+        repeat
     }
 
     fn handle_state_modified_diff(&self, state_mod_diff: &StateModifiedDiff) {
@@ -2208,9 +2315,7 @@ impl TuiLayer {
         // gate.
         let item_visible = if matches!(
             self.command,
-            FsCommand::Extension("lint")
-                | FsCommand::Extension("format")
-                | FsCommand::Extension("format-legacy")
+            FsCommand::Extension("lint") | FsCommand::Extension("format")
         ) {
             self.show_options.contains(&ShowOptions::All)
         } else {

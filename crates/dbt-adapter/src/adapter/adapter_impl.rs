@@ -1,7 +1,10 @@
 use crate::catalog_relation::CatalogRelation;
 use crate::column::{BigqueryColumnMode, Column, ColumnBuilder};
 use crate::config::AdapterConfig;
-use crate::connection::{ConnectionGuard, borrow_tlocal_connection};
+use crate::connection::{
+    ConnectionGuard, borrow_tlocal_connection, clear_open_transaction, open_transaction,
+    set_open_transaction,
+};
 use crate::engine::{
     AdapterEngine, AdbcEngine, Options as ExecuteOptions, execute_query_with_retry,
 };
@@ -23,6 +26,7 @@ use crate::metadata::clickhouse::ClickHouseMetadataAdapter;
 use crate::metadata::databricks::DatabricksMetadataAdapter;
 use crate::metadata::databricks::dbr_capabilities;
 use crate::metadata::databricks::dbr_capabilities::DbrComputeContext;
+use crate::metadata::databricks::is_databricks_relation_not_found;
 use crate::metadata::databricks::version::EngineVersion;
 use crate::metadata::duckdb::DuckDBMetadataAdapter;
 use crate::metadata::duckdb::{classify_attach_entry, duckdb_table_format_for_database};
@@ -34,7 +38,7 @@ use crate::metadata::salesforce::SalesforceMetadataAdapter;
 use crate::metadata::snowflake::SnowflakeMetadataAdapter;
 use crate::metadata::{self, CatalogAndSchema, MetadataAdapter};
 use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
-use crate::record_batch::{RecordBatchExt, RenamedColumn, StructArrayExt};
+use crate::record_batch::{StructArrayExt, jsonify_column};
 use crate::relation::Relation;
 use crate::relation::RelationObject;
 use crate::relation::config_v2::{ComponentConfigLoader, RelationConfig};
@@ -47,6 +51,7 @@ use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 use crate::value::*;
 use crate::{AdapterResult, load_catalogs, python};
+use dbt_adapter_engine::record_batch::{RecordBatchExt, RenamedColumn};
 
 use adbc_core::options::OptionValue;
 use arrow::array::{BooleanArray, RecordBatch, StringArray};
@@ -55,7 +60,8 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::cow::lowercase;
-use dbt_adapter_engine::databricks::query_tags::databricks_statement_options;
+use dbt_adapter_engine::databricks::query_tags::QueryTags;
+use dbt_adapter_sql::ident::escaped_identifier;
 use dbt_adapter_sql::is_keyword_ignore_ascii_case;
 use dbt_adbc::bigquery::*;
 use dbt_adbc::salesforce::DATA_TRANSFORM_RUN_TIMEOUT;
@@ -71,12 +77,14 @@ use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::DbtIncrementalStrategy;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::common::ResolvedQuoting;
-use dbt_schemas::schemas::common::{ClusterConfig, Constraint, ConstraintSupport, PartitionConfig};
+use dbt_schemas::schemas::common::{
+    ClusterConfig, Constraint, ConstraintSupport, PartitionConfig, constraint_support,
+};
 use dbt_schemas::schemas::common::{ConstraintType, normalize_quote};
 use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 use dbt_schemas::schemas::dbt_column::{DbtColumn, DbtColumnRef};
 use dbt_schemas::schemas::manifest::BigqueryPartitionConfig;
-use dbt_schemas::schemas::profiles::DuckDBPathInfo;
+use dbt_schemas::schemas::profiles::{BigqueryPriority, DuckDBPathInfo};
 use dbt_schemas::schemas::project::ModelConfig;
 use dbt_schemas::schemas::properties::ModelConstraint;
 use dbt_schemas::schemas::relations::base::{BaseRelation, ComponentName, Policy};
@@ -95,7 +103,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Once};
 
 use AdapterType::*;
 use InnerAdapter::*;
@@ -296,8 +304,9 @@ pub(crate) fn get_bool_config(engine: &dyn AdapterEngine, key: &str) -> AdapterR
 }
 
 pub fn quote_ident(adapter_type: AdapterType, identifier: &str) -> String {
-    let q = dbt_adapter_core::quote_char(adapter_type);
-    format!("{q}{identifier}{q}")
+    let quote = dbt_adapter_core::quote_char(adapter_type);
+    let escaped = escaped_identifier(identifier.into(), adapter_type, quote);
+    format!("{quote}{escaped}{quote}")
 }
 
 pub fn quote_component(
@@ -396,7 +405,7 @@ impl AdapterImpl {
                         DuckDB => {
                             Box::new(DuckDBMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
-                        LakeCompute => {
+                        LakeCompute | MotherDuck => {
                             Box::new(DuckDBMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
                         Fabric => {
@@ -539,6 +548,25 @@ impl AdapterImpl {
                 unreachable!("only Redshift adapter should call reset_database, got {other:?}")
             }
         }
+        Ok(())
+    }
+
+    /// Whether a node left a transaction open on this thread's connection.
+    pub(crate) fn has_open_transaction(&self) -> bool {
+        self.manages_transactions() && open_transaction().is_some()
+    }
+
+    /// Rolls back the transaction a node left open. dbt-adapters does this when it releases the
+    /// node's connection. Data tests need it: `statement('main')` begins a transaction and the
+    /// test materialization commits only when it stores failures.
+    pub fn rollback_open_transaction(
+        &self,
+        conn: &mut ConnectionGuard,
+        node_id: &str,
+        token: CancellationToken,
+    ) -> FsResult<()> {
+        let ctx = QueryCtx::default().with_node_id(node_id);
+        self.exec_stmt(&ctx, conn, "rollback", false, token)?;
         Ok(())
     }
 
@@ -727,7 +755,9 @@ impl AdapterImpl {
         use DbtIncrementalStrategy::*;
 
         match self.adapter_type() {
-            Postgres | DuckDB | LakeCompute => &[Append, DeleteInsert, Merge, Microbatch],
+            Postgres | DuckDB | LakeCompute | MotherDuck => {
+                &[Append, DeleteInsert, Merge, Microbatch]
+            }
             Snowflake => &[Append, DeleteInsert, InsertOverwrite, Merge, Microbatch],
             Bigquery => &[Append],
             Databricks => &[
@@ -798,7 +828,32 @@ impl AdapterImpl {
         conn: &mut ConnectionGuard<'_>,
         ctx: &QueryCtx,
         sql: &str,
-        _auto_begin: bool,
+        auto_begin: bool,
+        fetch: bool,
+        limit: Option<i64>,
+        options: Option<ExecuteOptions>,
+        token: CancellationToken,
+    ) -> AdapterResult<(AdapterResponse, AgateTable)> {
+        let bridge = engine.get_config().use_dbt_cloud_credentials();
+        let result = self.execute_statements(
+            engine, state, conn, ctx, sql, auto_begin, fetch, limit, options, token,
+        );
+        if bridge && let Err(err) = &result {
+            conn.discard_on_bridge_error(err);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn execute_statements(
+        &self,
+        engine: Arc<dyn AdapterEngine>,
+        state: Option<&State>,
+        conn: &mut ConnectionGuard<'_>,
+        ctx: &QueryCtx,
+        sql: &str,
+        auto_begin: bool,
         fetch: bool,
         _limit: Option<i64>,
         options: Option<ExecuteOptions>,
@@ -854,7 +909,54 @@ impl AdapterImpl {
 
         let mut last_batch = None;
         let mut transaction_open = false;
+        let manages_transactions = self.manages_transactions();
+        let node_id = state.and_then(node_id_from_state);
+        if manages_transactions && let Some(owner) = open_transaction() {
+            if owner.is_some() && node_id.is_some() && owner != node_id {
+                // shortcut: a node that never called `adapter.commit()` is rolled back when the
+                // next node reaches this connection, not when it finishes; revisit if that
+                // holds locks too long.
+                if let Err(err) = execute_query_with_retry(
+                    engine.clone(),
+                    state,
+                    conn.as_mut(),
+                    ctx,
+                    "rollback",
+                    /* retry_limit = */ 1,
+                    &options,
+                    false,
+                    token.clone(),
+                ) {
+                    conn.discard_conn_on_drop();
+                    return Err(err);
+                }
+                clear_open_transaction();
+            } else {
+                transaction_open = true;
+            }
+        }
         for sql in statements {
+            // dbt-redshift opens a transaction before the first statement that asks for one
+            // (`auto_begin`) and `adapter.commit()` ends it.
+            if manages_transactions
+                && auto_begin
+                && !transaction_open
+                && transaction_boundary(sql).is_none()
+            {
+                execute_query_with_retry(
+                    engine.clone(),
+                    state,
+                    conn.as_mut(),
+                    ctx,
+                    "begin",
+                    /* retry_limit = */ 1,
+                    &options,
+                    false,
+                    token.clone(),
+                )?;
+                transaction_open = true;
+                set_open_transaction(node_id.clone());
+            }
             match execute_query_with_retry(
                 engine.clone(),
                 state,
@@ -868,17 +970,51 @@ impl AdapterImpl {
             ) {
                 Ok(batch) => {
                     match transaction_boundary(sql) {
-                        Some(TransactionBoundary::Begin) => transaction_open = true,
-                        Some(TransactionBoundary::End) => transaction_open = false,
+                        Some(TransactionBoundary::Begin) => {
+                            transaction_open = true;
+                            if manages_transactions {
+                                set_open_transaction(node_id.clone());
+                            }
+                        }
+                        Some(TransactionBoundary::End) => {
+                            transaction_open = false;
+                            if manages_transactions {
+                                clear_open_transaction();
+                            }
+                        }
                         None => {}
                     }
                     last_batch = Some(batch);
                 }
                 Err(err) => {
                     if transaction_open {
-                        // The driver may have given up on a request the warehouse is still
-                        // running, so the session's transaction state is unknown. Retire the
-                        // connection (closing its session) instead of recycling it.
+                        // The warehouse answered with an error, so the session is idle and its
+                        // transaction is aborted. Roll it back and keep the connection, as
+                        // dbt-adapters does (`rollback_if_open` in its exception handler):
+                        // closing it would also drop the session's state.
+                        if manages_transactions
+                            && is_server_error(&err)
+                            && execute_query_with_retry(
+                                engine.clone(),
+                                state,
+                                conn.as_mut(),
+                                ctx,
+                                "rollback",
+                                /* retry_limit = */ 1,
+                                &options,
+                                false,
+                                token,
+                            )
+                            .is_ok()
+                        {
+                            clear_open_transaction();
+                            return Err(with_create_or_alter_hint(adapter_type, sql, err));
+                        }
+                        // Any other failure (a cancelled or abandoned request, a lost
+                        // connection, or a failed rollback): the driver may have given up on a
+                        // request the warehouse is still running, so the session's transaction
+                        // state is unknown. Retire the connection (closing its session) instead
+                        // of recycling it.
                         conn.discard_conn_on_drop();
                         return Err(AdapterError::new_with_sqlstate_and_vendor_code(
                             err.kind(),
@@ -891,7 +1027,7 @@ impl AdapterImpl {
                             err.vendor_code(),
                         ));
                     }
-                    return Err(err);
+                    return Err(with_create_or_alter_hint(adapter_type, sql, err));
                 }
             }
         }
@@ -916,8 +1052,11 @@ impl AdapterImpl {
         let table = match self.adapter_type() {
             Databricks => {
                 let original = Arc::new(last_batch);
-                let display = original.as_ref().clone().jsonify_nested_columns();
-                AgateTable::from_record_batch_with_original(Arc::new(display), original)
+                let display = original
+                    .as_ref()
+                    .clone()
+                    .jsonify_nested_columns(jsonify_column);
+                AgateTable::from_record_batch_impl(Arc::new(display), Some(original), None)
             }
             _ => AgateTable::from_record_batch(Arc::new(last_batch)),
         };
@@ -1088,8 +1227,18 @@ impl AdapterImpl {
                     "bigquery.add_query",
                 ))
             }
-            Impl(_, engine) => {
-                let options = databricks_statement_options(self.adapter_type(), Some(state))?;
+            Impl(adapter_type, engine) => {
+                let mut options = IndexMap::new();
+                match adapter_type {
+                    Databricks => {
+                        let query_tags = QueryTags::from_state(Some(state))?;
+                        query_tags
+                            .unwrap_or_default()
+                            .extend_stmt_options(&mut options);
+                    }
+                    _ => (),
+                }
+                let options = options.into_iter().collect::<Vec<_>>();
                 self.execute_inner(
                     Arc::clone(engine),
                     None,
@@ -1181,13 +1330,13 @@ impl AdapterImpl {
             Replay(
                 adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
                 | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle),
+                | Datafusion | Dremio | Oracle | MotherDuck),
                 _,
             )
             | Impl(
                 adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
                 | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle),
+                | Datafusion | Dremio | Oracle | MotherDuck),
                 _,
             ) => Err(AdapterError::new(
                 AdapterErrorKind::Internal,
@@ -1219,7 +1368,7 @@ impl AdapterImpl {
             }
             Snowflake | Databricks | Redshift | Spark | DuckDB | Postgres | Salesforce | Fabric
             | ClickHouse | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle
-            | LakeCompute | Bigquery => {
+            | LakeCompute | Bigquery | MotherDuck => {
                 use crate::macro_exec::execute_macro_wrapper;
                 use minijinja::value::{Kwargs, Value};
 
@@ -1327,7 +1476,7 @@ impl AdapterImpl {
                 }
                 Postgres => "nspname",
                 DuckDB => "schema_name",
-                LakeCompute => "schema_name",
+                LakeCompute | MotherDuck => "schema_name",
                 Fabric => "schema",
                 // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/include/clickhouse/macros/adapters.sql
                 ClickHouse => "name",
@@ -1362,6 +1511,7 @@ impl AdapterImpl {
         let relation = relation.without_identifier()?;
         let args = [RelationObject::new(relation).into_value()];
         execute_macro(state, &args, "create_schema")?;
+        self.commit_open_transaction(state, CancellationToken::never_cancels())?;
         Ok(none_value())
     }
 
@@ -1378,6 +1528,7 @@ impl AdapterImpl {
         let dropped_schema = relation.schema().map(str::to_string);
         let args = [RelationObject::new(relation).into_value()];
         execute_macro(state, &args, "drop_schema")?;
+        self.commit_open_transaction(state, CancellationToken::never_cancels())?;
         // httpclient.py `database_dropped` parity: after dropping the
         // connection's own default database, clear it so follow-up statements
         // don't fail with UNKNOWN_DATABASE (falls back to the user's default
@@ -1385,7 +1536,8 @@ impl AdapterImpl {
         if self.adapter_type() == ClickHouse
             && !self.engine().is_mock()
             && let Some(dropped_schema) = dropped_schema
-            && crate::engine::clickhouse::target_schema(self.engine().get_config()).as_deref()
+            && dbt_adapter_engine::clickhouse::bootstrap::target_schema(self.engine().get_config())
+                .as_deref()
                 == Some(dropped_schema.as_str())
         {
             let mut conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
@@ -1559,17 +1711,15 @@ impl AdapterImpl {
 
                 let quoting = relation.quote_policy();
 
-                let schema = if quoting.schema {
-                    relation.schema_as_quoted_str()?
-                } else {
-                    relation.schema_as_str()?
-                };
+                let schema = metadata::snowflake::snowflake_relation_identifier(
+                    &relation.schema_as_str()?,
+                    quoting.schema,
+                );
 
-                let database = if quoting.database {
-                    relation.database_as_quoted_str()?
-                } else {
-                    relation.database_as_str()?
-                };
+                let database = metadata::snowflake::snowflake_relation_identifier(
+                    &relation.database_as_str()?,
+                    quoting.database,
+                );
 
                 let lit_fmt = SqlLiteralFormatter::new(adapter_type);
                 let show_sql = format!(
@@ -1641,7 +1791,7 @@ impl AdapterImpl {
             }
             Postgres | Bigquery | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 let err = format!(
                     "describe_dynamic_table is not supported by the {} adapter",
                     adapter_type
@@ -1672,17 +1822,15 @@ impl AdapterImpl {
 
                 let quoting = relation.quote_policy();
 
-                let schema = if quoting.schema {
-                    relation.schema_as_quoted_str()?
-                } else {
-                    relation.schema_as_str()?
-                };
+                let schema = metadata::snowflake::snowflake_relation_identifier(
+                    &relation.schema_as_str()?,
+                    quoting.schema,
+                );
 
-                let database = if quoting.database {
-                    relation.database_as_quoted_str()?
-                } else {
-                    relation.database_as_str()?
-                };
+                let database = metadata::snowflake::snowflake_relation_identifier(
+                    &relation.database_as_str()?,
+                    quoting.database,
+                );
 
                 let lit_fmt = SqlLiteralFormatter::new(adapter_type);
                 let show_sql = format!(
@@ -1708,7 +1856,7 @@ impl AdapterImpl {
             }
             Postgres | Bigquery | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 let err = format!(
                     "describe_interactive_table is not supported by the {} adapter",
                     adapter_type
@@ -1935,7 +2083,7 @@ impl AdapterImpl {
         name: &str,
         token: CancellationToken,
     ) -> AdapterResult<Option<bool>> {
-        fn duckdb_is_motherduck(config: &AdapterConfig) -> bool {
+        let duckdb_is_motherduck = |config: &AdapterConfig| -> bool {
             matches!(
                 dbt_auth::DuckDbTarget::from_config(config),
                 Ok(dbt_auth::DuckDbTarget::MotherduckBrowserLogin { .. })
@@ -1943,11 +2091,14 @@ impl AdapterImpl {
                     | Ok(dbt_auth::DuckDbTarget::MotherduckSaasBrowserLogin { .. })
                     | Ok(dbt_auth::DuckDbTarget::MotherduckSaasTokenAuth { .. })
             )
-        }
+        };
 
         // All-platform features.
         if name == "transactions" {
             if self.adapter_type() == DuckDB && duckdb_is_motherduck(self.engine().get_config()) {
+                return Ok(Some(false));
+            }
+            if self.adapter_type() == MotherDuck {
                 return Ok(Some(false));
             }
             return Ok(Some(true));
@@ -1961,6 +2112,17 @@ impl AdapterImpl {
                     emit_warn_log_message(
                         ErrorCode::InvalidArgument,
                         format!("Unrecognized feature: {name} for {} adapter", DuckDB),
+                    );
+                    Ok(None)
+                }
+            },
+            // FIXME: may be dead code, kept for safety
+            MotherDuck => match name {
+                "motherduck" => Ok(Some(true)),
+                _ => {
+                    emit_warn_log_message(
+                        ErrorCode::InvalidArgument,
+                        format!("Unrecognized feature: {name} for {} adapter", MotherDuck),
                     );
                     Ok(None)
                 }
@@ -2143,7 +2305,7 @@ impl AdapterImpl {
                             }
                         }
                         Err(ref e) => {
-                            if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") {
+                            if is_databricks_relation_not_found(e) {
                                 return Ok(Vec::new());
                             }
                             // PARSE_SYNTAX_ERROR / UNSUPPORTED_FEATURE -> DBR < 16.2;
@@ -2159,7 +2321,7 @@ impl AdapterImpl {
                     "dbt_databricks",
                 );
                 match result {
-                    Err(ref e) if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") => {
+                    Err(ref e) if is_databricks_relation_not_found(e) => {
                         return Ok(Vec::new());
                     }
                     _ => result,
@@ -2169,13 +2331,12 @@ impl AdapterImpl {
             // have a get_columns_in_relation() macro, it will fail with a
             // "macro does not exist" error
             Athena | ClickHouse | Datafusion | Dremio | DuckDB | LakeCompute | Exasol | Fabric
-            | Oracle | Postgres | Redshift | Salesforce | Snowflake | Spark | Starburst | Trino => {
-                execute_macro(
-                    state,
-                    &[RelationObject::new(relation.to_owned()).into_value()],
-                    "get_columns_in_relation",
-                )
-            }
+            | Oracle | Postgres | Redshift | Salesforce | Snowflake | Spark | Starburst | Trino
+            | MotherDuck => execute_macro(
+                state,
+                &[RelationObject::new(relation.to_owned()).into_value()],
+                "get_columns_in_relation",
+            ),
         };
 
         macro_result
@@ -2335,7 +2496,31 @@ impl AdapterImpl {
             let database = relation.database_as_str()?;
             let schema = relation.schema_as_str()?;
             let identifier = relation.identifier_as_str()?;
-            let relation_name = format!("{}.{}.{}", database, schema, identifier);
+            let relation_name =
+                crate::engine::sidecar_relation_name(&database, &schema, &identifier);
+
+            // A relation that is not in the local database has no columns to
+            // read. dbt-core returns an empty list for a missing relation, and
+            // incremental / on_schema_change macros depend on that (`this`
+            // before its first build, `__dbt_tmp` temps, `api.Relation.create`).
+            // Warn and name the relation, so an unpulled source is visible
+            // (fs#17227).
+            // Local identifiers resolve without case sensitivity, including quoted names.
+            let exists = client
+                .get_relation_type(&ResolvedQuoting::falses(), &database, &schema, &identifier)?
+                .is_some();
+            if !exists {
+                emit_warn_log_message(
+                    ErrorCode::SidecarRelationNotBuilt,
+                    format!(
+                        "{relation_name} does not exist in the local compute database yet; \
+                         get_columns_in_relation returns no columns. If it is a source, run \
+                         `dbt pull` for it first."
+                    ),
+                );
+                return Ok(Vec::new());
+            }
+
             let column_infos = client.get_columns(&relation_name)?;
             let columns = column_infos
                 .into_iter()
@@ -2440,7 +2625,7 @@ impl AdapterImpl {
             Impl(
                 Snowflake | Databricks | Redshift | Salesforce | Postgres | Spark | DuckDB
                 | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle,
+                | Datafusion | Dremio | Oracle | MotherDuck,
                 _,
             ) => {
                 // downcast relation
@@ -2490,7 +2675,8 @@ impl AdapterImpl {
             }
             Impl(
                 Postgres | Bigquery | Databricks | Redshift | Spark | DuckDB | LakeCompute | Fabric
-                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle,
+                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle
+                | MotherDuck,
                 _,
             ) => {
                 if quote_config.unwrap_or(true) {
@@ -2550,6 +2736,15 @@ impl AdapterImpl {
     ) -> bool {
         match self.inner_adapter() {
             Impl(..) => metadata::clickhouse::can_exchange(self, state, schema, rel_type, token),
+            Replay(..) => false,
+        }
+    }
+
+    pub fn supports_atomic_exchange(&self, state: &State, token: CancellationToken) -> bool {
+        match self.inner_adapter() {
+            Impl(..) => {
+                metadata::clickhouse::server_capabilities(self, state, token).atomic_exchange
+            }
             Replay(..) => false,
         }
     }
@@ -2626,7 +2821,7 @@ impl AdapterImpl {
             Replay(_, replay) => {
                 replay.replay_expand_target_column_types(state, from_relation, to_relation)
             }
-            Impl(Bigquery, _) | Impl(DuckDB, _) | Impl(LakeCompute, _) => {
+            Impl(Bigquery, _) | Impl(DuckDB, _) | Impl(LakeCompute, _) | Impl(MotherDuck, _) => {
                 // This method is a noop for BigQuery and DuckDB.
                 // BigQuery: https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L260-L261
                 // DuckDB: type widening (e.g. INT→BIGINT) is handled implicitly;
@@ -2682,12 +2877,11 @@ impl AdapterImpl {
         }
     }
 
-    /// This was update_columns method from bigquery-adapter where googleapi is used to
-    /// update/merge columns in general
+    /// Update BigQuery column descriptions and policy tags, including nested fields,
+    /// through the ADBC driver's REST API support.
+    /// BigQuery's [`ALTER COLUMN SET OPTIONS`] cannot modify nested-field descriptions.
     ///
-    /// But since internally this is is only used to update columns descriptions, by
-    /// bigquery__alter_column_comment macro and due to limitation of bigquery, we cannot update
-    /// nested columns using SQL the implementation here only supports columns descriptions update
+    /// [`ALTER COLUMN SET OPTIONS`]: https://cloud.google.com/bigquery/docs/reference/standard-sql/data-definition-language#alter_column_set_options_statement
     pub fn update_columns_descriptions(
         &self,
         state: &State,
@@ -2705,9 +2899,7 @@ impl AdapterImpl {
                 let table = relation.identifier_as_str()?;
                 let schema = relation.schema_as_str()?;
 
-                let nested_columns = self.do_nest_column_data_types(columns, None)?;
-
-                let column_to_description = nested_columns
+                let column_to_description = columns
                     .iter()
                     .filter_map(|(name, col)| {
                         col.description
@@ -2720,7 +2912,7 @@ impl AdapterImpl {
                 // If a column's tags are all mapping-valued, omit it entirely rather than
                 // sending an empty list, which BigQuery would interpret as clearing any
                 // existing policy tags on that column.
-                let column_to_policy_tags = nested_columns
+                let column_to_policy_tags = columns
                     .iter()
                     .filter_map(|(name, col)| {
                         col.policy_tags.as_ref().and_then(|tags| {
@@ -2788,7 +2980,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | Fabric | DuckDB
             | LakeCompute | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
-            | Dremio | Oracle => {
+            | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -2833,7 +3025,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-            | Oracle => {
+            | Oracle | MotherDuck => {
                 let mut result = vec![];
                 for (_, column) in columns_map {
                     let col_name = if column.quote.unwrap_or(false) {
@@ -2954,95 +3146,8 @@ impl AdapterImpl {
 
     /// https://github.com/dbt-labs/dbt-adapters/blob/5379513bad9c75661b990a5ed5f32ac9c62a0758/dbt-adapters/src/dbt/adapters/base/impl.py#L293
     pub fn get_constraint_support(&self, ct: ConstraintType) -> ConstraintSupport {
-        use ConstraintSupport::*;
-        use ConstraintType::*;
-
-        match (self.adapter_type(), ct) {
-            // Postgres
-            (Postgres, NotNull) => Enforced,
-            (Postgres, ForeignKey) => Enforced,
-            (Postgres, Unique) => NotEnforced,
-            (Postgres, PrimaryKey) => NotEnforced,
-            (Postgres, Check) => NotSupported,
-            (Postgres, Custom) => NotSupported,
-
-            // Snowflake
-            // https://github.com/dbt-labs/dbt-adapters/blob/aa1de3d16267a456326a36045701fb48a61a6b6c/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L74
-            (Snowflake, NotNull) => Enforced,
-            (Snowflake, ForeignKey) => Enforced,
-            (Snowflake, Unique) => NotEnforced,
-            (Snowflake, PrimaryKey) => NotEnforced,
-            (Snowflake, Check) => NotSupported,
-            (Snowflake, Custom) => NotSupported,
-
-            // BigQuery
-            // https://github.com/dbt-labs/dbt-adapters/blob/4a00354a497214d9043bf4122810fe2d04de17bb/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L132
-            (Bigquery, NotNull) => Enforced,
-            (Bigquery, Unique) => NotSupported,
-            (Bigquery, PrimaryKey) => NotEnforced,
-            (Bigquery, ForeignKey) => NotEnforced,
-            (Bigquery, Check) => NotSupported,
-            (Bigquery, Custom) => NotSupported,
-
-            // Databricks
-            // https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/constraints.py#L17
-            (Databricks, NotNull) => Enforced,
-            (Databricks, Unique) => NotSupported,
-            (Databricks, PrimaryKey) => NotEnforced,
-            (Databricks, ForeignKey) => NotEnforced,
-            (Databricks, Check) => Enforced,
-            (Databricks, Custom) => NotSupported,
-
-            // Redshift
-            // https://github.com/dbt-labs/dbt-adapters/blob/2a94cc75dba1f98fa5caff1f396f5af7ee444598/dbt-redshift/src/dbt/adapters/redshift/impl.py#L53
-            (Redshift, NotNull) => Enforced,
-            (Redshift, Unique) => NotEnforced,
-            (Redshift, PrimaryKey) => NotEnforced,
-            (Redshift, ForeignKey) => NotEnforced,
-            (Redshift, Check) => NotSupported,
-            (Redshift, Custom) => NotSupported,
-
-            // DuckDB - follows Postgres
-            (DuckDB, NotNull) => Enforced,
-            (DuckDB, ForeignKey) => Enforced,
-            (DuckDB, Unique) => NotEnforced,
-            (DuckDB, PrimaryKey) => NotEnforced,
-            (DuckDB, Check) => NotSupported,
-            (DuckDB, Custom) => NotSupported,
-
-            // Lake compute - follows DuckDB
-            (LakeCompute, NotNull) => Enforced,
-            (LakeCompute, ForeignKey) => Enforced,
-            (LakeCompute, Unique) => NotEnforced,
-            (LakeCompute, PrimaryKey) => NotEnforced,
-            (LakeCompute, Check) => NotSupported,
-            (LakeCompute, Custom) => NotSupported,
-
-            // Fabric
-            (Fabric, Check) => NotSupported,
-            (Fabric, NotNull) => Enforced,
-            (Fabric, Unique) => Enforced,
-            (Fabric, PrimaryKey) => Enforced,
-            (Fabric, ForeignKey) => Enforced,
-            (Fabric, Custom) => NotSupported,
-
-            // Exasol (verified on Exasol 8)
-            (Exasol, NotNull) => Enforced,
-            (Exasol, PrimaryKey) => Enforced,
-            (Exasol, ForeignKey) => Enforced,
-            (Exasol, Unique) => NotSupported,
-            (Exasol, Check) => NotSupported,
-            (Exasol, Custom) => NotSupported,
-
-            // ClickHouse (dbt-clickhouse impl.py CONSTRAINT_SUPPORT)
-            (ClickHouse, Check) => Enforced,
-            (ClickHouse, NotNull | Unique | PrimaryKey | ForeignKey | Custom) => NotSupported,
-
-            // Salesforce
-            (Salesforce | Spark | Starburst | Athena | Trino | Datafusion | Dremio | Oracle, _) => {
-                unimplemented!("constraint support not implemented")
-            }
-        }
+        constraint_support(self.adapter_type(), ct)
+            .unwrap_or_else(|| unimplemented!("constraint support not implemented"))
     }
 
     /// Given existing columns and columns from our model
@@ -3156,7 +3261,7 @@ impl AdapterImpl {
         }
 
         match self.adapter_type() {
-            Postgres | Bigquery | DuckDB | LakeCompute | Exasol | ClickHouse => {
+            Postgres | Bigquery | DuckDB | LakeCompute | Exasol | ClickHouse | MotherDuck => {
                 let grantee_cols = record_batch.column_values::<StringArray>("grantee")?;
                 let privilege_cols = record_batch.column_values::<StringArray>("privilege_type")?;
 
@@ -3381,7 +3486,7 @@ impl AdapterImpl {
             }
             Snowflake | Bigquery | Databricks | Spark | DuckDB | LakeCompute | Postgres
             | Salesforce | Fabric | ClickHouse | Exasol | Athena | Starburst | Trino
-            | Datafusion | Dremio | Oracle => Err(AdapterError::new(
+            | Datafusion | Dremio | Oracle | MotherDuck => Err(AdapterError::new(
                 AdapterErrorKind::NotSupported,
                 "build_catalog_from_show_tables_and_svv_columns is only supported for Redshift",
             )),
@@ -3397,7 +3502,7 @@ impl AdapterImpl {
             Bigquery => nest_column_data_types(columns, constraints),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3432,7 +3537,7 @@ impl AdapterImpl {
             Bigquery => Ok(Value::from(render_struct_projection(col_name, data_type))),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3536,7 +3641,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3570,27 +3675,37 @@ impl AdapterImpl {
                 if let Replay(_, replay) = self.inner_adapter() {
                     return replay.replay_get_dataset_location(state, relation);
                 }
-                // https://cloud.google.com/bigquery/docs/information-schema-datasets-schemata
-                // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L853-L854
+                // Read the location with datasets.get through the driver, like dbt-core's
+                // `client.get_dataset`: an INFORMATION_SCHEMA.SCHEMATA query per call counts
+                // against BigQuery's per-user INFORMATION_SCHEMA rate limit.
+                let database = relation.database_as_str()?;
+                let schema = relation.schema_as_str()?;
+                let payload = serde_json::json!({ "project": database, "dataset": schema });
+                // Not sent to BigQuery; it identifies the call in logs and recordings.
                 let sql = format!(
-                    "SELECT
-                location
-            FROM `{}.INFORMATION_SCHEMA.SCHEMATA` WHERE schema_name = '{}'",
-                    relation.database_as_str()?,
-                    relation.schema_as_str()?
+                    "-- adapter.get_dataset_location via BigQuery REST API on `{database}.{schema}`"
                 );
 
                 let ctx =
                     query_ctx_from_state(state)?.with_desc("get_dataset_location adapter call");
-                let batch = self
-                    .engine()
-                    .execute(Some(state), conn, &ctx, &sql, token)?;
+                let batch = self.engine().execute_with_options(
+                    Some(state),
+                    &ctx,
+                    conn,
+                    &sql,
+                    vec![(
+                        GET_DATASET_LOCATION.to_string(),
+                        OptionValue::String(payload.to_string()),
+                    )],
+                    true,
+                    token,
+                )?;
 
                 Self::parse_dataset_location(&batch)
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3648,7 +3763,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3722,7 +3837,7 @@ impl AdapterImpl {
 
                 Ok(none_value())
             }
-            DuckDB => {
+            DuckDB | MotherDuck => {
                 // DuckDB cannot access local files when `motherduck_saas_mode`
                 // is enabled. In that case, we need to load the dataset in
                 // memory and bulk-ingest it into the motherduck instance
@@ -3845,7 +3960,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -3993,7 +4108,7 @@ impl AdapterImpl {
                     ))
                 }
             }
-            Impl(adapter_type @ (Postgres | DuckDB | LakeCompute), engine) => {
+            Impl(adapter_type @ (Postgres | DuckDB | LakeCompute | MotherDuck), engine) => {
                 if let Some(configured_database) = engine.get_configured_database_name() {
                     if database == configured_database {
                         Ok(Value::from(()))
@@ -4111,7 +4226,7 @@ impl AdapterImpl {
             }
             adapter_type @ (Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark
             | DuckDB | LakeCompute | Fabric | ClickHouse | Exasol | Starburst
-            | Athena | Trino | Datafusion | Dremio | Oracle) => {
+            | Athena | Trino | Datafusion | Dremio | Oracle | MotherDuck) => {
                 unimplemented!(
                     "is_replaceable is only available with BigQuery adapter, not {}",
                     adapter_type
@@ -4177,7 +4292,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4201,7 +4316,7 @@ impl AdapterImpl {
             ),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4237,7 +4352,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4264,7 +4379,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => Err(minijinja::Error::new(
+            | Datafusion | Dremio | Oracle | MotherDuck => Err(minijinja::Error::new(
                 minijinja::ErrorKind::InvalidOperation,
                 "get_common_options is only available with BigQuery adapter",
             )),
@@ -4307,7 +4422,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -4385,7 +4500,7 @@ impl AdapterImpl {
             Impl(Redshift, engine) => {
                 redshift::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
-            Impl(DuckDB, engine) => {
+            Impl(DuckDB | MotherDuck, engine) => {
                 duckdb::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(LakeCompute, engine) => {
@@ -4509,7 +4624,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with Databricksadapter")
             }
         }
@@ -4626,6 +4741,7 @@ impl AdapterImpl {
                 let location_root = config
                     .__warehouse_specific_config__
                     .location_root
+                    .clone()
                     .ok_or_else(|| {
                         AdapterError::new(
                             AdapterErrorKind::Configuration,
@@ -4661,7 +4777,7 @@ impl AdapterImpl {
 
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -4739,7 +4855,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -4848,7 +4964,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -5223,7 +5339,7 @@ impl AdapterImpl {
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-            | Datafusion | Dremio | Oracle => {
+            | Datafusion | Dremio | Oracle | MotherDuck => {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
@@ -5466,32 +5582,99 @@ impl AdapterImpl {
                     OptionValue::String("true".to_string()),
                 )];
 
-                let timeout = bigquery_job_timeout_from_state(state).or_else(|| {
-                    self.get_db_config("job_execution_timeout_seconds")
-                        .and_then(|v| v.parse::<i64>().ok())
-                });
+                let enforce_job_config = self
+                    .behavior_object()
+                    .get_value(&Value::from("bigquery_enforce_job_config"))
+                    .is_some_and(|flag| flag.is_true());
+
+                let job_execution_timeout = self
+                    .get_db_config("job_execution_timeout_seconds")
+                    .and_then(|v| v.parse::<i64>().ok());
+                // v1 reads the legacy profile key `timeout_seconds` as
+                // `job_execution_timeout_seconds`.
+                let legacy_timeout = self
+                    .get_db_config("timeout_seconds")
+                    .and_then(|v| v.parse::<i64>().ok());
+
+                let timeout = bigquery_job_timeout_from_state(state)
+                    .or(job_execution_timeout)
+                    .or_else(|| legacy_timeout.filter(|_| enforce_job_config));
 
                 if let Some(t) = timeout {
                     options.push((QUERY_JOB_TIMEOUT.to_string(), OptionValue::Int(t * 1000)));
                 }
 
-                // The profile takes Core's lowercase spelling, but the driver matches the
-                // Go constants `BATCH`/`INTERACTIVE` and errors on anything else.
-                if let Some(priority) = self.get_db_config("priority") {
+                if !enforce_job_config
+                    && job_execution_timeout.is_none()
+                    && legacy_timeout.is_some()
+                    && !self
+                        .engine()
+                        .behavior_flag_overrides()
+                        .contains_key("bigquery_enforce_job_config")
+                {
+                    static WARN_TIMEOUT_NOT_ENFORCED: Once = Once::new();
+                    WARN_TIMEOUT_NOT_ENFORCED.call_once(|| {
+                        emit_warn_log_message(
+                            ErrorCode::BigqueryTimeoutSecondsNotEnforced,
+                            "`timeout_seconds` is set in your profile, but it is not \
+                             respected without the `bigquery_enforce_job_config` behavior \
+                             flag. To enforce it, set \
+                             `flags: {bigquery_enforce_job_config: true}` in \
+                             dbt_project.yml, or rename it to \
+                             `job_execution_timeout_seconds`.",
+                        )
+                    });
+                }
+
+                if let Some(priority) = self.get_db_config_value("priority")
+                    && let Ok(priority) = dbt_yaml::from_value::<BigqueryPriority>(priority.clone())
+                {
+                    // The driver matches the Go constants `BATCH`/`INTERACTIVE` and
+                    // errors on anything else.
+                    let value = match priority {
+                        BigqueryPriority::Batch => "BATCH",
+                        BigqueryPriority::Interactive => "INTERACTIVE",
+                    };
                     options.push((
                         QUERY_PRIORITY.to_string(),
-                        OptionValue::String(priority.to_uppercase()),
+                        OptionValue::String(value.to_string()),
                     ));
                 }
 
-                if let Some(max_bytes_billed) = self
+                let enforce_max_bytes_billed = self
+                    .behavior_object()
+                    .get_value(&Value::from("bigquery_enforce_maximum_bytes_billed"))
+                    .is_some_and(|flag| flag.is_true());
+
+                let max_bytes_billed = self
                     .get_db_config("maximum_bytes_billed")
-                    .and_then(|v| v.parse::<i64>().ok())
-                {
+                    .and_then(|v| v.parse::<i64>().ok());
+
+                if enforce_max_bytes_billed && let Some(max_bytes_billed) = max_bytes_billed {
                     options.push((
                         QUERY_MAX_BYTES_BILLED.to_string(),
                         OptionValue::Int(max_bytes_billed),
                     ));
+                }
+
+                if !enforce_max_bytes_billed
+                    && max_bytes_billed.is_some()
+                    && !self
+                        .engine()
+                        .behavior_flag_overrides()
+                        .contains_key("bigquery_enforce_maximum_bytes_billed")
+                {
+                    static WARN_NOT_ENFORCED: Once = Once::new();
+                    WARN_NOT_ENFORCED.call_once(|| {
+                        emit_warn_log_message(
+                            ErrorCode::BigqueryMaximumBytesBilledNotEnforced,
+                            "`maximum_bytes_billed` is set in your profile, but it is not \
+                             respected without the `bigquery_enforce_maximum_bytes_billed` \
+                             behavior flag. To enforce it, set \
+                             `flags: {bigquery_enforce_maximum_bytes_billed: true}` in \
+                             dbt_project.yml.",
+                        )
+                    });
                 }
 
                 let reservation = bigquery_reservation_from_state(state)
@@ -5581,6 +5764,14 @@ enum TransactionBoundary {
     End,
 }
 
+/// Whether the warehouse itself rejected the statement, so the session is idle and usable.
+/// The driver reports that as a `Driver` error with a SQLSTATE. A cancelled request (SQLSTATE
+/// 57014) or an error without a SQLSTATE, such as a dropped connection, leaves the session in an
+/// unknown state.
+fn is_server_error(err: &AdapterError) -> bool {
+    err.kind() == AdapterErrorKind::Driver && err.sqlstate() != "00000"
+}
+
 fn transaction_boundary(sql: &str) -> Option<TransactionBoundary> {
     let sql = sql.trim().trim_end_matches(';').trim().to_ascii_lowercase();
     let mut words = sql.split_whitespace();
@@ -5592,7 +5783,94 @@ fn transaction_boundary(sql: &str) -> Option<TransactionBoundary> {
     }
 }
 
+/// Appended to a failed Snowflake `CREATE OR ALTER`: it declares the whole desired end state in
+/// place, and Snowflake rejects the ones it cannot apply (column reorders, type narrowing, a
+/// changed `transient` setting, ...). `CREATE OR REPLACE` always can.
+const CREATE_OR_ALTER_FAILURE_HINT: &str = "Hint: this statement was a CREATE OR ALTER, which cannot apply every change in place. \
+     If the error above is a change CREATE OR ALTER does not support, re-run with `--full-refresh` \
+     to rebuild the object with CREATE OR REPLACE.";
+
+/// Whether `sql` is a (Snowflake) `CREATE OR ALTER` statement, ignoring leading comments.
+fn is_create_or_alter(sql: &str) -> bool {
+    static CREATE_OR_ALTER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?is)^\s*(?:(?:/\*.*?\*/|--[^\n]*)\s*)*create\s+or\s+alter\b")
+            .expect("valid regex")
+    });
+    CREATE_OR_ALTER.is_match(sql)
+}
+
+/// Adds [`CREATE_OR_ALTER_FAILURE_HINT`] to a database error raised by a Snowflake `CREATE OR ALTER`.
+///
+/// Only errors whose own text names `CREATE OR ALTER` get the hint, so a failure that has nothing
+/// to do with the statement form (permissions, a suspended warehouse, a dropped connection)
+/// is passed through unchanged.
+fn with_create_or_alter_hint(
+    adapter_type: AdapterType,
+    sql: &str,
+    err: AdapterError,
+) -> AdapterError {
+    if adapter_type != Snowflake || err.kind() != AdapterErrorKind::Driver {
+        return err;
+    }
+    if !is_create_or_alter(sql) {
+        return err;
+    }
+    if !err
+        .message()
+        .to_ascii_lowercase()
+        .contains("create or alter")
+    {
+        return err;
+    }
+    AdapterError::new_with_sqlstate_and_vendor_code(
+        err.kind(),
+        format!("{}\n{CREATE_OR_ALTER_FAILURE_HINT}", err.message()),
+        err.sqlstate().as_bytes().try_into().unwrap_or([b'0'; 5]),
+        err.vendor_code(),
+    )
+}
+
 impl AdapterImpl {
+    /// Whether this adapter wraps a node's statements in a server transaction, like dbt-redshift.
+    /// Opt-in through `redshift_use_transactions`; `redshift_skip_autocommit_transaction_statements`
+    /// still turns it off, as it does in dbt-redshift.
+    pub(crate) fn manages_transactions(&self) -> bool {
+        let flag = |name: &str| {
+            self.behavior_object()
+                .get_value(&Value::from(name))
+                .is_some_and(|flag| flag.is_true())
+        };
+        self.adapter_type() == Redshift
+            && flag("redshift_use_transactions")
+            && !flag("redshift_skip_autocommit_transaction_statements")
+    }
+
+    /// Commits the transaction a macro opened on this thread, if transactions are managed and one
+    /// is open. dbt-adapters does this after schema DDL (`SQLAdapter.create_schema`); without it
+    /// the schema stays invisible to other workers until the next node on this thread commits.
+    pub(crate) fn commit_open_transaction(
+        &self,
+        state: &State,
+        token: CancellationToken,
+    ) -> AdapterResult<()> {
+        if !self.manages_transactions() || open_transaction().is_none() {
+            return Ok(());
+        }
+        let mut conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+        self.execute(
+            Some(state),
+            &mut conn,
+            None,
+            "commit",
+            false,
+            false,
+            None,
+            None,
+            token,
+        )?;
+        Ok(())
+    }
+
     pub fn new(
         engine: Arc<dyn AdapterEngine>,
         schema_store: Option<Arc<dyn SchemaStoreTrait>>,
@@ -5720,8 +5998,6 @@ impl AdapterImpl {
         }
     }
 
-    /// ClickHouse `adapter.is_before_version(version)` — see
-    /// [`metadata::clickhouse::ClickHouseCapabilities::is_before`].
     pub fn is_before_version(
         &self,
         state: &State,
@@ -5731,8 +6007,6 @@ impl AdapterImpl {
         metadata::clickhouse::server_capabilities(self, state, token).is_before(version)
     }
 
-    /// ClickHouse `adapter.is_at_or_after_version(version)` — see
-    /// [`metadata::clickhouse::ClickHouseCapabilities::is_at_or_after`].
     pub fn is_at_or_after_version(
         &self,
         state: &State,
@@ -6219,6 +6493,8 @@ pub trait Replayer: fmt::Debug + Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    mod update_columns;
+
     use super::*;
     use crate::adapter::adapter_factory::backend_of;
     use crate::cache::RelationCache;
@@ -6319,6 +6595,36 @@ mod tests {
         );
     }
 
+    const DT_CREATE_OR_ALTER_FLAG: &str = "snowflake_dynamic_table_create_or_alter";
+
+    #[test]
+    fn test_snowflake_dynamic_table_create_or_alter_flag_registered_and_off_by_default() {
+        let flags = adapter_specific_behavior_flags(Snowflake);
+        let flag = flags
+            .iter()
+            .find(|f| f.name == DT_CREATE_OR_ALTER_FLAG)
+            .expect("snowflake_dynamic_table_create_or_alter should be registered for Snowflake");
+
+        // The name is the public API users type under `flags:` in dbt_project.yml. Enabling it
+        // changes query-evolution behavior for every native dynamic table, so it must stay opt-in.
+        assert!(
+            !Arc::new(flag.clone()).is_true(),
+            "snowflake_dynamic_table_create_or_alter should default to off"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_table_create_or_alter_flag_is_snowflake_only() {
+        for adapter_type in [Databricks, Bigquery, Redshift, Postgres, DuckDB] {
+            assert!(
+                adapter_specific_behavior_flags(adapter_type)
+                    .iter()
+                    .all(|f| f.name != DT_CREATE_OR_ALTER_FLAG),
+                "{adapter_type:?} must not register the Snowflake-only flag"
+            );
+        }
+    }
+
     fn engine(adapter_type: AdapterType) -> Arc<dyn AdapterEngine> {
         let config = match adapter_type {
             Snowflake => Mapping::from_iter([
@@ -6382,6 +6688,92 @@ mod tests {
         ))
     }
 
+    fn driver_error(message: &str) -> AdapterError {
+        AdapterError::new_with_sqlstate_and_vendor_code(
+            AdapterErrorKind::Driver,
+            message.to_string(),
+            *b"22000",
+            Some(2108),
+        )
+    }
+
+    #[test]
+    fn is_create_or_alter_matches_the_statement_header_only() {
+        let cases = [
+            ("create or alter dynamic table t as (select 1)", true),
+            ("  CREATE   OR\n ALTER TABLE t (id int)", true),
+            (
+                "/* {\"app\": \"dbt\"} */ -- note\ncreate or alter table t (id int)",
+                true,
+            ),
+            ("create or replace dynamic table t as (select 1)", false),
+            ("create dynamic table t as (select 1)", false),
+            ("select 'create or alter' from t -- create or alter", false),
+        ];
+        for (sql, expected) in cases {
+            assert_eq!(is_create_or_alter(sql), expected, "for {sql:?}");
+        }
+    }
+
+    const CREATE_OR_ALTER_SQL: &str = "create or alter dynamic table t as (select 1)";
+
+    /// Whether the hint was added to `err` for a `sql` statement run on `adapter_type`.
+    fn gets_hint(adapter_type: AdapterType, sql: &str, err: AdapterError) -> bool {
+        with_create_or_alter_hint(adapter_type, sql, err)
+            .message()
+            .contains("--full-refresh")
+    }
+
+    #[test]
+    fn create_or_alter_failure_gets_a_full_refresh_hint() {
+        let msg = "[Snowflake] 002108 (22000): CREATE OR ALTER execution failed.";
+        let hinted = with_create_or_alter_hint(Snowflake, CREATE_OR_ALTER_SQL, driver_error(msg));
+        assert!(hinted.message().starts_with(msg) && hinted.message().contains("--full-refresh"));
+        let code = (hinted.kind(), hinted.sqlstate(), hinted.vendor_code());
+        assert_eq!(code, (AdapterErrorKind::Driver, "22000", Some(2108)));
+    }
+
+    #[test]
+    fn unrelated_failures_are_not_given_the_hint() {
+        let named = "[Snowflake] CREATE OR ALTER execution failed";
+        // The error says nothing about CREATE OR ALTER: permissions, warehouse, network, ...
+        let permission = driver_error("[Snowflake] 003001 (42501): Insufficient privileges");
+        assert!(!gets_hint(Snowflake, CREATE_OR_ALTER_SQL, permission));
+        // Not a CREATE OR ALTER statement, even if the error text mentions it.
+        let replace = "create or replace dynamic table t as (select 1)";
+        assert!(!gets_hint(Snowflake, replace, driver_error(named)));
+        // Not Snowflake.
+        assert!(!gets_hint(
+            Postgres,
+            CREATE_OR_ALTER_SQL,
+            driver_error(named)
+        ));
+        // Not a driver (database) error.
+        let config = AdapterError::new(AdapterErrorKind::Configuration, "CREATE OR ALTER");
+        assert!(!gets_hint(Snowflake, CREATE_OR_ALTER_SQL, config));
+    }
+
+    #[test]
+    fn is_server_error_needs_a_sqlstate_that_is_not_a_connection_failure() {
+        let err = |kind, sqlstate: &[u8; 5]| {
+            AdapterError::new_with_sqlstate_and_vendor_code(
+                kind,
+                "boom".to_string(),
+                *sqlstate,
+                None,
+            )
+        };
+        // The warehouse rejected the statement: the session is idle and can be rolled back.
+        assert!(is_server_error(&err(AdapterErrorKind::Driver, b"22012")));
+        // A cancelled request, or an error without a SQLSTATE, leaves the session in an unknown
+        // state.
+        assert!(!is_server_error(&err(
+            AdapterErrorKind::Cancelled,
+            b"57014"
+        )));
+        assert!(!is_server_error(&err(AdapterErrorKind::Driver, b"00000")));
+    }
+
     #[test]
     fn transaction_boundary_recognises_explicit_transaction_statements() {
         use TransactionBoundary::{Begin, End};
@@ -6428,7 +6820,8 @@ mod tests {
                 location_root: Some("s3://bucket/root".to_string()),
                 include_full_name_in_path: Some(include_full_name_in_path),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
 
@@ -7772,21 +8165,43 @@ mod tests {
         assert!(find_job_timeout(&options).is_none());
     }
     #[test]
-    fn test_bigquery_priority_is_uppercased_for_driver() {
-        let config = Mapping::from_iter([("priority".into(), "batch".into())]);
-        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
-        let env = Environment::new();
-        let state = State::new_for_env(&env);
-        let options = adapter.get_adbc_execute_options(&state);
-        assert!(options.iter().any(
-            |(k, v)| k == QUERY_PRIORITY && matches!(v, OptionValue::String(s) if s == "BATCH")
-        ));
+    fn test_bigquery_adbc_options_priority() {
+        let configured_query_priority = |adapter_type: AdapterType, priority: Option<&str>| {
+            let config = priority.map_or_else(Mapping::new, |p| {
+                Mapping::from_iter([("priority".into(), p.into())])
+            });
+            let adapter = AdapterImpl::new(build_engine(adapter_type, config), None);
+            let env = Environment::new();
+            let state = State::new_for_env(&env);
+            adapter
+                .get_adbc_execute_options(&state)
+                .into_iter()
+                .find_map(|(k, v)| match v {
+                    OptionValue::String(p) if k == QUERY_PRIORITY => Some(p),
+                    _ => None,
+                })
+        };
+
+        for (configured, expected) in [("batch", "BATCH"), ("interactive", "INTERACTIVE")] {
+            assert_eq!(
+                configured_query_priority(Bigquery, Some(configured)).as_deref(),
+                Some(expected)
+            );
+        }
+        assert_eq!(configured_query_priority(Bigquery, None), None);
+        assert_eq!(configured_query_priority(Bigquery, Some("bath")), None);
+        assert_eq!(configured_query_priority(Snowflake, Some("batch")), None);
     }
 
     #[test]
-    fn test_bigquery_maximum_bytes_billed_is_applied() {
+    fn test_bigquery_maximum_bytes_billed_is_applied_when_flag_enabled() {
         let config = Mapping::from_iter([("maximum_bytes_billed".into(), 1_000_000_i64.into())]);
-        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let project_flags =
+            BTreeMap::from([("bigquery_enforce_maximum_bytes_billed".to_string(), true)]);
+        let adapter = AdapterImpl::new(
+            build_engine_with_behavior(Bigquery, config, project_flags),
+            None,
+        );
         let env = Environment::new();
         let state = State::new_for_env(&env);
         let options = adapter.get_adbc_execute_options(&state);
@@ -7795,6 +8210,57 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k == QUERY_MAX_BYTES_BILLED
                     && matches!(v, OptionValue::Int(1_000_000)))
+        );
+    }
+
+    #[test]
+    fn test_bigquery_maximum_bytes_billed_is_not_applied_by_default() {
+        let config = Mapping::from_iter([("maximum_bytes_billed".into(), 1_000_000_i64.into())]);
+        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert!(!options.iter().any(|(k, _)| k == QUERY_MAX_BYTES_BILLED));
+    }
+
+    fn bigquery_job_timeout_with_job_config_flag(config: Mapping, flag: bool) -> Option<i64> {
+        let project_flags = BTreeMap::from([("bigquery_enforce_job_config".to_string(), flag)]);
+        let adapter = AdapterImpl::new(
+            build_engine_with_behavior(Bigquery, config, project_flags),
+            None,
+        );
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        find_job_timeout(&adapter.get_adbc_execute_options(&state))
+    }
+
+    #[test]
+    fn test_bigquery_timeout_seconds_is_applied_when_flag_enabled() {
+        let config = Mapping::from_iter([("timeout_seconds".into(), 7_i64.into())]);
+        assert_eq!(
+            bigquery_job_timeout_with_job_config_flag(config, true),
+            Some(7 * 1000)
+        );
+    }
+
+    #[test]
+    fn test_bigquery_timeout_seconds_is_not_applied_by_default() {
+        let config = Mapping::from_iter([("timeout_seconds".into(), 7_i64.into())]);
+        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        assert!(find_job_timeout(&adapter.get_adbc_execute_options(&state)).is_none());
+    }
+
+    #[test]
+    fn test_bigquery_job_execution_timeout_seconds_wins_over_timeout_seconds() {
+        let config = Mapping::from_iter([
+            ("timeout_seconds".into(), 7_i64.into()),
+            ("job_execution_timeout_seconds".into(), 300_i64.into()),
+        ]);
+        assert_eq!(
+            bigquery_job_timeout_with_job_config_flag(config, true),
+            Some(300 * 1000)
         );
     }
 
@@ -8436,5 +8902,24 @@ mod tests {
                 .get_view_options(&state, config, &common_attr)
                 .is_ok()
         );
+    }
+}
+
+#[cfg(test)]
+mod sidecar_relation_name_tests {
+    use crate::engine::sidecar_relation_name;
+
+    #[test]
+    fn sidecar_relation_name_quotes_hyphenated_project() {
+        // fs#17227: an unquoted hyphenated BigQuery project id does not parse in DuckDB.
+        assert_eq!(
+            sidecar_relation_name("digital-arbor-400", "github_new_github", "github__issues"),
+            r#""digital-arbor-400".github_new_github.github__issues"#
+        );
+    }
+
+    #[test]
+    fn sidecar_relation_name_leaves_plain_identifiers_unchanged() {
+        assert_eq!(sidecar_relation_name("DB", "Sch_1", "t_x"), "DB.Sch_1.t_x");
     }
 }

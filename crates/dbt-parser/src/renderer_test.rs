@@ -81,6 +81,7 @@ mod tests {
             num_threads: Some(1), // Connection-pool size; parser parallelism is unaffected.
             no_parallel: true,
             command: FsCommand::Test,
+            command_entrypoint: FsCommand::Test,
             vars: BTreeMap::new(),
             from_main: false,
             selector: None,
@@ -110,7 +111,7 @@ mod tests {
         let render_ctx = RenderCtx {
             inner: Arc::new(RenderCtxInner {
                 args: args.clone(),
-                base_ctx,
+                base_ctx: Arc::new(base_ctx),
                 root_project_name: "root_project".to_string(),
                 package_name: "test_package".to_string(), // Different from root - this triggers the override logic
                 adapter_type: AdapterType::Postgres,
@@ -122,6 +123,7 @@ mod tests {
                     AdapterType::Postgres,
                 ),
                 adapter_hint: None,
+                adapter_layer: None,
                 parse_adapter_scopes: None,
                 adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],
@@ -265,6 +267,7 @@ mod tests {
             num_threads: Some(1),
             no_parallel: true,
             command: FsCommand::Test,
+            command_entrypoint: FsCommand::Test,
             vars: BTreeMap::new(),
             from_main: false,
             selector: None,
@@ -292,7 +295,7 @@ mod tests {
         let render_ctx = RenderCtx {
             inner: Arc::new(RenderCtxInner {
                 args: args.clone(),
-                base_ctx,
+                base_ctx: Arc::new(base_ctx),
                 root_project_name: "test_package".to_string(),
                 package_name: "test_package".to_string(),
                 adapter_type: AdapterType::Postgres,
@@ -303,6 +306,7 @@ mod tests {
                     AdapterType::Postgres,
                 ),
                 adapter_hint: None,
+                adapter_layer: None,
                 parse_adapter_scopes: None,
                 adapter_quoting: Default::default(),
                 resource_paths: vec!["models".to_string()],

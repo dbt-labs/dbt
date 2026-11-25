@@ -1,5 +1,5 @@
 import Dagre, { type Edge as DagreEdge, type graphlib } from '@dagrejs/dagre';
-import { type Edge, type Node as ReactFlowNode, Position } from '@xyflow/react';
+import { type Edge, type Node as ReactFlowNode, Position } from 'dbt-docs-lib';
 
 // these correspond to GraphLabel options in dagre
 export interface LayoutOptions {

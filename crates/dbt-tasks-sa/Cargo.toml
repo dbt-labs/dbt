@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 dbt-adapter = { workspace = true }
 dbt-adapter-core = { workspace = true }
+dbt-adapter-engine = { workspace = true }
 dbt-adbc = { workspace = true }
 dbt-agate = { workspace = true }
 dbt-common = { workspace = true }
@@ -34,6 +35,7 @@ dbt-runtime = { workspace = true }
 dbt-scheduler = { workspace = true }
 dbt-schema-store = { workspace = true }
 dbt-schemas = { workspace = true }
+dbt-sqlparser-compat = { workspace = true }
 dbt-state = { workspace = true }
 dbt-tasks-core = { workspace = true }
 dbt-telemetry = { workspace = true }
@@ -57,7 +59,7 @@ petgraph = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
-sqlparser = { workspace = true, features = ["visitor"] }
+sqlparser = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 

@@ -18,6 +18,7 @@ pub mod run_task_hooks;
 mod run_tasks_args;
 pub mod show_task_hooks;
 pub mod span_manager;
+pub mod sql_rewriter;
 pub mod static_analysis_buckets;
 pub mod task;
 pub mod task_runner_hooks;
@@ -37,6 +38,8 @@ use std::{fmt, io};
 pub use generate_run_results::generate_run_results;
 pub use run_tasks_args::RunTasksArgs;
 
+use arrow::array::RecordBatch;
+use arrow_schema::SchemaRef;
 use dbt_adapter::response::AdapterResponse;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::{EvalArgs, IoArgs};
@@ -45,18 +48,11 @@ use dbt_common::{CompiledSpans, FsResult, MacroSpan};
 use dbt_dag::schedule::Schedule;
 use dbt_frontend_common::span::ReclassifySpan;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_schemas::schemas::Preview;
 use dbt_schemas::schemas::common::DbtMaterialization;
-use dbt_schemas::schemas::{CommonAttributes, ContextRunResult};
+use dbt_schemas::schemas::{CommonAttributes, ContextRunResult, Nodes};
 use dbt_schemas::state::ResolverState;
 use dbt_schemas::stats::Stats;
-
-use self::context::TaskRunnerCtx;
-
-/// Preview/show results produced during task execution.
-pub struct Preview {
-    pub columns: Vec<String>,
-    pub rows: Vec<serde_json::Value>,
-}
 
 /// Per-node data returned by pre-run hooks.
 pub trait PreTaskRunData: Send + Sync {
@@ -120,13 +116,7 @@ pub trait AdhocRunner: Send + Sync {
         unique_id: Option<&'a str>,
         adapter: Option<Arc<dbt_adapter::Adapter>>,
         connection: &'a mut Option<Box<dyn dbt_adbc::Connection>>,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = FsResult<(Vec<arrow::array::RecordBatch>, arrow_schema::SchemaRef)>>
-                + Send
-                + 'a,
-        >,
-    >;
+    ) -> Pin<Box<dyn Future<Output = FsResult<(Vec<RecordBatch>, SchemaRef)>> + Send + 'a>>;
 }
 
 pub struct TaskRunnerStats {
@@ -146,27 +136,15 @@ impl TaskRunnerStats {
     /// against relations the real dbt-core run never reported.
     pub fn collect_as_results(
         &self,
+        nodes: &Nodes,
         adapter_responses: &HashMap<String, AdapterResponse>,
     ) -> Vec<ContextRunResult> {
         self.run
             .stats
             .iter()
-            .filter(|stat| !self.is_ephemeral_node(&stat.unique_id))
-            .map(|stat| generate_run_results(stat, &self.run, adapter_responses))
+            .filter(|stat| !is_ephemeral_node(nodes, &stat.unique_id))
+            .map(|stat| generate_run_results(stat, &self.run, nodes, adapter_responses))
             .collect()
-    }
-
-    fn is_ephemeral_node(&self, unique_id: &str) -> bool {
-        self.run
-            .nodes
-            .as_ref()
-            .and_then(|nodes| nodes.get_node(unique_id))
-            .is_some_and(|node| {
-                matches!(
-                    node.materialized(),
-                    DbtMaterialization::Ephemeral | DbtMaterialization::Inline
-                )
-            })
     }
 
     /// Build a set of (database, schema) tuples from successfully executed relational nodes only.
@@ -196,6 +174,15 @@ impl TaskRunnerStats {
     }
 }
 
+fn is_ephemeral_node(nodes: &Nodes, unique_id: &str) -> bool {
+    nodes.get_node(unique_id).is_some_and(|node| {
+        matches!(
+            node.materialized(),
+            DbtMaterialization::Ephemeral | DbtMaterialization::Inline
+        )
+    })
+}
+
 pub struct RunTaskResults {
     pub stats: TaskRunnerStats,
     pub adapter_responses: HashMap<String, AdapterResponse>,
@@ -203,6 +190,5 @@ pub struct RunTaskResults {
     pub showables: Vec<Box<dyn ShowableResults>>,
     pub jinja_env: Arc<JinjaEnv>,
     pub resolved_state: Arc<ResolverState>,
-    pub task_runner_ctx: Option<TaskRunnerCtx>,
     pub preview: Option<Result<Preview, String>>,
 }

@@ -44,16 +44,6 @@ fn flatten_record_batch_columns(batch: &RecordBatch) -> RecordBatch {
     state.try_finalize().unwrap()
 }
 
-/// Name the column whose converter failed; callers only see the flattened batch.
-/// See https://github.com/dbt-labs/fs/issues/15412
-fn unsupported_column_error(field: &Field, source: ArrowError) -> ArrowError {
-    ArrowError::NotYetImplemented(format!(
-        "no dbt-agate converter for column '{}' (Arrow type {}): {source}",
-        field.name(),
-        field.data_type(),
-    ))
-}
-
 struct FlattenRecordBatchState {
     new_fields: Vec<Field>,
     new_columns: Vec<Arc<dyn Array>>,
@@ -527,13 +517,16 @@ pub(crate) struct FlatRecordBatch {
 
 impl FlatRecordBatch {
     pub fn try_new(batch: Arc<RecordBatch>) -> Result<Self, ArrowError> {
-        let flat = Arc::new(flatten_record_batch_columns(batch.as_ref()));
-        Self::_from_flattened_record_batch(flat, Some(batch))
+        Self::try_new_impl(batch, None)
     }
 
-    pub(crate) fn with_original(mut self, original: Arc<RecordBatch>) -> Self {
-        self.original = Some(original);
-        self
+    pub fn try_new_impl(
+        batch: Arc<RecordBatch>,
+        original: Option<Arc<RecordBatch>>,
+    ) -> Result<Self, ArrowError> {
+        let flat = Arc::new(flatten_record_batch_columns(batch.as_ref()));
+        let original = original.or_else(|| Some(batch));
+        Self::_from_flattened_record_batch(flat, original)
     }
 
     pub(crate) fn _from_flattened_record_batch(
@@ -560,7 +553,14 @@ impl FlatRecordBatch {
             .iter()
             .zip(flat.columns())
             .map(|(field, array)| {
-                make_array_converter(&**array).map_err(|e| unsupported_column_error(field, e))
+                make_array_converter(array.as_ref()).map_err(|e| {
+                    // Name the column whose converter failed. See https://github.com/dbt-labs/fs/issues/15412
+                    ArrowError::NotYetImplemented(format!(
+                        "no agate converter for column '{}' (Arrow type {}): {e}",
+                        field.name(),
+                        field.data_type(),
+                    ))
+                })
             })
             .collect::<Result<Vec<_>, ArrowError>>()?;
         Ok(Self {
@@ -743,7 +743,7 @@ mod tests {
 
         assert_eq!(
             msg,
-            "Not yet implemented: no dbt-agate converter for column 'embedding' \
+            "Not yet implemented: no agate converter for column 'embedding' \
              (Arrow type FixedSizeBinary(2)): Cast error: Casting from FixedSizeBinary(2) \
              to Utf8 not supported"
         );

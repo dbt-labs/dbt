@@ -55,6 +55,7 @@ dbt-jinja-ctx = { workspace = true }
 dbt-jinja-utils = { workspace = true, features = ["testing"] }
 dbt-parser = { workspace = true }
 dbt-runtime = { workspace = true }
+dbt-tracing = { workspace = true, features = ["test-utils"] }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 

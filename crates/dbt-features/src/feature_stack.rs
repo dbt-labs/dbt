@@ -5,13 +5,13 @@ use dbt_common::DiscreteEventEmitter;
 use crate::adapter::AdapterFeature;
 use crate::antlr_parser::AntlrParserFeature;
 use crate::cli::CliFeature;
+use crate::experimental::ExperimentalFeature;
 use crate::index::IndexFeature;
 use crate::jinja::JinjaFeature;
 use crate::lake_compute::LakeComputeFeature;
 use crate::loader::LoaderFeature;
 use crate::login::LoginFeature;
 use crate::metricflow::MetricflowFeature;
-use crate::plugin::PluginFeature;
 use crate::resolver::ResolverFeature;
 use crate::sidecar::SidecarFeature;
 use crate::task_runner::TaskRunnerFeature;
@@ -63,7 +63,7 @@ pub struct FeatureStack {
     pub metricflow: MetricflowFeature,
     pub task_runner: TaskRunnerFeature,
     pub resolver: ResolverFeature,
-    pub plugins: PluginFeature,
+    pub experimentals: ExperimentalFeature,
     pub loader: LoaderFeature,
     pub jinja: JinjaFeature,
     pub lake_compute: LakeComputeFeature,

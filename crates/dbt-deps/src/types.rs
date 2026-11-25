@@ -262,26 +262,20 @@ pub struct LocalPinnedPackage {
     pub name: String,
 }
 
-impl TryFrom<LocalUnpinnedPackage> for LocalPinnedPackage {
-    type Error = Box<FsError>;
-
-    fn try_from(local_unpinned_package: LocalUnpinnedPackage) -> Result<Self, Self::Error> {
-        Ok(Self {
+impl From<LocalUnpinnedPackage> for LocalPinnedPackage {
+    fn from(local_unpinned_package: LocalUnpinnedPackage) -> Self {
+        Self {
             local: local_unpinned_package.local,
-            name: local_unpinned_package.name.ok_or_else(|| {
-                fs_err!(
-                    ErrorCode::InvalidConfig,
-                    "Local package name is required for pinned packages"
-                )
-            })?,
-        })
+            name: local_unpinned_package.name,
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct LocalUnpinnedPackage {
     pub local: PathBuf,
-    pub name: Option<String>,
+    /// Project name from the package's `dbt_project.yml`, read when the package is listed.
+    pub name: String,
 }
 
 // Private packages

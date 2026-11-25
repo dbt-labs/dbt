@@ -242,10 +242,19 @@ fn apply_connection_args(
 
     // all of the following options are required for any Databricks connection
     builder.with_named_option(databricks::USER_AGENT, USER_AGENT_NAME)?;
-    builder.with_named_option(databricks::HOST, config.require_string("host")?)?;
-    builder.with_named_option(databricks::SCHEMA, config.require_string("schema")?)?;
-    builder.with_named_option(databricks::CATALOG, config.require_string("database")?)?;
-    builder.with_named_option(databricks::HTTP_PATH, http_path)?;
+    builder.with_named_option(
+        databricks::HOST,
+        config.require_string("host")?.into_owned(),
+    )?;
+    builder.with_named_option(
+        databricks::SCHEMA,
+        config.require_string("schema")?.into_owned(),
+    )?;
+    builder.with_named_option(
+        databricks::CATALOG,
+        config.require_string("database")?.into_owned(),
+    )?;
+    builder.with_named_option(databricks::HTTP_PATH, http_path.into_owned())?;
     apply_query_tag_defaults(config, &mut builder)?;
 
     // `connect_timeout` (seconds) is the documented Databricks connection timeout. Pass it to the
@@ -335,7 +344,7 @@ fn apply_query_tag_mapping(
                 "Connection config: query_tags values must be strings for key '{key}'. Only string values are supported."
             ))
         })?;
-        builder.with_named_option(format!("{QUERY_TAG_OPTION_PREFIX}{key}"), value.to_owned())?;
+        builder.with_named_option(format!("{QUERY_TAG_OPTION_PREFIX}{key}"), value)?;
     }
 
     Ok(())

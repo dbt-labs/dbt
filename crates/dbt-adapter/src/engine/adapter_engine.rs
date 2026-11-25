@@ -5,6 +5,16 @@ use std::sync::{Arc, OnceLock};
 use adbc_core::options::{OptionStatement, OptionValue};
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
+use indexmap::IndexMap;
+use minijinja::State;
+use tracy_client::span;
+
+use dbt_adapter_engine::Options;
+use dbt_adapter_engine::clickhouse::ClickHouseCapabilities;
+use dbt_adapter_engine::concat_batches::concat_batches_safely;
+use dbt_adapter_engine::databricks::query_tags::QueryTags;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
+use dbt_adapter_engine::sidecar_client::SidecarClient;
 use dbt_adbc::bigquery::QUERY_LABELS;
 use dbt_adbc::{Backend, Connection, QueryCtx, Statement};
 use dbt_auth::AdapterConfig;
@@ -19,27 +29,17 @@ use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_sql_utils::snowflake_terminal_flow_statement;
 use dbt_telemetry::{QueryExecuted, QueryOutcome};
 use dbt_tracked_stmt::TrackedStatement;
-use indexmap::IndexMap;
-use minijinja::State;
-use tracy_client::span;
 
 use crate::AdapterType;
 use crate::cache::RelationCache;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::QueryRetryPolicy;
 use crate::errors::adbc_error_to_adapter_error;
-use crate::metadata::clickhouse::ClickHouseCapabilities;
-use crate::record_batch::{ROWS_AFFECTED_META, RecordBatchExt, SchemaExt};
-use crate::response::query_id_from_record_batch;
+use crate::record_batch::{ROWS_AFFECTED_META, SchemaExt};
 use crate::sql::normalize::strip_sql_comments;
 use crate::sql_types::TypeOps;
 use crate::statement::*;
 use crate::stmt_splitter::StmtSplitter;
-use dbt_adapter_engine::concat_batches::concat_batches_widened;
-use dbt_adapter_engine::databricks::query_tags::query_tags_from_state;
-use dbt_adapter_engine::sidecar_client::SidecarClient;
-
-pub use dbt_adapter_engine::Options;
 
 /// Normalize result column names for Snowflake commands whose output schema is
 /// defined as lowercase.
@@ -281,9 +281,11 @@ pub(crate) fn adbc_execute_with_options(
     let adapter_type = engine.adapter_type();
     let mut options = options;
     match (state, adapter_type) {
-        (_, AdapterType::Databricks) => {
-            options.extend(query_tags_from_state(state)?.into_statement_options())
-        }
+        (_, AdapterType::Databricks) => QueryTags::from_state(state)?
+            .unwrap_or_default()
+            .for_each_stmt_option(|name, value| {
+                options.push((name, value));
+            }),
         (_, AdapterType::ClickHouse) => {
             options.extend(crate::metadata::clickhouse::statement_options(engine))
         }
@@ -449,9 +451,15 @@ pub(crate) fn adbc_execute_with_options(
             return Ok((schema, Vec::new(), rows_affected));
         }
 
-        // Redshift-only: other adapters need execute()'s schema metadata
-        // (query_id, BigQuery row counts) that this path drops.
-        if adapter_type == AdapterType::Redshift && !fetch {
+        // Other adapters need execute()'s schema metadata (query_id, BigQuery
+        // row counts) that this path drops. DuckDB reports the rows a
+        // statement wrote only as the driver's rows_affected, and its result
+        // carries no metadata.
+        if matches!(
+            adapter_type,
+            AdapterType::Redshift | AdapterType::ClickHouse | AdapterType::DuckDB
+        ) && !fetch
+        {
             let rows_affected = stmt.execute_update()?;
             token.check_cancellation()?;
             return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));
@@ -475,36 +483,40 @@ pub(crate) fn adbc_execute_with_options(
         // `ComputeStatement::do_execute`) already stashed them internally, so
         // this is a local option read, not a second round trip -- but it must
         // happen after `reader` (which holds `stmt` borrowed) is dropped.
-        let attach_lake_compute_metadata = |stmt: &TrackedStatement, schema: Arc<Schema>| {
-            if adapter_type != AdapterType::LakeCompute {
-                return schema;
-            }
-            let warnings = stmt
-                .get_option_string(OptionStatement::Other(
-                    dbt_adbc::lake_compute::LAST_WARNINGS.to_string(),
-                ))
-                .unwrap_or_default();
-            let query_id = stmt
-                .get_option_string(OptionStatement::Other(
-                    dbt_adbc::lake_compute::LAST_QUERY_ID.to_string(),
-                ))
-                .unwrap_or_default();
-            if warnings.is_empty() && query_id.is_empty() {
+        let attach_statement_metadata = |stmt: &TrackedStatement, schema: Arc<Schema>| {
+            // (statement option, schema metadata key)
+            let options: &[(&str, &str)] = match adapter_type {
+                AdapterType::LakeCompute => &[
+                    (
+                        dbt_adbc::lake_compute::LAST_WARNINGS,
+                        dbt_adbc::lake_compute::schema_metadata::WARNINGS,
+                    ),
+                    (
+                        dbt_adbc::lake_compute::LAST_QUERY_ID,
+                        dbt_adbc::lake_compute::schema_metadata::QUERY_ID,
+                    ),
+                ],
+                AdapterType::ClickHouse => &[(
+                    dbt_adbc::clickhouse::QUERY_ID,
+                    dbt_adbc::clickhouse::schema_metadata::QUERY_ID,
+                )],
+                _ => return schema,
+            };
+            // Replayed statements report an empty value for options that were not recorded.
+            let values: Vec<(String, String)> = options
+                .iter()
+                .filter_map(|(option, key)| {
+                    let value = stmt
+                        .get_option_string(OptionStatement::Other(option.to_string()))
+                        .unwrap_or_default();
+                    (!value.is_empty()).then(|| (key.to_string(), value))
+                })
+                .collect();
+            if values.is_empty() {
                 return schema;
             }
             let mut metadata = schema.metadata().clone();
-            if !warnings.is_empty() {
-                metadata.insert(
-                    dbt_adbc::lake_compute::schema_metadata::WARNINGS.to_string(),
-                    warnings,
-                );
-            }
-            if !query_id.is_empty() {
-                metadata.insert(
-                    dbt_adbc::lake_compute::schema_metadata::QUERY_ID.to_string(),
-                    query_id,
-                );
-            }
+            metadata.extend(values);
             Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
         };
 
@@ -513,7 +525,7 @@ pub(crate) fn adbc_execute_with_options(
         // to compute rows_affected correctly, so we must drain even when fetch=false.
         if !fetch && !schema.has_dml_columns(engine.adapter_type()) {
             drop(reader);
-            let schema = attach_lake_compute_metadata(&stmt, schema);
+            let schema = attach_statement_metadata(&stmt, schema);
             return Ok((schema, batches, None));
         }
 
@@ -528,7 +540,7 @@ pub(crate) fn adbc_execute_with_options(
             token.check_cancellation()?;
         }
         log_step_duration("batch-consume loop (for res in reader)", t_loop.elapsed());
-        let schema = attach_lake_compute_metadata(&stmt, schema);
+        let schema = attach_statement_metadata(&stmt, schema);
         Ok((schema, batches, None))
     };
     let _span = span!("SqlEngine::execute");
@@ -546,7 +558,19 @@ pub(crate) fn adbc_execute_with_options(
     log_step_duration("create_debug_span(...).entered()", t_span_create.elapsed());
 
     let t_do_execute = std::time::Instant::now();
-    let do_execute_result = engine.query_retry_policy().execute(|| do_execute(conn));
+    // A failed statement aborts the open transaction, so retrying it on this connection could
+    // only fail with "current transaction is aborted" and hide the original error.
+    //
+    // TODO: parity gap with dbt-redshift. It retries a retryable error inside a transaction by
+    // closing and reopening the connection, then re-running the failed statement
+    // (`RedshiftConnectionManager.execute`). That drops the transaction's earlier statements
+    // without telling the user. Fusion fails the node instead. Decide whether to match v1, or
+    // to retry the whole node.
+    let do_execute_result = if crate::connection::open_transaction().is_some() {
+        do_execute(&mut *conn)
+    } else {
+        engine.query_retry_policy().execute(|| do_execute(conn))
+    };
     let (schema, batches, rows_affected) = match do_execute_result {
         Ok(res) => res,
         Err(err @ (Cancellable::Cancelled | Cancellable::Error(_))) => {
@@ -602,7 +626,7 @@ pub(crate) fn adbc_execute_with_options(
         }
         None => schema,
     };
-    let total_batch = concat_batches_widened(schema, batches)?;
+    let total_batch = concat_batches_safely(schema, batches)?;
     let total_batch = normalize_result_column_names(adapter_type, sql.as_ref(), total_batch);
     log_step_duration(
         "concat_batches + normalize_result_column_names",
@@ -614,7 +638,7 @@ pub(crate) fn adbc_execute_with_options(
         if let Some(attrs) = attrs.downcast_mut::<QueryExecuted>() {
             attrs.dbt_core_event_code = "E017".to_string();
             attrs.set_query_outcome(QueryOutcome::Success);
-            attrs.query_id = query_id_from_record_batch(&total_batch, adapter_type);
+            attrs.query_id = total_batch.query_id(adapter_type);
         }
     });
     log_step_duration("record_current_span_status_from_attrs", t_status.elapsed());

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use dbt_adapter::sql_types::TypeOpsFactory;
 use dbt_common::{
     ErrorCode, FsResult,
-    artifact_io::write_artifact_to_file,
+    artifact_io::{ArtifactSerialization, write_artifact_to_file},
     constants::DBT_CATALOG_JSON,
     io_args::{EvalArgs, FsCommand},
     tracing::dbt_emit::{
@@ -98,7 +98,6 @@ async fn write_metadata_impl(
         write_catalog_epochs(catalog, arg).await;
     }
 
-    let type_ops = type_ops_factory.create(resolved_state.adapter_type);
     let grain_infos = index_hooks.lineage_grain_infos(run_task_results).await?;
     let (node_classifiers, column_classifiers) =
         index_hooks.classifier_results(run_task_results).await?;
@@ -121,7 +120,7 @@ async fn write_metadata_impl(
             manifest,
             Some(resolved_state),
             Some(schema_store),
-            Some(type_ops.as_ref()),
+            Some(type_ops_factory),
             None,
             &recomputed_targets,
             &grain_infos,
@@ -135,7 +134,7 @@ async fn write_metadata_impl(
             manifest,
             Some(resolved_state),
             Some(schema_store),
-            Some(type_ops.as_ref()),
+            Some(type_ops_factory),
             Some(&[]),
             &recomputed_targets,
             &grain_infos,
@@ -160,7 +159,7 @@ async fn write_metadata_impl(
                     manifest,
                     Some(resolved_state),
                     Some(schema_store),
-                    Some(type_ops.as_ref()),
+                    Some(type_ops_factory),
                     Some(&column_lineage),
                     &recomputed_targets,
                     &grain_infos,
@@ -180,7 +179,7 @@ async fn write_metadata_impl(
                     manifest,
                     Some(resolved_state),
                     Some(schema_store),
-                    Some(type_ops.as_ref()),
+                    Some(type_ops_factory),
                     Some(&[]),
                     &empty_targets,
                     &grain_infos,
@@ -200,7 +199,7 @@ async fn write_metadata_impl(
         && let Some(catalog) = catalog_data
     {
         match write_artifact_to_file(
-            catalog,
+            ArtifactSerialization::WithYamlFlattening(catalog),
             ArtifactType::Catalog,
             &arg.io.out_dir,
             DBT_CATALOG_JSON,

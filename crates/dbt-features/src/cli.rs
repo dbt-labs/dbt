@@ -34,8 +34,8 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schema_store::{CanonicalFqn, DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::{Nodes, StateArtifacts};
 use dbt_schemas::state::{DbtState, ResolverState};
-use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::{PreTaskRunData, RunTaskResults};
+use dbt_tasks_sa::experimental::Experimentals;
 
 use crate::feature_stack::FeatureStack;
 use crate::metricflow::MetricflowClient;
@@ -265,6 +265,7 @@ pub struct DefaultCliParserFactory;
 impl CliParserFactory for DefaultCliParserFactory {
     fn create(&self, command_name: &'static str, version: &'static str) -> CliParser {
         CliParser::new(command_name, version, Box::new(OSSExtensionCommandParser))
+            .with_beta_features(Experimentals::default().beta_features())
     }
 }
 
@@ -381,7 +382,6 @@ pub trait CliExtensionHooks: Send + Sync {
         arg: &EvalArgs,
         resolved_state: &ResolverState,
         jinja_env: &Arc<JinjaEnv>,
-        task_runner_ctx: Option<&TaskRunnerCtx>,
         schema_store: &Arc<dyn SchemaStoreTrait>,
         data_store: &Arc<dyn DataStoreTrait>,
         map_compiled_sql: &HashMap<&str, Option<&str>>,
@@ -587,7 +587,6 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
         _arg: &EvalArgs,
         _resolved_state: &ResolverState,
         _jinja_env: &Arc<JinjaEnv>,
-        _task_runner_ctx: Option<&TaskRunnerCtx>,
         _schema_store: &Arc<dyn SchemaStoreTrait>,
         _data_store: &Arc<dyn DataStoreTrait>,
         _map_compiled_sql: &HashMap<&str, Option<&str>>,
@@ -700,6 +699,37 @@ mod tests {
 
         // `Cli::is_project_command` should delegate to the extension command.
         assert!(!cli.is_project_command());
+    }
+
+    #[test]
+    fn beta_features_are_listed_in_a_commands_help() {
+        let parser = CliParser::new("dbt-core", "2.x", Box::new(OSSExtensionCommandParser))
+            .with_beta_features(vec![("gizmos", "Gizmos, a feature in testing.")]);
+        let help = parser
+            .try_parse_from(["dbt", "parse", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("--beta-features <LIST>"), "got:\n{help}");
+        assert!(
+            help.contains("- gizmos: Gizmos, a feature in testing."),
+            "got:\n{help}"
+        );
+
+        let cli = parser
+            .try_parse_from(["dbt", "parse", "--beta-features", "gizmos,other"])
+            .unwrap();
+        assert_eq!(cli.common_args().beta_features, ["gizmos", "other"]);
+    }
+
+    #[test]
+    fn the_default_parser_lists_the_catalogs_beta_features() {
+        let help = DefaultCliParserFactory
+            .create("dbt-core", "2.x")
+            .try_parse_from(["dbt", "parse", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("- metricflow_v2: "), "got:\n{help}");
+        assert!(!help.contains("git_deps_fast_path"), "got:\n{help}");
     }
 
     fn root_help(parser: &CliParser) -> String {

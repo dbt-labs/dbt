@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    io::Write,
     time::SystemTime,
 };
 
@@ -10,7 +11,7 @@ use dbt_common::{
     warn_error_options::WarnErrorOptions,
 };
 use dbt_schemas::{
-    schemas::{RunResultOutput, RunResultsArgs, RunResultsArtifact, RunResultsMetadata},
+    schemas::{Nodes, RunResultOutput, RunResultsArgs, RunResultsArtifact, RunResultsMetadata},
     stats::Stats,
 };
 
@@ -21,6 +22,7 @@ use crate::generate_run_results;
 /// Pass the resolved `DbtState::warn_error`/`warn_error_options`; `EvalArgs` holds only the CLI/env value.
 pub fn build_run_results_artifact(
     stats: &Stats,
+    nodes: &Nodes,
     adapter_responses: &HashMap<String, AdapterResponse>,
     arg: &EvalArgs,
     warn_error: bool,
@@ -32,7 +34,7 @@ pub fn build_run_results_artifact(
     let results: Vec<RunResultOutput> = stats
         .stats
         .iter()
-        .map(|stat| generate_run_results(stat, stats, adapter_responses).into())
+        .map(|stat| generate_run_results(stat, stats, nodes, adapter_responses).into())
         .collect();
 
     let total_elapsed_time: f64 = stats
@@ -43,7 +45,7 @@ pub fn build_run_results_artifact(
 
     let metadata = RunResultsMetadata {
         dbt_schema_version: "https://schemas.getdbt.com/dbt/run-results/v6.json".to_string(),
-        dbt_version: env!("CARGO_PKG_VERSION").to_string(),
+        dbt_version: dbt_common::version::dbt_version().to_string(),
         generated_at,
         invocation_id: arg.io.invocation_id.to_string(),
         invocation_started_at: None,
@@ -105,16 +107,12 @@ pub fn write_run_results_json(
 ) -> FsResult<()> {
     let run_results_path = arg.io.out_dir.join("run_results.json");
     let run_results_file = File::create(run_results_path)?;
-    // Serialize via dbt_yaml first so the `__other__` dunder-flatten field is
+    // Serialize through `dbt_yaml::AsValue` so the `__other__` dunder-flatten field is
     // flattened into the parent object (raw `serde_json` would emit it as a
     // literal nested `__other__` key, which the reader cannot interpret).
-    let yml_val = dbt_yaml::to_value(run_results_artifact).map_err(|e| {
-        dbt_common::fs_err!(
-            ErrorCode::SerializationError,
-            "Failed to serialize run_results: {e}"
-        )
-    })?;
-    serde_json::to_writer(run_results_file, &yml_val)?;
+    let mut writer = std::io::BufWriter::new(run_results_file);
+    serde_json::to_writer(&mut writer, &dbt_yaml::AsValue(run_results_artifact))?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -139,7 +137,6 @@ mod tests {
     fn empty_stats() -> Stats {
         Stats {
             stats: vec![],
-            nodes: None,
             batch_results: Default::default(),
             compiled_code: Default::default(),
         }
@@ -158,6 +155,7 @@ mod tests {
         write_run_results_json(
             &build_run_results_artifact(
                 &empty_stats(),
+                &Nodes::default(),
                 &HashMap::new(),
                 &arg,
                 false,
@@ -190,6 +188,7 @@ mod tests {
         write_run_results_json(
             &build_run_results_artifact(
                 &empty_stats(),
+                &Nodes::default(),
                 &HashMap::new(),
                 &arg,
                 false,
@@ -240,6 +239,7 @@ mod tests {
         write_run_results_json(
             &build_run_results_artifact(
                 &empty_stats(),
+                &Nodes::default(),
                 &HashMap::new(),
                 &arg,
                 true,

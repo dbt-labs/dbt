@@ -335,6 +335,7 @@ struct ProgressMessageJsonPayload<'a> {
     pub action: Cow<'a, str>,
     pub target: Cow<'a, str>,
     pub description: Option<Cow<'a, str>>,
+    pub blocking_run_id: Option<Cow<'a, str>>,
 }
 
 impl ArrowSerializableTelemetryEvent for ProgressMessage {
@@ -350,6 +351,7 @@ impl ArrowSerializableTelemetryEvent for ProgressMessage {
                 action: self.action.as_str().into(),
                 target: self.target.as_str().into(),
                 description: self.description.as_deref().map(Cow::Borrowed),
+                blocking_run_id: self.blocking_run_id.as_deref().map(Cow::Borrowed),
             })
             .unwrap_or_else(|e| {
                 panic!(
@@ -383,6 +385,7 @@ impl ArrowSerializableTelemetryEvent for ProgressMessage {
             action: json_payload.action.into_owned(),
             target: json_payload.target.into_owned(),
             description: json_payload.description.as_deref().map(str::to_string),
+            blocking_run_id: json_payload.blocking_run_id.as_deref().map(str::to_string),
             unique_id: record.unique_id.as_deref().map(str::to_string),
             file: record.file.as_deref().map(str::to_string),
             line: record.line,

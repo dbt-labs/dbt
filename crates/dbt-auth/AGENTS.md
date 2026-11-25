@@ -134,6 +134,7 @@ An IR with only required fields is the goal: it can be audited without reading p
 ### 7. Parse decides, apply writes
 
 - Parse validates, resolves defaults, and builds an IR that can only hold valid states.
+- Parse also does every conversion. The IR holds final types (`u16` port, `u64` timeout), never a string that apply or the driver re-parses. A YAML int-or-string value is read with `get_string`, parsed in parse, and stored as the number.
 - Apply matches on the IR and writes fields. No validation or defaulting.
 - `configure` should usually be just the `auth_configure_pipeline!` macro. Extra logic there is a sign parse or apply is missing something.
 

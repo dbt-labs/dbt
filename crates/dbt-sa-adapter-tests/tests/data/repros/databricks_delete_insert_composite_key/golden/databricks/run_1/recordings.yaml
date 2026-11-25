@@ -44,9 +44,13 @@ model.hello_world.composite_incremental:
     ukcu.column_name AS to_column
     FROM `e2e`.information_schema.key_column_usage kcu
     JOIN `e2e`.information_schema.referential_constraints rc
-    ON kcu.constraint_name = rc.constraint_name
+    ON kcu.constraint_catalog = rc.constraint_catalog
+    AND kcu.constraint_schema = rc.constraint_schema
+    AND kcu.constraint_name = rc.constraint_name
     JOIN `e2e`.information_schema.key_column_usage ukcu
-    ON rc.unique_constraint_name = ukcu.constraint_name
+    ON rc.unique_constraint_catalog = ukcu.constraint_catalog
+    AND rc.unique_constraint_schema = ukcu.constraint_schema
+    AND rc.unique_constraint_name = ukcu.constraint_name
     AND kcu.ordinal_position = ukcu.ordinal_position
     WHERE kcu.table_catalog = 'e2e'
     AND kcu.table_schema = 'databricks_delete_insert_composite_key'
@@ -111,6 +115,12 @@ model.hello_world.composite_incremental:
     
     select `id`, `region`, `value`
     from `composite_incremental__dbt_tmp`
+- sequence: 12
+  type: execute
+  sql: |-
+    ALTER 
+    TABLE
+    `e2e`.`databricks_delete_insert_composite_key`.`composite_incremental` CLUSTER BY NONE
 model.hello_world.source_data:
 - sequence: 0
   type: execute

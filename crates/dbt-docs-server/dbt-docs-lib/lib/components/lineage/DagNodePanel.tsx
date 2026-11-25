@@ -1,14 +1,9 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { ChevronLeft, Copy, LayoutList, MoreHorizontal, X } from 'lucide-react';
 
-import { getColumns, toRelationshipItem } from '../../utils/assetView';
-import { inferResourceType } from '../../utils/inferResourceType';
-import {
-  RESOURCE_TYPES_WITH_COLUMNS,
-  type ResourceTypeExplorer,
-} from '../../utils/resourceType';
-import { paths } from '../../routes';
+import { useNavigation } from '../../context/NavigationProvider';
+import { useAssetDetail } from '../../hooks/useAssetDetail';
+import { useProject } from '../../hooks/useProject';
 import {
   AssetMetadata,
   type ColumnItem,
@@ -22,11 +17,13 @@ import {
   type ResourceType,
   type TabType,
 } from '../../shared';
+import { getColumns, toRelationshipItem } from '../../utils/assetView';
+import { inferResourceType } from '../../utils/inferResourceType';
 import { assetToMetadataProps } from '../../utils/mappers/assetToMetadataProps';
-import { useAssetDetail } from '../../hooks/useAssetDetail';
-import { useProject } from '../../hooks/useProject';
-import { Spinner } from '../ui/Spinner';
-import { NoColumnMetadataFallback } from './NoColumnMetadataFallback';
+import {
+  RESOURCE_TYPES_WITH_COLUMNS,
+  type ResourceTypeExplorer,
+} from '../../utils/resourceType';
 import { Button } from '../ui/Button';
 import {
   DropdownMenu,
@@ -34,25 +31,31 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/DropdownMenu';
+import { Spinner } from '../ui/Spinner';
 import { DagGeneralView } from './DagGeneralView';
 import { DagResourceBadge } from './DagResourceBadge';
+import { NoColumnMetadataFallback } from './NoColumnMetadataFallback';
 
 interface DagNodePanelProps {
   uniqueId: string | null;
+  /** Active tab. Anything that isn't a {@link TabType} (including null) shows General,
+   *  so a raw URL value can be passed straight through. */
+  tab: string | null;
+  onTabChange: (tab: TabType) => void;
   onClose: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
 }
 
 /**
- * Fork of `NodeLineagePanel` scoped to the new LineageV2 canvas -- kept as its
- * own file rather than editing the original in place, since that one is still
- * shared with the current production lineage view (see `FullLineagePage.tsx`,
- * the non-V2 one). Only the "general" tab for `model` differs today (see
- * DagGeneralView); everything else here is identical to NodeLineagePanel.
+ * The full lineage page's detail panel for the selected resource: a 450px drawer,
+ * or a slim rail while collapsed. Types in `RICH_GENERAL_TAB_TYPES` get
+ * `DagGeneralView` as their general tab; the rest show description and metadata.
  */
 export function DagNodePanel({
   uniqueId,
+  tab,
+  onTabChange,
   onClose,
   collapsed,
   onToggleCollapse,
@@ -74,6 +77,8 @@ export function DagNodePanel({
       {frozenId && (
         <PanelBody
           uniqueId={frozenId}
+          tab={tab}
+          onTabChange={onTabChange}
           onClose={onClose}
           collapsed={collapsed}
           onToggleCollapse={onToggleCollapse}
@@ -85,11 +90,15 @@ export function DagNodePanel({
 
 function PanelBody({
   uniqueId,
+  tab,
+  onTabChange,
   onClose,
   collapsed,
   onToggleCollapse,
 }: {
   uniqueId: string;
+  tab: string | null;
+  onTabChange: (tab: TabType) => void;
   onClose: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
@@ -106,20 +115,8 @@ function PanelBody({
   // back to the asset's own package if the project identity hasn't loaded yet
   // (it's fetched once, app-wide, so in practice this is already warm).
   const projectQuery = useProject();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const tabParam = searchParams.get('tab');
-  const activeTab: TabType = isTabType(tabParam) ? tabParam : 'general';
-
-  const setTab = (tab: TabType) => {
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.set('tab', tab);
-        return next;
-      },
-      { replace: true },
-    );
-  };
+  const { navigate, href, paths } = useNavigation();
+  const activeTab: TabType = isTabType(tab) ? tab : 'general';
 
   if (isPending && !asset) {
     return (
@@ -233,7 +230,7 @@ function PanelBody({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
-                  onSelect={() => window.location.assign(paths.details(asset.uniqueId))}
+                  onSelect={() => navigate(paths.details(asset.uniqueId))}
                 >
                   <span className="flex items-center gap-2">
                     <LayoutList className="size-4" /> Open in Catalog
@@ -241,8 +238,9 @@ function PanelBody({
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() => {
-                    const adpUrl = `${window.location.origin}${paths.details(asset.uniqueId)}`;
-                    navigator.clipboard.writeText(adpUrl).catch(() => {});
+                    navigator.clipboard
+                      .writeText(href(paths.details(asset.uniqueId)))
+                      .catch(() => {});
                   }}
                 >
                   <span className="flex items-center gap-2">
@@ -274,7 +272,7 @@ function PanelBody({
           access={'access' in asset ? asset.access : null}
           className="p-4"
         />
-        <DetailTabs tabs={tabs} show activeTab={activeTab} onTabChange={setTab}>
+        <DetailTabs tabs={tabs} show activeTab={activeTab} onTabChange={onTabChange}>
           {(tab) => {
             if (tab === 'general') {
               if (showsRichGeneralTab) {
@@ -320,14 +318,14 @@ function PanelBody({
                     <RelationshipSection
                       heading="Depends on"
                       items={dependsOn}
-                      onSelect={(id) => window.location.assign(paths.details(id))}
+                      onSelect={(id) => navigate(paths.details(id))}
                     />
                   )}
                   {referencedBy.length > 0 && (
                     <RelationshipSection
                       heading="Referenced by"
                       items={referencedBy}
-                      onSelect={(id) => window.location.assign(paths.details(id))}
+                      onSelect={(id) => navigate(paths.details(id))}
                     />
                   )}
                 </div>

@@ -12,9 +12,10 @@ use dbt_schemas::schemas::profiles::DbConfig;
 pub struct LakeComputeMdlsOutcome {
     pub write_elapsed: Duration,
     pub read_elapsed: Duration,
-    /// Whether the probe rode a `relation` bundle. False means no Snowflake
-    /// credential was available, so it named the bearer-token namespace
-    /// directly -- a weaker check, worth telling apart in the output.
+    /// Whether the probe rode a `relation` bundle. False means no credential
+    /// reachable from this crate could travel with a `relation`, so the probe
+    /// named the namespace directly. This is a weaker check, worth telling apart
+    /// in the output.
     pub sent_propagation_bundle: bool,
 }
 
@@ -22,16 +23,15 @@ pub struct LakeComputeMdlsOutcome {
 /// throwaway table in the lake compute target's own namespace, read it back,
 /// and drop it.
 ///
-/// This lives behind a trait because the probe has to ride the same
-/// `relation` bundle a real model write sends -- without it the analyzer
-/// sidecar cannot fold a not-yet-existing CREATE target into the MDLS
-/// namespace -- and building one means minting a short-lived Snowflake
-/// credential, which is not reachable from this crate. A build that doesn't support the check simply doesn't register
-/// an implementation.
+/// The probe has to ride the same `relation` bundle a real model write sends.
+/// Without it, the analyzer sidecar cannot fold a not-yet-existing CREATE target
+/// into the MDLS namespace. Building the bundle needs the native target's
+/// credential, which is not reachable from this crate. A build that doesn't
+/// support the check simply doesn't register an implementation.
 pub trait LakeComputeMdlsChecker: Send + Sync {
-    /// `native_db_config` is the profile's active target, used to mint the
-    /// credential the bundle's declared catalogs authenticate with; a
-    /// non-Snowflake target mints nothing and the probe runs bundle-less.
+    /// `native_db_config` is the profile's active target, used to build the
+    /// bundle's credential. A target whose credential this crate cannot reach
+    /// runs the probe bundle-less.
     /// `lake_compute_db_config` is the target being written to.
     ///
     /// `database` and `schema` are the probe's target namespace, already

@@ -5,7 +5,7 @@
    Parsing models/source_data.sql
  Rendering models/snapshots.yml:2:11 (snapshot_of_source)
    Running ../scratch/target/run/bigquery_snapshot_new_record/models/snapshots.yml/snapshot_of_source.sql
- Succeeded snapshot adapters_bigquery_snapshot_new_record.snapshot_of_source (snapshot) [1 of 1 in duration]
+ Succeeded snapshot adapters_bigquery_snapshot_new_record.snapshot_of_source (snapshot) [1 of 1 in duration, 4 rows]
 ==================== Execution Summary =====================
 Finished 'snapshot' successfully for target 'bigquery' [duration]
 Processed: 1 snapshot

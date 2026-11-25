@@ -1,0 +1,7 @@
+kind: Fixes
+body: Add `zone` attribute to pytz timezone objects so `modules.pytz.utc.zone` and `modules.pytz.timezone(...).zone` return the timezone name
+time: 2026-10-31T02:46:50.422464-04:00
+custom:
+    author: geethasagarb
+    issue: "16970"
+    project: dbt-core

@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -9,16 +8,17 @@ use dbt_common::serde_utils::convert_yml_to_scc_map;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::emit::emit_debug_event;
 use dbt_common::{FsResult, MacroSpansOnly, stdfs};
+use dbt_jinja_utils::edit_mapping::EditMapping;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::utils::{
-    add_task_context, inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec,
-    render_sql,
+    inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec, render_sql,
 };
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::TaskRunnerCtx;
+use dbt_tasks_core::metricflow::is_metricflow_sql;
 use dbt_tasks_core::task::run_blocking_task_operation_with_wait_parents;
 use dbt_telemetry::{CompiledCode, NodeType};
 use minijinja::Value as MinijinjaValue;
@@ -40,7 +40,7 @@ pub async fn run_default_render(
         let res = render_default(&node, &mut ctx, &local_exec_unit_test_overrides);
         handle_render_result(
             res,
-            &node.unique_id(),
+            node.unique_id(),
             &node.materialized(),
             &mut ctx,
             &result_sender,
@@ -56,10 +56,13 @@ fn render_default(
 ) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     report_rendering_progress(node, ctx);
 
+    // What a model written in MetricFlow SQL compiles to depends on more than its file, so its
+    // compiled SQL is not taken from the cache.
     if let Some((rendered_sql_maybe_with_cte, macro_spans, reclassify_spans)) = ctx
         .inner
         .compiled_sql_cache
         .try_get_compiled_sql(&ctx.inner.arg.io, node.common())
+        .filter(|_| !is_metricflow_sql(node.as_ref()))
     {
         let config_map = Arc::new(convert_yml_to_scc_map(node.serialized_config()));
         emit_compiled_code(node, ctx, &rendered_sql_maybe_with_cte);
@@ -83,9 +86,7 @@ fn render_default(
         ));
     }
 
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(node.as_ref())?;
 
     // For snapshots, `path` is the generated SQL artifact used as render input.
     // Display/error locations still use the definition path via `get_node_path`.
@@ -136,6 +137,8 @@ fn render_default(
     let mut macro_spans = ctx
         .rendering_listener_factory
         .drain_macro_spans(&render_file_path);
+    let rendered_sql = rewrite_sql(node, ctx, rendered_sql, &mut macro_spans)
+        .map_err(|e| e.with_location(render_file_path.clone()))?;
     let rendered_sql_maybe_with_cte = inject_and_persist_ephemeral_models(
         rendered_sql,
         &mut macro_spans,
@@ -162,13 +165,37 @@ fn render_default(
 
     Ok((
         SqlInstruction {
-            fqn: vec![node.database(), node.schema(), node.alias()],
+            fqn: vec![
+                node.database().to_string(),
+                node.schema().to_string(),
+                node.alias().to_string(),
+            ],
             sql: rendered_sql_maybe_with_cte,
             original_path: node.common().original_file_path.to_path_buf(),
             spans,
         },
         config_map,
     ))
+}
+
+/// Applies the SQL rewriter's edits to `sql`, and moves `macro_spans` with them.
+fn rewrite_sql(
+    node: &Arc<dyn InternalDbtNodeAttributes>,
+    ctx: &TaskRunnerCtx,
+    sql: String,
+    macro_spans: &mut minijinja::MacroSpans,
+) -> FsResult<String> {
+    let edits = ctx
+        .inner
+        .sql_rewriter
+        .rewrite(node.as_ref(), &ctx.inner.arg, &sql)?;
+    if edits.is_empty() {
+        return Ok(sql);
+    }
+    let mapping = EditMapping::new(edits);
+    let edited = mapping.apply(&sql);
+    mapping.remap_macro_spans(macro_spans, &edited);
+    Ok(edited)
 }
 
 fn report_rendering_progress(node: &Arc<dyn InternalDbtNodeAttributes>, ctx: &TaskRunnerCtx) {
@@ -222,7 +249,7 @@ fn render_python_model(
     node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     raw_python: &str,
-    base_context: &BTreeMap<String, MinijinjaValue>,
+    base_context: &MinijinjaValue,
 ) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
     let (compile_context, config_map) = ctx.build_compile_node_context(
         node.clone(),

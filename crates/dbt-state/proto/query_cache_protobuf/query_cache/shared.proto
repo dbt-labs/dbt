@@ -18,8 +18,28 @@ enum ModelExecutionType {
 }
 
 message TableModifiedInfo {
+  enum DependencyKind {
+    UNKNOWN = 0;
+    SOURCE = 1;
+    SEED = 2;
+    MODEL = 3;
+  }
+
   string name = 1;
   optional int64 last_modified_epoch = 2;
+  DependencyKind kind = 3;
+}
+
+message ColumnInfo {
+  string name = 1;
+  string type = 2;
+}
+
+message TableSchema {
+  string name = 1;
+
+  /* a repeated field (not a map) so column order is deterministic */
+  repeated ColumnInfo columns = 2;
 }
 
 message QueryDependency {

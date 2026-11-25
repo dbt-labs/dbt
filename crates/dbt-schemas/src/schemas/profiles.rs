@@ -1,7 +1,9 @@
 #![allow(unused_qualifications)]
 
 use crate::schemas::relations::DEFAULT_DATABRICKS_DATABASE;
-use crate::schemas::serde::{DuckDbExtension, QueryTag, StringOrInteger, StringOrMap};
+use crate::schemas::serde::{
+    DuckDbExtension, QueryTag, StringOrArrayOfStrings, StringOrInteger, StringOrMap,
+};
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
@@ -9,14 +11,14 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_yaml::DbtSchema;
 use dbt_yaml::UntaggedEnumDeserialize;
 use merge::Merge;
-use serde_derive::Deserialize;
-use serde_derive::Serialize;
+use serde::Deserialize;
+use serde::Serialize;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Once};
 
 type YmlValue = dbt_yaml::Value;
 
@@ -61,6 +63,7 @@ pub enum DbConfig {
     Fabric(Box<FabricDbConfig>),
     // Dremio,
     ClickHouse(Box<ClickHouseDbConfig>),
+    MotherDuck(Box<MotherDuckDbConfig>),
     // Materialize,
     // Rockset,
     // Firebolt,
@@ -110,6 +113,7 @@ impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
+impl_from_db_config!(MotherDuck, MotherDuckDbConfig);
 
 /// Resolves BigQuery's `compute_region` / legacy `dataproc_region` alias in a raw profiles.yml
 /// mapping, before it's parsed into a typed `DbConfig`.
@@ -147,6 +151,19 @@ pub fn canonicalize_bigquery_region_alias(credentials: &mut dbt_yaml::Mapping) {
     }
 }
 
+/// Trino's `connection_keys`. `password` is left out, as for every adapter.
+const TRINO_CONNECTION_KEYS: &[&str] = &[
+    "method",
+    "host",
+    "port",
+    "user",
+    "database",
+    "schema",
+    "http_scheme",
+    "client_tags",
+    "cert",
+];
+
 impl DbConfig {
     pub fn get_unique_field(&self) -> Option<&str> {
         match self {
@@ -168,6 +185,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
+            DbConfig::MotherDuck(config) => config.host.as_deref().or(config.region.as_deref()),
         }
     }
 
@@ -240,6 +258,7 @@ impl DbConfig {
                 "execution_project",
                 "schema",
                 "api_endpoint",
+                "storage_read_api_endpoint",
                 "location",
                 "priority",
                 "maximum_bytes_billed",
@@ -329,8 +348,8 @@ impl DbConfig {
                 "tenant_id",
                 "client_id",
             ],
-            // TODO: Trino and Datafusion connection keys
-            AdapterType::Trino => &[],
+            AdapterType::Trino => TRINO_CONNECTION_KEYS,
+            // TODO: Datafusion connection keys
             AdapterType::Datafusion => &[],
             AdapterType::Fabric => &[
                 "server",
@@ -389,6 +408,19 @@ impl DbConfig {
                 "sync_request_timeout",
                 "compress_block_size",
             ],
+            // `token` is deliberately absent: dbt debug prints these values.
+            // `user` is absent because a MotherDuck profile has no username.
+            AdapterType::MotherDuck => &[
+                "host",
+                "port",
+                "database",
+                "schema",
+                "sslrootcert",
+                "connect_timeout",
+                "region",
+                "session_name",
+                "attach_mode",
+            ],
         }
     }
 
@@ -424,6 +456,7 @@ impl DbConfig {
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
             DbConfig::ClickHouse(config) => dbt_yaml::to_value(config),
+            DbConfig::MotherDuck(config) => dbt_yaml::to_value(config),
         }
     }
 
@@ -443,6 +476,7 @@ impl DbConfig {
             DbConfig::Exasol(..) => AdapterType::Exasol,
             DbConfig::ClickHouse(..) => AdapterType::ClickHouse,
             DbConfig::LakeCompute(..) => AdapterType::LakeCompute,
+            DbConfig::MotherDuck(..) => AdapterType::MotherDuck,
         }
     }
 
@@ -462,6 +496,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
             DbConfig::LakeCompute(config) => config.database.as_ref(),
+            DbConfig::MotherDuck(config) => config.database.as_ref(),
         }
     }
 
@@ -502,6 +537,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
+            DbConfig::MotherDuck(config) => config.schema.as_ref(),
         }
     }
 
@@ -533,6 +569,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
             DbConfig::LakeCompute(config) => config.threads.as_ref(),
+            DbConfig::MotherDuck(config) => config.threads.as_ref(),
         }
     }
 
@@ -552,6 +589,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
+            DbConfig::MotherDuck(config) => config.threads = threads,
         }
     }
 
@@ -821,7 +859,7 @@ pub struct SnowflakeDbConfig {
     // Configuration Parameters
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
-    /// Route auth through flock-service using dbt Cloud credentials instead of
+    /// Route auth through bridge-service using dbt Cloud credentials instead of
     /// adapter-specific auth (see dbt-auth's `AdapterConfig::use_dbt_cloud_credentials`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_dbt_cloud_credentials: Option<bool>,
@@ -941,6 +979,13 @@ pub struct PostgresDbConfig {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BigqueryPriority {
+    Batch,
+    Interactive,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
@@ -958,7 +1003,7 @@ pub struct BigqueryDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<String>,
+    pub priority: Option<BigqueryPriority>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -992,6 +1037,8 @@ pub struct BigqueryDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_read_api_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compute_region: Option<String>,
     // TODO: support this https://docs.getdbt.com/docs/core/connect-data-platform/bigquery-setup
     pub dataproc_batch: Option<YmlValue>,
@@ -1021,24 +1068,48 @@ pub struct BigqueryDbConfig {
     pub token_endpoint: Option<YmlValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
 pub struct TrinoDbConfig {
-    // Configuration Parameters
-    pub port: Option<StringOrInteger>, // Setting as Option but required as of dbt 1.7.1
-    pub user: Option<String>,          // Setting as Option but required as of dbt 1.7.1
+    /// Authentication method (e.g. `none`, `ldap`, `oauth`, `jwt`, `certificate`, `kerberos`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub database: Option<String>,
+    pub method: Option<String>,
     pub host: Option<String>, // Setting as Option but required as of dbt 1.7.1
+    pub port: Option<StringOrInteger>, // Setting as Option but required as of dbt 1.7.1
+    pub user: Option<String>, // Setting as Option but required as of dbt 1.7.1
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// The Trino catalog; `catalog` is accepted as the profile key (as in dbt-trino).
+    #[serde(skip_serializing_if = "Option::is_none", alias = "catalog")]
+    pub database: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<StringOrInteger>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
+    pub http_scheme: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    pub client_tags: Option<StringOrArrayOfStrings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_headers: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_properties: Option<BTreeMap<String, YmlValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roles: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    /// CA bundle path, or a boolean toggling TLS verification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cert: Option<YmlValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retries: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impersonation_user: Option<String>,
+    /// Whether connecting checks the credentials as well as reachability (default `true`).
+    /// Set to `false` for servers that cannot answer the credentials check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validate_connection: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
@@ -1218,6 +1289,9 @@ pub struct LakeComputeConfig {
     /// (i.e. non-keypair auth on the native Snowflake target). Default: 30.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snowflake_pat_duration_days: Option<i64>,
+    /// BigQuery connection, in `project.location.connection_id` form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bigquery_connection: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1714,6 +1788,43 @@ pub struct ClickHouseDbConfig {
     pub compress_block_size: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
+pub struct MotherDuckDbConfig {
+    /// Optional explicit endpoint. Without it the driver derives the hostname
+    /// from `region`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<StringOrInteger>,
+    /// Not a MotherDuck setting. Passed through so auth parse can reject it.
+    #[serde(alias = "username", skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    pub token: Option<String>,
+    /// Authentication method. Only `token` is supported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    pub database: Option<String>,
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sslrootcert: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_timeout: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+    /// MotherDuck region. Required even with `host`: tokens are keyed by
+    /// region, so the region must always be given.
+    pub region: Option<String>,
+    /// `single` attaches the named database. `workspace` attaches every
+    /// database in the account. Default `single`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attach_mode: Option<String>,
+    /// Passed to the driver as `adbc.motherduck.session_name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
+}
+
 fn default_clickhouse_schema() -> Option<String> {
     Some("default".to_string())
 }
@@ -1788,12 +1899,17 @@ pub enum TargetContext {
     Fabric(FabricTargetEnv),
     Exasol(ExasolTargetEnv),
     ClickHouse(ClickHouseTargetEnv),
+    MotherDuck(MotherDuckTargetEnv),
     // Add other variants as needed
 }
 
 #[derive(Serialize, DbtSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct TrinoTargetEnv {
+    pub host: Option<String>,
+    pub user: Option<String>,
+    pub method: Option<String>,
+    pub client_tags: Option<Vec<String>>,
     pub __common__: CommonTargetContext,
 }
 
@@ -1865,7 +1981,7 @@ pub struct BigqueryTargetEnv {
     pub location: Option<String>,
     pub maximum_bytes_billed: Option<i64>,
     pub method: Option<String>,
-    pub priority: Option<String>,
+    pub priority: Option<BigqueryPriority>,
     pub quota_project: Option<String>,
     pub retries: Option<i64>,
     pub target_name: Option<String>,
@@ -1941,6 +2057,11 @@ pub struct SalesforceTargetEnv {
 #[derive(Serialize, DbtSchema)]
 pub struct DuckDbTargetEnv {
     pub path: Option<String>,
+    pub __common__: CommonTargetContext,
+}
+
+#[derive(Serialize, DbtSchema)]
+pub struct MotherDuckTargetEnv {
     pub __common__: CommonTargetContext,
 }
 
@@ -2202,6 +2323,10 @@ impl TryFrom<DbConfig> for TargetContext {
             DbConfig::Trino(config) => {
                 let database = config.database.ok_or_else(|| missing("database"))?;
                 Ok(TargetContext::Trino(TrinoTargetEnv {
+                    host: config.host.clone(),
+                    user: config.user.clone(),
+                    method: config.method.clone(),
+                    client_tags: config.client_tags.clone().map(Vec::from),
                     __common__: CommonTargetContext {
                         database,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
@@ -2253,6 +2378,40 @@ impl TryFrom<DbConfig> for TargetContext {
 
             // Bigquery case
             DbConfig::Bigquery(config) => {
+                // v1 rejects a profile that sets both a key and its legacy alias. v2 keeps loading
+                // it so existing projects don't break, uses the canonical key, and warns.
+                if let (Some(retries), Some(job_retries)) = (config.retries, config.job_retries) {
+                    static WARN_DUPLICATE_RETRIES: Once = Once::new();
+                    WARN_DUPLICATE_RETRIES.call_once(|| {
+                        emit_warn_log_message(
+                            ErrorCode::DuplicateConfigKey,
+                            format!(
+                                "BigQuery profile sets both `job_retries` ({job_retries}) and its \
+                                 legacy alias `retries` ({retries}); using `job_retries` \
+                                 ({job_retries}) and ignoring `retries`. Remove `retries` from \
+                                 profiles.yml."
+                            ),
+                        )
+                    });
+                }
+                if let (Some(timeout), Some(job_execution_timeout)) =
+                    (config.timeout_seconds, config.job_execution_timeout_seconds)
+                {
+                    static WARN_DUPLICATE_TIMEOUT: Once = Once::new();
+                    WARN_DUPLICATE_TIMEOUT.call_once(|| {
+                        emit_warn_log_message(
+                            ErrorCode::DuplicateConfigKey,
+                            format!(
+                                "BigQuery profile sets both `job_execution_timeout_seconds` \
+                                 ({job_execution_timeout}) and its legacy alias \
+                                 `timeout_seconds` ({timeout}); using \
+                                 `job_execution_timeout_seconds` ({job_execution_timeout}) and \
+                                 ignoring `timeout_seconds`. Remove `timeout_seconds` from \
+                                 profiles.yml."
+                            ),
+                        )
+                    });
+                }
                 let database = config
                     .database
                     .ok_or_else(|| missing("database or project"))?;
@@ -2282,7 +2441,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     location: config.location.clone(),
                     maximum_bytes_billed: config.maximum_bytes_billed,
                     method: config.method.clone(),
-                    priority: config.priority.clone(),
+                    priority: config.priority,
                     quota_project: config.quota_project.clone(),
                     retries: config.retries,
                     target_name: config.target_name.clone(),
@@ -2476,6 +2635,18 @@ impl TryFrom<DbConfig> for TargetContext {
                     },
                 },
             })),
+
+            DbConfig::MotherDuck(config) => {
+                let database = config.database.ok_or_else(|| missing("database"))?;
+                Ok(TargetContext::MotherDuck(MotherDuckTargetEnv {
+                    __common__: CommonTargetContext {
+                        database,
+                        schema: config.schema.ok_or_else(|| missing("schema"))?,
+                        type_: adapter_type,
+                        threads: None,
+                    },
+                }))
+            }
         }
     }
 }
@@ -2514,6 +2685,107 @@ mod tests {
             )
             .is_err(),
         );
+    }
+
+    #[test]
+    fn trino_profile_catalog_alias() {
+        let config: DbConfig =
+            dbt_yaml::from_str("type: trino\nhost: h\nuser: u\ncatalog: lk\nschema: s\n").unwrap();
+        let DbConfig::Trino(config) = config else {
+            panic!("Expected Trino config");
+        };
+        assert_eq!(config.database.as_deref(), Some("lk"));
+    }
+
+    #[test]
+    fn trino_profile_full() {
+        let yaml = r#"
+type: trino
+method: oauth
+host: trino.example.com
+port: 443
+user: me
+catalog: lk
+schema: s
+threads: 4
+http_scheme: https
+client_tags: [a, b]
+http_headers: {X-Foo: bar}
+session_properties: {query_max_run_time: 5m}
+roles: {system: x}
+timezone: UTC
+cert: true
+retries: 3
+impersonation_user: other
+validate_connection: false
+"#;
+        let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
+        let DbConfig::Trino(ref t) = config else {
+            panic!("Expected Trino config");
+        };
+        assert_eq!(t.method.as_deref(), Some("oauth"));
+        assert_eq!(
+            t.roles.as_ref().unwrap().get("system").map(String::as_str),
+            Some("x")
+        );
+        assert_eq!(t.cert.as_ref().and_then(YmlValue::as_bool), Some(true));
+        assert_eq!(t.validate_connection, Some(false));
+        let again: DbConfig = dbt_yaml::from_value(dbt_yaml::to_value(&config).unwrap()).unwrap();
+        assert_eq!(again, config);
+        let mapping = config.to_mapping().unwrap();
+        assert_eq!(
+            mapping.get("method").and_then(YmlValue::as_str),
+            Some("oauth")
+        );
+        assert!(mapping.get("roles").is_some());
+    }
+
+    #[test]
+    fn trino_profile_validate_connection() {
+        let DbConfig::Trino(config) = dbt_yaml::from_str("type: trino\nhost: h\n").unwrap() else {
+            panic!("Expected Trino config");
+        };
+        assert_eq!(config.validate_connection, None);
+        let DbConfig::Trino(config) =
+            dbt_yaml::from_str("type: trino\nhost: h\nvalidate_connection: true\n").unwrap()
+        else {
+            panic!("Expected Trino config");
+        };
+        assert_eq!(config.validate_connection, Some(true));
+    }
+
+    #[test]
+    fn trino_profile_client_tags_accepts_string() {
+        let config: DbConfig = dbt_yaml::from_str("type: trino\nclient_tags: abc\n").unwrap();
+        assert!(matches!(config, DbConfig::Trino(_)));
+    }
+
+    #[test]
+    fn trino_profile_unknown_key_matches_exasol() {
+        // DbConfig itself tolerates unknown keys for every adapter (strictness is
+        // applied by schema validation upstream), so parity with Exasol is the contract.
+        let trino = dbt_yaml::from_str::<DbConfig>("type: trino\nhost: h\nfoo: 1\n");
+        let exasol = dbt_yaml::from_str::<DbConfig>("type: exasol\nhost: h\nfoo: 1\n");
+        assert_eq!(trino.is_err(), exasol.is_err());
+    }
+
+    #[test]
+    fn trino_profile_connection_keys_exclude_password() {
+        let keys = DbConfig::connection_keys_for(AdapterType::Trino);
+        assert!(!keys.contains(&"password"));
+        for k in [
+            "method",
+            "host",
+            "port",
+            "user",
+            "database",
+            "schema",
+            "http_scheme",
+            "client_tags",
+            "cert",
+        ] {
+            assert!(keys.contains(&k), "missing {k}");
+        }
     }
 
     #[test]
@@ -2621,6 +2893,24 @@ query_tags:
         } else {
             panic!("Expected DbConfig::Bigquery, got {config:?}",);
         }
+    }
+
+    #[test]
+    fn test_bigquery_target_context_accepts_retries_and_job_retries() {
+        let bigquery = |retries: &str| -> DbConfig {
+            dbt_yaml::from_str(&format!(
+                "type: bigquery\ndatabase: project\nschema: dataset\n{retries}"
+            ))
+            .unwrap()
+        };
+        assert!(TargetContext::try_from(bigquery("retries: 3")).is_ok());
+        assert!(TargetContext::try_from(bigquery("job_retries: 3")).is_ok());
+        let Ok(TargetContext::Bigquery(target)) =
+            TargetContext::try_from(bigquery("retries: 3\njob_retries: 5"))
+        else {
+            panic!("expected both keys to load");
+        };
+        assert_eq!(target.job_retries, Some(5));
     }
 
     // Regression coverage: `compute_region` used to carry `#[serde(alias = "dataproc_region")]`,
@@ -2980,6 +3270,72 @@ extensions:
                 );
             }
         }
+    }
+
+    #[test]
+    fn motherduck_profile_defaults_target_context_and_redaction() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+region: us-east-1
+token: super-secret
+database: analytics
+schema: main
+"#,
+        )
+        .unwrap();
+
+        let DbConfig::MotherDuck(motherduck) = &config else {
+            panic!("expected MotherDuck config");
+        };
+        assert_eq!(motherduck.port, None);
+        assert_eq!(motherduck.method, None);
+        assert_eq!(motherduck.sslrootcert, None);
+        assert_eq!(motherduck.attach_mode, None);
+        assert_eq!(motherduck.connect_timeout, None);
+
+        let connection = config.to_connection_mapping().unwrap();
+        let rendered = dbt_yaml::to_string(&connection).unwrap();
+        assert!(!rendered.contains("super-secret"), "{rendered}");
+        assert!(!connection.contains_key(dbt_yaml::Value::from("token")));
+
+        let target = TargetContext::try_from(config).expect("MotherDuck target context");
+        let TargetContext::MotherDuck(target) = target else {
+            panic!("expected MotherDuck target context");
+        };
+        assert_eq!(target.__common__.type_, "motherduck");
+        assert_eq!(target.__common__.database, "analytics");
+        assert_eq!(target.__common__.schema, "main");
+    }
+
+    #[test]
+    fn motherduck_profile_accepts_string_port_and_timeout() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+region: us-east-1
+port: "6543"
+attach_mode: workspace
+token: super-secret
+database: analytics
+schema: main
+connect_timeout: "30"
+"#,
+        )
+        .unwrap();
+
+        let DbConfig::MotherDuck(motherduck) = config else {
+            panic!("expected MotherDuck config");
+        };
+        assert_eq!(
+            motherduck.port,
+            Some(StringOrInteger::String("6543".to_string()))
+        );
+        assert_eq!(
+            motherduck.connect_timeout,
+            Some(StringOrInteger::String("30".to_string()))
+        );
+        assert_eq!(motherduck.attach_mode.as_deref(), Some("workspace"));
     }
 
     /// A displayable key can nest a credential: DuckDB's `settings` carries

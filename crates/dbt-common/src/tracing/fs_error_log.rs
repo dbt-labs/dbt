@@ -1,5 +1,8 @@
+use std::cell::Cell;
 use std::sync::{Arc, OnceLock};
 
+use super::future_incompatibility_log::FutureIncompatibilityLog;
+use crate::env_secrets::rewrite_error_text;
 use dbt_error::FsError;
 use dbt_telemetry::LogMessage;
 use dbt_tracing::{
@@ -138,6 +141,23 @@ impl AnyTelemetryEvent for FsErrorLog {
         self.get_log_message_mut().with_context(context);
     }
 
+    fn rewrite_strings(&mut self, rewrite: &dyn Fn(&str) -> Option<String>) -> bool {
+        let mut changed = self.get_log_message_mut().rewrite_strings(rewrite);
+        // In-process consumers read the retained error, so rewrite its text as well.
+        let error_changes = Cell::new(false);
+        self.fs_error.for_each(|error| {
+            if rewrite(&error.to_string()).is_some() {
+                error_changes.set(true);
+            }
+        });
+        if error_changes.get() {
+            let error = Box::new(self.fs_error.clone_without_backtrace());
+            self.fs_error = Arc::from(rewrite_error_text(error, rewrite));
+            changed = true;
+        }
+        changed
+    }
+
     fn has_sensitive_data(&self) -> bool {
         self.get_log_message().has_sensitive_data()
     }
@@ -164,11 +184,18 @@ impl AnyTelemetryEvent for FsErrorLog {
 }
 
 pub fn get_log_message(attributes: &TelemetryAttributes) -> Option<&LogMessage> {
-    attributes.downcast_ref::<LogMessage>().or_else(|| {
-        attributes
-            .downcast_ref::<FsErrorLog>()
-            .map(FsErrorLog::get_log_message)
-    })
+    attributes
+        .downcast_ref::<LogMessage>()
+        .or_else(|| {
+            attributes
+                .downcast_ref::<FsErrorLog>()
+                .map(FsErrorLog::get_log_message)
+        })
+        .or_else(|| {
+            attributes
+                .downcast_ref::<FutureIncompatibilityLog>()
+                .map(FutureIncompatibilityLog::get_log_message)
+        })
 }
 
 pub(in crate::tracing) fn get_log_message_mut(
@@ -176,9 +203,13 @@ pub(in crate::tracing) fn get_log_message_mut(
 ) -> Option<&mut LogMessage> {
     if attributes.is::<LogMessage>() {
         attributes.downcast_mut::<LogMessage>()
-    } else {
+    } else if attributes.is::<FsErrorLog>() {
         attributes
             .downcast_mut::<FsErrorLog>()
             .map(FsErrorLog::get_log_message_mut)
+    } else {
+        attributes
+            .downcast_mut::<FutureIncompatibilityLog>()
+            .map(FutureIncompatibilityLog::get_log_message_mut)
     }
 }

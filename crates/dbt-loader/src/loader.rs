@@ -14,8 +14,10 @@ use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::path::{DbtPath, resource_extension};
 use dbt_common::tracing::TracingConfigProvider;
 use dbt_common::tracing::dbt_emit::{
-    emit_error_log_message, emit_warn_log_from_fs_error, emit_warn_log_message,
+    emit_compatibility_probe, emit_error_log_message, emit_warn_log_from_fs_error,
+    emit_warn_log_message,
 };
+use dbt_common::tracing::dbt_metrics::NamedProbe;
 use dbt_common::tracing::invocation::record_resolved_warn_error_options;
 use dbt_common::tracing::span_info::SpanStatusRecorder;
 use dbt_common::warn_error_options::{
@@ -100,28 +102,33 @@ fn warn_on_unlinked_cloud_project(
     emit_warn_log_from_fs_error(*err);
 }
 
+/// The thread count a run uses: the `--threads` flag, else what the profile's default
+/// connection declares.
+pub fn resolve_threads(
+    dbt_profile: &DbtProfile,
+    num_threads: Option<usize>,
+) -> FsResult<Option<usize>> {
+    if num_threads.is_some() {
+        return Ok(num_threads);
+    }
+    match dbt_profile.default_db_config().get_threads() {
+        // Convert StringOrInteger to Option<usize>
+        Some(StringOrInteger::Integer(n)) => Ok(Some(*n as usize)),
+        Some(StringOrInteger::String(s)) => Ok(Some(s.parse::<usize>().map_err(|_| {
+            fs_err!(
+                ErrorCode::ProfileInvalid,
+                "Invalid number of threads in profiles.yml: {s}",
+            )
+        })?)),
+        None => Ok(None),
+    }
+}
+
 fn resolve_and_set_threads(
     dbt_profile: &mut DbtProfile,
     iarg: &InvocationArgs,
 ) -> FsResult<Option<usize>> {
-    let final_threads = if iarg.num_threads.is_none() {
-        if let Some(threads) = dbt_profile.default_db_config().get_threads() {
-            // Convert StringOrInteger to Option<usize>
-            match threads {
-                StringOrInteger::Integer(n) => Some(*n as usize),
-                StringOrInteger::String(s) => Some(s.parse::<usize>().map_err(|_| {
-                    fs_err!(
-                        ErrorCode::ProfileInvalid,
-                        "Invalid number of threads in profiles.yml: {s}",
-                    )
-                })?),
-            }
-        } else {
-            None
-        }
-    } else {
-        iarg.num_threads
-    };
+    let final_threads = resolve_threads(dbt_profile, iarg.num_threads)?;
 
     dbt_profile.threads = final_threads;
     // Thread count is a target-wide concurrency setting, so it applies to every
@@ -1142,6 +1149,12 @@ pub async fn load_inner(
         arg.allow_jinja_file_extensions,
         &all_files,
     );
+    probe_singular_test_files(
+        package_path,
+        dbt_project.test_paths.as_deref().unwrap_or_default(),
+        arg.allow_jinja_file_extensions,
+        &all_files,
+    );
     let fixture_files = find_files_by_kind_and_extension(
         package_path,
         &dbt_project.name,
@@ -1254,6 +1267,49 @@ fn drop_nested_project_config_files(properties: &mut Vec<DbtAsset>) {
                 .parent()
                 .is_some_and(|parent| project_roots.contains(parent))
     });
+}
+
+/// `<test-path>/generic` and `<test-path>/fixtures` for every test-path. dbt-core treats files
+/// there as generic tests and unit-test fixtures, not singular tests, also when test-paths are
+/// nested (e.g. `["tests", "tests/dbt"]` covers `tests/dbt/fixtures/`).
+fn non_singular_test_dirs(in_dir: &Path, test_paths: &[String]) -> Vec<PathBuf> {
+    test_paths
+        .iter()
+        // Spell each test-path like the collected files are (`load_inner`): normalized and
+        // relative to `in_dir`, so `./tests`, `tests/../tests` and absolute paths all match.
+        .filter_map(|test_path| diff_paths(DbtPath::from(in_dir.join(test_path)), in_dir).ok())
+        .map(|test_path| DbtPath::from(test_path).to_path_buf())
+        .flat_map(|test_path| [test_path.join("generic"), test_path.join("fixtures")])
+        .collect()
+}
+
+/// Counts the singular test (`.sql`) files where Fusion's rule for skipping generic tests
+/// (`should_exclude_path`) and dbt-core's (`non_singular_test_dirs`) disagree, to size the
+/// switch to dbt-core's rule (https://github.com/dbt-labs/dbt/issues/16507) first.
+fn probe_singular_test_files(
+    in_dir: &Path,
+    test_paths: &[String],
+    allow_jinja: bool,
+    all_paths: &HashMap<ResourcePathKind, Vec<(DbtPath, SystemTime)>>,
+) {
+    let non_singular_dirs = non_singular_test_dirs(in_dir, test_paths);
+    // A file under nested test-paths is collected once per test-path; count it once.
+    let paths: HashSet<&Path> = all_paths
+        .get(&ResourcePathKind::TestPaths)
+        .into_iter()
+        .flatten()
+        .map(|(path, _)| path.as_path())
+        .filter(|path| matches_extension(path, &["sql"], allow_jinja))
+        .collect();
+    for path in paths {
+        let skipped = should_exclude_path(&ResourcePathKind::TestPaths, path);
+        let skipped_by_dbt_core = non_singular_dirs.iter().any(|dir| path.starts_with(dir));
+        match (skipped, skipped_by_dbt_core) {
+            (true, false) => emit_compatibility_probe(NamedProbe::LegacyGenericDirSkip),
+            (false, true) => emit_compatibility_probe(NamedProbe::NonSingularTestCollected),
+            _ => {}
+        }
+    }
 }
 
 fn should_exclude_path(kind: &ResourcePathKind, path: &Path) -> bool {
@@ -1650,6 +1706,105 @@ mod tests {
 
         assert_eq!(resolved, Some(4));
         assert_eq!(dbt_profile.threads, Some(4));
+    }
+
+    /// Runs `probe_singular_test_files` on a temp project, with paths collected like
+    /// `load_inner` does, and returns the `(LegacyGenericDirSkip, NonSingularTestCollected)`
+    /// counts.
+    fn singular_test_probe_counts(test_paths: &[&str], files: &[&str]) -> (u64, u64) {
+        use dbt_common::tracing::dbt_metrics::FusionMetricKey;
+        use dbt_tracing::{
+            TelemetryOutputFlags,
+            emit::create_root_info_span,
+            init::create_tracing_subcriber_with_layer,
+            metrics::get_metric,
+            test_support::mocks::{MockDynSpanEvent, test_data_layer},
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        for file in files {
+            let path = dir.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            File::create(path).unwrap();
+        }
+        let test_paths: Vec<String> = test_paths.iter().map(|p| p.to_string()).collect();
+        let all_dirs = HashMap::from([(ResourcePathKind::TestPaths, test_paths.clone())]);
+        let mut all_paths = collect_all_files(all_dirs, dir.path()).unwrap();
+        for files in all_paths.values_mut() {
+            for (path, _) in files.iter_mut() {
+                *path = DbtPath::from(diff_paths(&path, dir.path()).unwrap());
+            }
+        }
+
+        let subscriber = create_tracing_subcriber_with_layer(
+            tracing::level_filters::LevelFilter::TRACE,
+            test_data_layer(1, None, false, std::iter::empty(), std::iter::empty()),
+            &[],
+        )
+        .expect("test tracing subscriber should be valid");
+        // Metrics are stored on the root span, so run inside one.
+        tracing::subscriber::with_default(subscriber, || {
+            let _root = create_root_info_span(MockDynSpanEvent {
+                name: "root".to_string(),
+                flags: TelemetryOutputFlags::ALL,
+                ..Default::default()
+            })
+            .entered();
+            probe_singular_test_files(dir.path(), &test_paths, false, &all_paths);
+            let count =
+                |probe: NamedProbe| get_metric(FusionMetricKey::CompatibilityProbe(probe.into()));
+            (
+                count(NamedProbe::LegacyGenericDirSkip),
+                count(NamedProbe::NonSingularTestCollected),
+            )
+        })
+    }
+
+    // https://github.com/dbt-labs/dbt/issues/16507
+    #[test]
+    fn test_singular_test_files_probe_disagreements_with_dbt_core() {
+        // (test-paths, files, (LegacyGenericDirSkip, NonSingularTestCollected))
+        type Case = (&'static [&'static str], &'static [&'static str], (u64, u64));
+        let cases: [Case; 6] = [
+            // Both rules skip `tests/generic` and `tests/fixtures`.
+            (
+                &["tests"],
+                &["tests/a.sql", "tests/generic/g.sql", "tests/fixtures/f.sql"],
+                (0, 0),
+            ),
+            // Nested: collected here, skipped by dbt-core.
+            (
+                &["tests", "tests/dbt"],
+                &["tests/dbt/fixtures/f.sql", "tests/dbt/generic/g.sql"],
+                (0, 2),
+            ),
+            (&["data/tests"], &["data/tests/generic/g.sql"], (0, 1)),
+            // Property files are not singular tests; dbt-core reads them everywhere.
+            (
+                &["tests", "tests/dbt", "data/generic"],
+                &["tests/dbt/fixtures/f.yml", "data/generic/a.yml"],
+                (0, 0),
+            ),
+            // Skipped here, collected by dbt-core.
+            (
+                &["data/generic"],
+                &["data/generic/a.sql", "data/generic/nested/b.sql"],
+                (2, 0),
+            ),
+            // Test-paths are normalized before comparing.
+            (
+                &["tests/../tests", "./tests/dbt"],
+                &["tests/generic/g.sql", "tests/dbt/generic/g.sql"],
+                (0, 1),
+            ),
+        ];
+        for (test_paths, files, expected) in cases {
+            assert_eq!(
+                singular_test_probe_counts(test_paths, files),
+                expected,
+                "test-paths: {test_paths:?}"
+            );
+        }
     }
 
     #[test]

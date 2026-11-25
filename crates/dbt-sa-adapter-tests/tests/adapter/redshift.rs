@@ -138,6 +138,25 @@ async fn adapters_redshift_materialized_view_config_changeset() -> FsResult<()> 
     .await
 }
 
+// `redshift_use_transactions: true` (set in the project) runs each node in one transaction.
+// The recording shows BEGIN before a node's first write and COMMIT after its docs.
+#[dbt_runtime::test]
+async fn adapters_redshift_use_transactions() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/redshift_use_transactions",
+        AdapterType::Redshift.as_ref(),
+        None,
+        // run_0 creates both relations. run_1 takes the incremental path.
+        &["run", "run"],
+        None,
+        &[],
+    )
+    .await
+}
+
 #[dbt_runtime::test]
 async fn adapters_redshift_get_relation() -> FsResult<()> {
     run_fs_record_replay_redshift(current_function_name!(), "tests/data/adapter/get_relation").await
@@ -590,4 +609,23 @@ async fn adapters_redshift_run_catalog_with_extended_stats() -> FsResult<()> {
 
     task_seq.execute_in_with_env(&env, &[]).await?;
     Ok(())
+}
+
+/// Grants on a function name the object as a function
+/// (https://github.com/dbt-labs/fs/issues/17585). Redshift also needs the argument
+/// types: `grant execute on function <name>(integer) to public`.
+#[dbt_runtime::test]
+async fn adapters_redshift_function_grants() -> FsResult<()> {
+    run_fs_record_replay_task_seq(
+        env!("CARGO_MANIFEST_DIR"),
+        &FS_RUNNER,
+        current_function_name!(),
+        "tests/data/adapter/function_grants",
+        AdapterType::Redshift.as_ref(),
+        None,
+        &["build"],
+        None,
+        &[],
+    )
+    .await
 }

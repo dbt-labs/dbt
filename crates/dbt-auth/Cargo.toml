@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 dbt-adbc = { workspace = true }
+dbt-path = { workspace = true }
 dbt-yaml = { workspace = true }
 
 adbc-core = { workspace = true }
@@ -24,7 +25,6 @@ pkcs8 = { workspace = true }
 rsa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-shellexpand = { workspace = true }
 thiserror = { workspace = true }
 ureq = { workspace = true }
 url = { workspace = true }

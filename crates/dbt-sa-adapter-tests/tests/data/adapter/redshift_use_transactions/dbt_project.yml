@@ -1,0 +1,11 @@
+name: adapters_redshift_use_transactions
+profile: fusion_tests
+
+flags:
+  redshift_use_transactions: true
+
+models:
+  adapters_redshift_use_transactions:
+    +persist_docs:
+      relation: true
+      columns: true

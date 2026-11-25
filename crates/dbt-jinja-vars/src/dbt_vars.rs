@@ -1,6 +1,5 @@
-use std::collections::BTreeMap;
-
 use dbt_yaml::UntaggedEnumDeserialize;
+use indexmap::IndexMap;
 use serde::Serialize;
 
 /// Variable values in a dbt project.
@@ -11,6 +10,6 @@ pub enum DbtVars {
     /// `Vars` so that `UntaggedEnumDeserialize` matches null scalars here
     /// rather than deserializing them as an empty map via `Vars({})`.
     Null,
-    Vars(BTreeMap<String, DbtVars>),
+    Vars(IndexMap<String, DbtVars>),
     Value(dbt_yaml::Value),
 }

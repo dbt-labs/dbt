@@ -52,6 +52,10 @@ pub struct ProjectDbtCloudConfig {
     pub defer_env_id: Option<StringOrInteger>,
     #[serde(rename = "state-org-id")]
     pub state_org_id: Option<StringOrInteger>,
+    /// Opt in to resolving `private:` packages with the user's own dbt platform credentials
+    /// when running locally.
+    #[serde(rename = "git-credentials")]
+    pub git_credentials: Option<bool>,
 
     // unsure if any of these other keys are actually used or expected
     pub account_id: Option<StringOrInteger>,
@@ -152,10 +156,6 @@ pub struct DbtProject {
     pub docs_paths: Option<Vec<String>>,
     #[serde(rename = "skill-paths")]
     pub skill_paths: Option<Vec<String>>,
-    /// Directories whose files belong to a plugin, by plugin type. There is no default: a plugin
-    /// reads only the paths a project names for it.
-    #[serde(rename = "plugin-paths")]
-    pub plugin_paths: Option<BTreeMap<String, Vec<String>>>,
     #[serde(rename = "target-path")]
     pub target_path: Option<TargetPath>,
     #[serde(rename = "log-path")]
@@ -231,7 +231,6 @@ impl Default for DbtProject {
             check_paths: None,
             docs_paths: None,
             skill_paths: None,
-            plugin_paths: None,
             target_path: None,
             log_path: None,
             packages_install_path: None,
@@ -270,6 +269,14 @@ impl Default for DbtProject {
 }
 
 impl DbtProject {
+    /// Deserializes a `dbt_project.yml` value with no Jinja rendering.
+    ///
+    /// Non-generic on purpose: crates that call this share one compiled copy
+    /// of `DbtProject`'s deserializer instead of each instantiating their own.
+    pub fn from_yml_value(value: dbt_yaml::Value) -> Result<Self, dbt_yaml::Error> {
+        value.into_typed(|_, _, _| {}, |_| Ok(None))
+    }
+
     pub fn get_project_id(&self) -> String {
         /*
         Returns the hash of the project name. Can be used for telemetry.
@@ -299,17 +306,6 @@ impl DbtProject {
         .flatten()
         .cloned()
         .collect()
-    }
-
-    /// Every directory dbt itself reads files from: the resource paths, `check-paths`,
-    /// `docs-paths`, `asset-paths` and `skill-paths`.
-    pub fn all_dbt_paths(&self) -> Vec<String> {
-        let mut paths = self.all_source_paths();
-        for configured in [&self.check_paths, &self.docs_paths, &self.asset_paths] {
-            paths.extend(configured.iter().flatten().cloned());
-        }
-        paths.extend(self.skill_paths_or_default());
-        paths
     }
 
     /// `skill-paths`, falling back to the default of `skills/`.
@@ -530,7 +526,6 @@ mod tests {
             check_paths: Some(vec![]),
             docs_paths: Some(vec![]),
             skill_paths: Some(vec![]),
-            plugin_paths: None,
             target_path: Some(TargetPath::Target),
             log_path: Some(LogPath::Logs),
             packages_install_path: Some("packages".to_string()),

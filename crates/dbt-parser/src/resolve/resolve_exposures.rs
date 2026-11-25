@@ -2,9 +2,11 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
+use async_trait::async_trait;
 use dbt_adapter_core::AdapterType;
 use dbt_common::CodeLocationWithFile;
 use dbt_common::io_args::StaticAnalysisKind;
@@ -35,12 +37,43 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use super::resolve_properties::MinimalPropertiesEntry;
+use super::properties_index::PropertiesEntry;
+
+/// How a package's exposures resolve.
+pub(crate) struct Exposures;
+
+#[async_trait]
+impl ResolvableNode for Exposures {
+    fn properties_keys(&self) -> &'static [&'static str] {
+        &["exposures"]
+    }
+
+    async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+        let (exposures, disabled_exposures) = resolve_exposures(
+            ctx.arg,
+            // A later definition of an exposure replaces an earlier one.
+            &mut ctx.properties.take_last_entries("exposures"),
+            ctx.package,
+            ctx.dbt_state.root_package(),
+            ctx.root_project_configs,
+            ctx.database,
+            ctx.schema,
+            ctx.adapter_type,
+            ctx.package_name,
+            &ctx.jinja_env,
+            &ctx.base_ctx,
+        )
+        .await?;
+        ctx.nodes.exposures.extend(exposures);
+        ctx.disabled_nodes.exposures.extend(disabled_exposures);
+        Ok(())
+    }
+}
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn resolve_exposures(
     args: &ResolveArgs,
-    exposure_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    exposure_properties: &mut BTreeMap<String, PropertiesEntry>,
     package: &DbtPackage,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
@@ -331,7 +364,7 @@ pub fn resolve_yaml_depends_on<T: ResolvableConfig<T> + Serialize + 'static>(
             }
             _ => {
                 return err!(
-                    ErrorCode::Unexpected,
+                    ErrorCode::InvalidConfig,
                     "Invalid dependency input: {}",
                     dependency.as_str()
                 );

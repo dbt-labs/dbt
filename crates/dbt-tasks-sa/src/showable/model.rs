@@ -64,6 +64,7 @@ impl Showable for DbtModel {
                             let canonical_fqn = relation.get_canonical_fqn()?.to_string();
                             if let Some(result) = show_task_hooks.get_model_sidecar_sql(
                                 ctx,
+                                self.node_adapter(),
                                 lp_instruction,
                                 &self.__common_attr__.path,
                                 &ctx.inner.arg.io.out_dir,
