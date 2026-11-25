@@ -1,0 +1,8 @@
+kind: Fixes
+body: Preserve the failed batch error message in microbatch run results, so
+  run_results.json carries the underlying error text instead of the constant
+  "ERROR" / "PARTIAL SUCCESS (n/m)" message
+time: 2026-11-22T01:52:00.000000+00:00
+custom:
+    Author: akchhayasharma
+    Issue: "17251"

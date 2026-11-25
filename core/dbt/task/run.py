@@ -368,7 +368,11 @@ class ModelRunner(CompileRunner[ModelNode]):
             status = result.status
             level = EventLevel.ERROR
         else:
-            status = result.message
+            # The result message can be multi-line (e.g. a microbatch model
+            # whose message carries the failed batches' error text), but the
+            # console status column is a single line, so only its first line
+            # is shown here. The full message still lands in run_results.json.
+            status = (result.message or "").split("\n")[0]
             level = EventLevel.INFO
         fire_event(
             LogModelResult(
@@ -634,6 +638,7 @@ class MicrobatchBatchRunner(ModelRunner):
         self,
         model: ModelNode,
         batch: BatchType,
+        exception: Optional[Exception] = None,
         elapsed_time: float = 0.0,
     ) -> RunResult:
         return RunResult(
@@ -642,7 +647,7 @@ class MicrobatchBatchRunner(ModelRunner):
             timing=[],
             thread_id=threading.current_thread().name,
             execution_time=elapsed_time,
-            message="ERROR",
+            message=str(exception) if exception is not None else "ERROR",
             adapter_response={},
             failures=1,
             batch_results=BatchResults(failed=[batch]),
@@ -695,7 +700,7 @@ class MicrobatchBatchRunner(ModelRunner):
                 )
             )
             batch_run_result = self._build_failed_run_batch_result(
-                model, batch, time.perf_counter() - start_time
+                model, batch, exception=e, elapsed_time=time.perf_counter() - start_time
             )
 
         batch_result = batch_run_result
@@ -814,17 +819,10 @@ class MicrobatchModelRunner(ModelRunner):
 
         num_successes = len(result.batch_results.successful)
         num_failures = len(result.batch_results.failed)
-        if num_failures == 0:
-            status = RunStatus.Success
-            msg = "SUCCESS"
-        elif num_successes == 0:
-            status = RunStatus.Error
-            msg = "ERROR"
-        else:
-            status = RunStatus.PartialSuccess
-            msg = f"PARTIAL SUCCESS ({num_successes}/{num_successes + num_failures})"
-        result.status = status
-        result.message = msg
+        failed_messages = self._failed_batch_error_messages(batch_results)
+        result.status, result.message = self._merge_result_status_and_message(
+            num_successes, num_failures, failed_messages
+        )
 
         result.batch_results.successful = sorted(result.batch_results.successful)
         result.batch_results.failed = sorted(result.batch_results.failed)
@@ -832,6 +830,48 @@ class MicrobatchModelRunner(ModelRunner):
         # # If retrying, propagate previously successful batches into final result, even thoguh they were not run in this invocation
         if self.node.previous_batch_results is not None:
             result.batch_results.successful += self.node.previous_batch_results.successful
+
+    @staticmethod
+    def _merge_result_status_and_message(
+        num_successes: int, num_failures: int, failed_messages: str
+    ) -> Tuple[RunStatus, str]:
+        """Decide the merged status and message for a microbatch model result.
+
+        Mirrors the non-microbatch path, where the result message carries the
+        underlying error text, so the failure reason survives into
+        run_results.json instead of a constant "ERROR".
+        """
+        if num_failures == 0:
+            return RunStatus.Success, "SUCCESS"
+        if num_successes == 0:
+            return RunStatus.Error, failed_messages or "ERROR"
+        msg = f"PARTIAL SUCCESS ({num_successes}/{num_successes + num_failures})"
+        if failed_messages:
+            msg = f"{msg}\n{failed_messages}"
+        return RunStatus.PartialSuccess, msg
+
+    @staticmethod
+    def _failed_batch_error_messages(batch_results: List[RunResult]) -> str:
+        """Collect the distinct error messages of failed batches.
+
+        Batches that failed without a captured exception carry the constant
+        "ERROR" message, which says nothing about the failure, so it is left
+        out here. Returns the messages joined with newlines, or "" when no
+        batch carries an error message.
+        """
+        messages: List[str] = []
+        for batch_result in batch_results:
+            if batch_result.status != RunStatus.Error:
+                continue
+            message = batch_result.message
+            if not message:
+                continue
+            if message == "ERROR":
+                continue
+            if message in messages:
+                continue
+            messages.append(message)
+        return "\n".join(messages)
 
     def _update_result_with_unfinished_batches(
         self, result: RunResult, batches: Dict[int, BatchType]
