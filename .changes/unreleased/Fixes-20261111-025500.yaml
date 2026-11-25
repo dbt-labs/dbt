@@ -1,0 +1,7 @@
+kind: Fixes
+body: Honor --log-level filtering for the OTLP export so records and spans below the configured level are not exported
+time: 2026-11-11T02:55:00.000000+00:00
+custom:
+    author: Shanmukh-l33t
+    issue: "17066"
+    project: dbt-core
