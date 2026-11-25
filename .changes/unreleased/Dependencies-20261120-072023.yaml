@@ -1,0 +1,6 @@
+kind: "Dependencies"
+body: "chore(deps): update mashumaro requirement from <3.18,>=3.9 to >=3.9,<3.24 in /core"
+time: 2026-11-20T07:20:23.00000Z
+custom:
+  Author: dependabot[bot]
+  Issue: 17246
