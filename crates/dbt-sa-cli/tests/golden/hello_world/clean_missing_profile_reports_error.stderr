@@ -1,0 +1,2 @@
+[error] [IoError (dbt1001)]: Profile 'does_not_exist' not found in profiles.yml
+  --> <cmdline>
