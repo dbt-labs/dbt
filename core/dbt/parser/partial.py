@@ -1137,7 +1137,10 @@ class PartialParsing:
             # so it does not accumulate across partial parses (CORE-725). The
             # node's file_id is the .sql test file, not the schema_file, so
             # pop by unique_id rather than filtering on schema_file.file_id.
-            self.saved_manifest.disabled.pop(data_test_unique_id)
+            # As for an enabled test above, schedule the .sql file so the node
+            # is created again with the new patch.
+            for disabled_data_test in self.saved_manifest.disabled.pop(data_test_unique_id):
+                self._schedule_new_file_for_parsing(disabled_data_test.file_id)
 
     # exposures are created only from schema files, so just delete
     # the exposure or the disabled exposure.

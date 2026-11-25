@@ -89,3 +89,60 @@ class TestPartialParsingDataTestEnabledToggle:
             assert test_unique_id is not None
             assert location == "nodes"
             assert len(manifest.disabled.get(test_unique_id, [])) == 0
+
+
+singular_test_sql = """
+select 1 as id where 1 = 0
+"""
+
+disabled_singular_test_yml = """
+data_tests:
+  - name: my_singular_test
+    description: first
+    config:
+      enabled: false
+"""
+
+disabled_singular_test_edited_yml = """
+data_tests:
+  - name: my_singular_test
+    description: second
+    config:
+      enabled: false
+"""
+
+enabled_singular_test_yml = """
+data_tests:
+  - name: my_singular_test
+    description: second
+    config:
+      enabled: true
+"""
+
+
+class TestPartialParsingDisabledSingularTestPatchChange:
+    """A singular test disabled in its schema file entry must be parsed again
+    when that entry changes: not dropped from manifest.disabled, and enabled
+    again when the entry enables it."""
+
+    @pytest.fixture(scope="class")
+    def tests(self):
+        return {
+            "my_singular_test.sql": singular_test_sql,
+            "schema.yml": disabled_singular_test_yml,
+        }
+
+    def test_disabled_singular_test_patch_change(self, project):
+        test_unique_id = "test.test.my_singular_test"
+        run_dbt(["parse"])
+
+        write_file(disabled_singular_test_edited_yml, project.project_root, "tests", "schema.yml")
+        run_dbt(["--partial-parse", "parse"])
+        manifest = get_manifest(project.project_root)
+        assert [node.description for node in manifest.disabled[test_unique_id]] == ["second"]
+
+        write_file(enabled_singular_test_yml, project.project_root, "tests", "schema.yml")
+        run_dbt(["--partial-parse", "parse"])
+        manifest = get_manifest(project.project_root)
+        assert test_unique_id not in manifest.disabled
+        assert manifest.nodes[test_unique_id].description == "second"
