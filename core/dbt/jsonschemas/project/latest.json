@@ -126,6 +126,19 @@
         "type": "string"
       }
     },
+    "experimental-paths": {
+      "description": "Directories whose files belong to an experimental, by experimental type. There is no default: an experimental reads only the paths a project names for it.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
     "exposures": {
       "anyOf": [
         {
