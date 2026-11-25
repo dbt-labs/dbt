@@ -480,6 +480,9 @@ pub struct CloneRequestInput {
     pub table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
     pub table_namespace: Option<String>,
+    /// Asks the service to skip the clone unless the clone source has changed since the
+    /// target's most recent clone.
+    pub skip_if_unchanged: bool,
 }
 
 impl CloneRequestInput {
@@ -496,6 +499,7 @@ impl CloneRequestInput {
             table_properties: self.table_properties,
             clone_chain_depth_limit: self.clone_chain_depth_limit,
             table_namespace: self.table_namespace,
+            skip_if_unchanged: Some(self.skip_if_unchanged),
         }
     }
 }
@@ -1161,6 +1165,7 @@ mod tests {
             table_properties: Some(properties),
             clone_chain_depth_limit: Some(3),
             table_namespace: None,
+            skip_if_unchanged: true,
         }
         .into_proto();
 
@@ -1172,6 +1177,7 @@ mod tests {
         assert_eq!(request.clone_source_table_type.as_deref(), Some("table"));
         assert_eq!(request.table_properties, Some(properties));
         assert_eq!(request.clone_chain_depth_limit, Some(3));
+        assert_eq!(request.skip_if_unchanged, Some(true));
     }
 
     #[test]

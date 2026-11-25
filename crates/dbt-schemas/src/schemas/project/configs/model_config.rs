@@ -2464,6 +2464,21 @@ __warehouse_specific_config__: {}
         assert_eq!(state.ignore_external_modifications, Some(true));
     }
 
+    #[test]
+    fn test_model_config_state_parses_pre_clone_if_changed() {
+        let config: ModelConfig = dbt_yaml::from_str(
+            r#"
+state:
+  pre_clone: if_changed
+__warehouse_specific_config__: {}
+"#,
+        )
+        .unwrap();
+
+        let state = config.state.expect("state config should parse");
+        assert_eq!(state.pre_clone, Some(StatePreClone::IfChanged));
+    }
+
     /// Regression for #16135: `state:` keys merge key by key, so a model that sets
     /// only `require_fresh_data_from` still inherits the project-level `lag_tolerance`.
     #[test]

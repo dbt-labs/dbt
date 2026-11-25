@@ -238,6 +238,7 @@ fn state_pre_clone_to_policy(pre_clone: StatePreClone) -> CloneIncrementalInDev 
     match pre_clone {
         StatePreClone::Never => CloneIncrementalInDev::Never,
         StatePreClone::IfMissing => CloneIncrementalInDev::IfTableMissing,
+        StatePreClone::IfChanged => CloneIncrementalInDev::IfChanged,
         StatePreClone::Always => CloneIncrementalInDev::Always,
     }
 }
@@ -397,7 +398,14 @@ async fn prepare_dev_clone_request(
     }
     let target_table = target_relation.semantic_fqn();
 
-    if policy == CloneIncrementalInDev::IfTableMissing {
+    let mut skip_if_unchanged = false;
+    if policy == CloneIncrementalInDev::IfChanged {
+        // Only a known-missing target is cloned unconditionally. For an existing target, or
+        // one whose existence is unknown, the service clones only if the clone source changed
+        // since the target's most recent clone, so an unchanged target is never replaced.
+        skip_if_unchanged =
+            relation_exists(ctx, &target_table, target_relation.clone()).await != Some(false);
+    } else if policy == CloneIncrementalInDev::IfTableMissing {
         match relation_exists(ctx, &target_table, target_relation.clone()).await {
             Some(false) => {}
             Some(true) => {
@@ -475,6 +483,7 @@ async fn prepare_dev_clone_request(
             ctx.dbt_profile().allow_clones,
         ),
         table_namespace: project_info.table_namespace,
+        skip_if_unchanged,
     }
     .into_proto();
 
@@ -718,6 +727,26 @@ mod tests {
     }
 
     #[test]
+    fn state_pre_clone_maps_to_clone_incremental_in_dev() {
+        assert_eq!(
+            state_pre_clone_to_policy(StatePreClone::Never),
+            CloneIncrementalInDev::Never
+        );
+        assert_eq!(
+            state_pre_clone_to_policy(StatePreClone::IfMissing),
+            CloneIncrementalInDev::IfTableMissing
+        );
+        assert_eq!(
+            state_pre_clone_to_policy(StatePreClone::IfChanged),
+            CloneIncrementalInDev::IfChanged
+        );
+        assert_eq!(
+            state_pre_clone_to_policy(StatePreClone::Always),
+            CloneIncrementalInDev::Always
+        );
+    }
+
+    #[test]
     fn clone_source_table_type_returns_none_for_interactive_table_because_snowflake_cannot_clone_it()
      {
         // See `clone_source_table_type`: Snowflake cannot clone an interactive table.
@@ -859,6 +888,7 @@ mod tests {
             table_properties: candidate.table_properties(),
             clone_chain_depth_limit: None,
             table_namespace: Some("adapter-unique-id".to_string()),
+            skip_if_unchanged: false,
         }
         .into_proto();
 
@@ -881,7 +911,8 @@ mod tests {
                 partition_expiration_days: None,
             })
         );
-        assert!(request.clone_chain_depth_limit.is_none())
+        assert!(request.clone_chain_depth_limit.is_none());
+        assert_eq!(request.skip_if_unchanged, Some(false));
     }
 
     #[test]
