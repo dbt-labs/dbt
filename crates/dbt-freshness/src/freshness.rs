@@ -1,3 +1,4 @@
+use arrow::array::Array;
 use arrow::compute::{CastOptions, cast_with_options};
 use arrow::{
     self,
@@ -525,40 +526,25 @@ async fn calculate_freshness_common(
     }
 
     // A user provided query/field has to have a timestamp type of any precision
-    // and we convert it to nanoseconds later.
-    let max_loaded_at_column = validate_and_extract_timestamp_column(
+    // and we convert it to nanoseconds.
+    let max_loaded_at = load_timestamp_nanos(
         &batch,
         MAX_LOADED_AT_COLUMN,
+        "max_loaded_at",
         node,
         error_message,
         io_args,
         warnings,
     )?;
-
-    let snapshotted_at = validate_and_extract_timestamp_column(
+    let snapshotted_at = load_timestamp_nanos(
         &batch,
         SNAPSHOTTED_AT_COLUMN,
+        "snapshotted_at",
         node,
         error_message,
         io_args,
         warnings,
     )?;
-
-    let max_loaded_at = cast_with_options(
-        max_loaded_at_column.as_ref(),
-        &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
-        &STRICT_CAST,
-    )?
-    .as_primitive::<TimestampNanosecondType>()
-    .value(0);
-
-    let snapshotted_at = cast_with_options(
-        snapshotted_at.as_ref(),
-        &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
-        &STRICT_CAST,
-    )?
-    .as_primitive::<TimestampNanosecondType>()
-    .value(0);
 
     let age = (snapshotted_at - max_loaded_at) / 1_000_000_000;
     let result = FreshnessResult::from(
@@ -1202,6 +1188,60 @@ fn collect_relations(
     all_relations.retain(|r| seen.insert(r.semantic_fqn()));
 
     Ok((all_relations, name_map))
+}
+
+/// Validates that `column_index` of the one-row freshness `batch` is a timestamp and
+/// returns its value in nanoseconds (UTC), failing if it is NULL.
+fn load_timestamp_nanos(
+    batch: &arrow::record_batch::RecordBatch,
+    column_index: usize,
+    column_name: &str,
+    node: &dyn FreshnessNodeRef,
+    error_message: &str,
+    io_args: &IoArgs,
+    warnings: &mut Vec<FsError>,
+) -> FsResult<i64> {
+    let column = validate_and_extract_timestamp_column(
+        batch,
+        column_index,
+        node,
+        error_message,
+        io_args,
+        warnings,
+    )?;
+    extract_non_null_nanos(column.as_ref(), column_name, node, error_message, io_args)
+}
+
+/// Casts a one-row timestamp column to nanoseconds (UTC) and returns its value.
+///
+/// `PrimitiveArray::value` ignores the null bitmap, so a SQL `NULL` (e.g.
+/// `MAX(loaded_at_field)` over an empty table) would silently read as `0`, the Unix
+/// epoch, and be reported as decades of staleness. Reject it explicitly instead.
+fn extract_non_null_nanos(
+    column: &dyn Array,
+    column_name: &str,
+    node: &dyn FreshnessNodeRef,
+    error_message: &str,
+    io_args: &IoArgs,
+) -> FsResult<i64> {
+    let nanos = cast_with_options(
+        column,
+        &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+        &STRICT_CAST,
+    )?;
+    let nanos = nanos.as_primitive::<TimestampNanosecondType>();
+    if nanos.is_null(0) {
+        return err!(
+            code => ErrorCode::FreshnessLoadedAtNull,
+            loc => node.get_node_path(NodePathKind::Definition, io_args.in_dir.as_path(), io_args.out_dir.as_path()).into_owned(),
+            "{} '{}' {} returned NULL for {}, so freshness cannot be determined (the table may have no rows)",
+            node.kind_label(),
+            node.common().unique_id,
+            error_message,
+            column_name
+        );
+    }
+    Ok(nanos.value(0))
 }
 
 // Helper function to validate and extract timestamp column
@@ -2315,6 +2355,129 @@ mod tests {
         node.__source_attr__.loaded_at_field = Some(String::new());
         node.__source_attr__.loaded_at_query = Some(String::new());
         assert!(!collects_freshness_during_build(&node));
+    }
+
+    fn extract_nanos_from_micros(values: Vec<Option<i64>>) -> FsResult<i64> {
+        use arrow::array::TimestampMicrosecondArray;
+        let column = TimestampMicrosecondArray::from(values).with_timezone("UTC");
+        let node = source_with_freshness(None);
+        extract_non_null_nanos(
+            &column,
+            "max_loaded_at",
+            &node,
+            "loaded_at_field",
+            &IoArgs::default(),
+        )
+    }
+
+    #[test]
+    fn extract_non_null_nanos_rejects_null_instead_of_reading_unix_epoch() {
+        // `MAX(loaded_at_field)` over an empty table is a NULL timestamp; reading it with
+        // `.value(0)` used to yield 0 (1970-01-01) and a bogus ~56 year staleness.
+        let err = extract_nanos_from_micros(vec![None]).unwrap_err();
+        assert_eq!(err.code, ErrorCode::FreshnessLoadedAtNull);
+        assert!(
+            err.to_string().contains("freshness cannot be determined"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_non_null_nanos_converts_present_value_to_nanoseconds() {
+        assert_eq!(
+            extract_nanos_from_micros(vec![Some(1_500_000)]).unwrap(),
+            1_500_000_000
+        );
+    }
+
+    /// A one-row `(max_loaded_at, snapshotted_at)` batch shaped like the freshness query result.
+    fn freshness_batch(
+        max_loaded_at: Option<i64>,
+        snapshotted_at: Option<i64>,
+    ) -> arrow::record_batch::RecordBatch {
+        use arrow::array::TimestampMicrosecondArray;
+        let column = |value: Option<i64>| -> arrow::array::ArrayRef {
+            Arc::new(TimestampMicrosecondArray::from(vec![value]).with_timezone("UTC"))
+        };
+        arrow::record_batch::RecordBatch::try_from_iter(vec![
+            ("max_loaded_at", column(max_loaded_at)),
+            ("snapshotted_at", column(snapshotted_at)),
+        ])
+        .unwrap()
+    }
+
+    fn load_column_nanos(
+        batch: &arrow::record_batch::RecordBatch,
+        column_index: usize,
+        column_name: &str,
+        warnings: &mut Vec<FsError>,
+    ) -> FsResult<i64> {
+        let node = metadata_source("my_source");
+        load_timestamp_nanos(
+            batch,
+            column_index,
+            column_name,
+            &node,
+            "loaded_at_field",
+            &IoArgs::default(),
+            warnings,
+        )
+    }
+
+    #[test]
+    fn load_timestamp_nanos_rejects_null_max_loaded_at() {
+        let batch = freshness_batch(None, Some(2_000_000));
+        let err = load_column_nanos(
+            &batch,
+            MAX_LOADED_AT_COLUMN,
+            "max_loaded_at",
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::FreshnessLoadedAtNull);
+        assert!(
+            err.to_string().contains("returned NULL for max_loaded_at"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_timestamp_nanos_rejects_null_snapshotted_at() {
+        let batch = freshness_batch(Some(1_000_000), None);
+        let err = load_column_nanos(
+            &batch,
+            SNAPSHOTTED_AT_COLUMN,
+            "snapshotted_at",
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::FreshnessLoadedAtNull);
+        assert!(
+            err.to_string().contains("returned NULL for snapshotted_at"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_timestamp_nanos_reads_both_columns_as_nanoseconds() {
+        let batch = freshness_batch(Some(1_000_000), Some(3_000_000));
+        let mut warnings = Vec::new();
+        assert_eq!(
+            load_column_nanos(&batch, MAX_LOADED_AT_COLUMN, "max_loaded_at", &mut warnings)
+                .unwrap(),
+            1_000_000_000
+        );
+        assert_eq!(
+            load_column_nanos(
+                &batch,
+                SNAPSHOTTED_AT_COLUMN,
+                "snapshotted_at",
+                &mut warnings
+            )
+            .unwrap(),
+            3_000_000_000
+        );
+        assert!(warnings.is_empty());
     }
 
     #[test]

@@ -197,6 +197,9 @@ pub enum ErrorCode {
     /// the body), and analysis could not bind its body to infer one, so calls
     /// to it cannot be typed.
     FunctionReturnTypeNotInferred = 1167,
+    /// A freshness query returned NULL for `max_loaded_at` or `snapshotted_at`
+    /// (e.g. `MAX(loaded_at_field)` over an empty table), so no age can be computed.
+    FreshnessLoadedAtNull = 1168,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
