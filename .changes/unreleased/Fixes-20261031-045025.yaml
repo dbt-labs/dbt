@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix SQL Server full-refresh identity, delete+insert, nullability, snapshot quoting, and CTE schema probing.
+time: 2026-10-31T04:50:25.069611159Z
+custom:
+    author: ""
+    issue: "15714"
+    project: dbt-core

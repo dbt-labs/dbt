@@ -2570,6 +2570,7 @@ impl Adapter {
                     | AdapterType::Postgres
                     | AdapterType::Salesforce
                     | AdapterType::Fabric
+                    | AdapterType::SqlServer
                     | AdapterType::ClickHouse
                     | AdapterType::Exasol
                     | AdapterType::Athena
@@ -2601,6 +2602,7 @@ impl Adapter {
                 | AdapterType::Postgres
                 | AdapterType::Salesforce
                 | AdapterType::Fabric
+                | AdapterType::SqlServer
                 | AdapterType::ClickHouse
                 | AdapterType::Exasol
                 | AdapterType::Athena

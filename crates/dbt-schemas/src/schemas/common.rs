@@ -1098,6 +1098,14 @@ pub fn constraint_support(
         (Fabric, ForeignKey) => Enforced,
         (Fabric, Custom) => NotSupported,
 
+        // SqlServer
+        (SqlServer, Check) => Enforced,
+        (SqlServer, NotNull) => Enforced,
+        (SqlServer, Unique) => Enforced,
+        (SqlServer, PrimaryKey) => Enforced,
+        (SqlServer, ForeignKey) => Enforced,
+        (SqlServer, Custom) => NotSupported,
+
         // Exasol (verified on Exasol 8)
         (Exasol, NotNull) => Enforced,
         (Exasol, PrimaryKey) => Enforced,

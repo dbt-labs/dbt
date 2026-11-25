@@ -31,6 +31,7 @@ use dbt_jinja_utils::phases::run::build_run_node_context;
 use dbt_jinja_utils::serde::single_expression_body;
 use dbt_jinja_utils::utils::macro_spans_to_macro_span_vec;
 use dbt_jinja_utils::utils::render_sql;
+use dbt_jinja_utils::utils::splice_ctes_into_leading_with;
 use dbt_jinja_utils::{ConfiguredVar, env_var};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schema_store::{CanonicalFqn, CanonicalIdentifier, SchemaStoreTrait};
@@ -1046,6 +1047,16 @@ fn build_unit_test_schema_probe(
         .join(",");
     let query_sql = if ctes.is_empty() {
         schema_sql.clone()
+    } else if adapter_type == AdapterType::SqlServer {
+        if preserve_recorded_sql {
+            sqlserver::prefix_ctes(&ctes, &schema_sql)
+        } else if let Some(sql) = splice_ctes_into_leading_with(&schema_sql, &ctes) {
+            sql
+        } else {
+            let body =
+                DefaultStmtSplitter.strip_trailing_statement_terminator(&schema_sql, adapter_type);
+            format!("WITH {ctes} SELECT * FROM (\n{body}\n) AS __dbt_schema_probe")
+        }
     } else if preserve_recorded_sql {
         format!("WITH {ctes} {schema_sql}")
     } else {
@@ -1298,12 +1309,20 @@ fn infer_unit_test_expected_schema(
             )
         })?;
 
-        let mut args = vec![Value::from(schema_sql)];
-        if ctes.is_empty() {
-            args.push(Value::from(()));
+        let args = if ctes.is_empty() {
+            vec![Value::from(schema_sql), Value::from(())]
+        } else if unit_test.node_adapter() == AdapterType::SqlServer {
+            // sqlserver__get_empty_subquery_sql drops the select_sql_header.
+            vec![
+                Value::from(sqlserver::prefix_ctes(&ctes, &schema_sql)),
+                Value::from(()),
+            ]
         } else {
-            args.push(Value::from(format!("WITH {ctes} ")));
-        }
+            vec![
+                Value::from(schema_sql),
+                Value::from(format!("WITH {ctes} ")),
+            ]
+        };
 
         let columns_as_value = func.call(&state, &args, &[]).map_err(|e| {
             fs_err!(
@@ -2479,7 +2498,12 @@ fn render_unit_test(
     let actual_table = format!("{model_alias}_actual");
     let fqn_actual = format_fqn(type_ops, &model_catalog, &model_schema, &actual_table);
 
-    subqueries.push((fqn_actual.clone(), raw_sql));
+    let actual_sql = if adapter_type == AdapterType::SqlServer {
+        sqlserver::mark_model(&raw_sql)
+    } else {
+        raw_sql
+    };
+    subqueries.push((fqn_actual.clone(), actual_sql));
 
     // now build the final query
     let mut query_str = String::new();
@@ -2578,6 +2602,14 @@ WITH
     // todo: use Jinja to render all refs, here we just replace the fqns with the actual values
     let rendered_sql =
         replace_subquery_refs_with_cte_names(adapter_type, type_ops, rendered_sql, &subqueries);
+    let rendered_sql = if adapter_type == AdapterType::SqlServer {
+        sqlserver::lift_model_ctes(
+            &rendered_sql,
+            &create_cte_name_from_fqn(adapter_type, type_ops, &fqn_actual),
+        )?
+    } else {
+        rendered_sql
+    };
 
     stdfs::create_dir_all(absolute_path_unit_test.parent().unwrap())?;
     stdfs::write(&absolute_path_unit_test, &rendered_sql)?;
@@ -3405,9 +3437,14 @@ fn create_select_with_union_all(
                 }
             })
             .collect::<FsResult<Vec<_>>>()?;
-        // Use WHERE FALSE to ensure 0 rows are returned while preserving the schema
+        // `WHERE FALSE` is a syntax error in T-SQL, which has no boolean literal;
+        // `1 = 0` is a boolean expression in every dialect and returns no rows.
+        let empty_predicate = match adapter_type {
+            AdapterType::Fabric | AdapterType::SqlServer => "1 = 0",
+            _ => "FALSE",
+        };
         return Ok(format!(
-            "SELECT {}{} WHERE FALSE",
+            "SELECT {}{} WHERE {empty_predicate}",
             null_casts.join(", "),
             constant_column
         ));
@@ -3660,6 +3697,8 @@ fn get_fixture_rows(
         )),
     }
 }
+
+mod sqlserver;
 
 #[cfg(test)]
 mod tests {
@@ -6168,6 +6207,20 @@ mod tests {
         assert_contains!(result, "WHERE FALSE"); // Empty case returns 0 rows
         assert!(!result.contains("UNION ALL")); // Empty case shouldn't have UNION ALL
         assert!(!result.contains("VALUES")); // No VALUES clause
+
+        // T-SQL has no boolean literal, so the same shape has to use a predicate
+        // SQL Server can parse.
+        let tsql = create_select_with_union_all(
+            AdapterType::SqlServer,
+            &DefaultTypeOps::new(AdapterType::SqlServer),
+            vec![],
+            &schema,
+            &columns,
+            "",
+        )
+        .unwrap();
+        assert_contains!(tsql, "WHERE 1 = 0");
+        assert!(!tsql.contains("WHERE FALSE"));
     }
 
     #[test]

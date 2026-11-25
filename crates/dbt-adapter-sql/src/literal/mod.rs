@@ -25,7 +25,8 @@ pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
         | AdapterType::Dremio
         | AdapterType::Oracle
         | AdapterType::LakeCompute
-        | AdapterType::MotherDuck => s.replace('\'', "''"),
+        | AdapterType::MotherDuck
+        | AdapterType::SqlServer => s.replace('\'', "''"),
     }
 }
 

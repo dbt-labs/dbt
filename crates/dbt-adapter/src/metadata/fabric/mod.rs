@@ -63,7 +63,8 @@ pub fn list_relations(
         } else {
             None
         };
-        let relation = Arc::new(Relation::new_fabric(
+        let relation = Arc::new(Relation::new_tsql(
+            AdapterType::Fabric,
             Some(database_name.value(i).to_string()),
             Some(schema_name.value(i).to_string()),
             Some(table_name.value(i).to_string()),

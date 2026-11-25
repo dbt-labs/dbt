@@ -29,7 +29,7 @@ impl ColumnBuilder {
             Redshift => Ok(Self::build_redshift(field, type_ops)),
             Postgres | Salesforce => Self::build_postgres_like(field, type_ops),
             DuckDB | LakeCompute | MotherDuck => Self::build_duckdb(field, type_ops),
-            Fabric => Ok(Self::build_fabric(field, type_ops)),
+            Fabric | SqlServer => Ok(Self::build_tsql(self.adapter_type, field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
             Exasol => Ok(Self::build_exasol(field, type_ops)),
             Starburst => todo!("Starburst"),
@@ -141,6 +141,14 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
+            SqlServer => Column::new_boxed(
+                SqlServer,
+                name,
+                dtype,
+                char_size,
+                numeric_precision,
+                numeric_scale,
+            ),
         }
     }
 
@@ -246,12 +254,18 @@ impl ColumnBuilder {
         ))
     }
 
-    fn build_fabric(field: &FieldRef, type_ops: &dyn TypeOps) -> Box<Column> {
-        use AdapterType::Fabric;
+    /// Fabric and SQL Server are the same T-SQL dialect (`Backend::SQLServer`),
+    /// so one builder serves both; only the adapter recorded on the column and
+    /// the type-name lookup differ.
+    fn build_tsql(
+        adapter_type: AdapterType,
+        field: &FieldRef,
+        type_ops: &dyn TypeOps,
+    ) -> Box<Column> {
         let data_type = field.data_type();
-        let char_size = sql_types::var_size(Fabric, data_type);
+        let char_size = sql_types::var_size(adapter_type, data_type);
         let (numeric_precision, numeric_scale) = {
-            let precision_scale = sql_types::numeric_precision_scale(Fabric, data_type)
+            let precision_scale = sql_types::numeric_precision_scale(adapter_type, data_type)
                 .ok()
                 .flatten();
             match precision_scale {
@@ -270,7 +284,7 @@ impl ColumnBuilder {
         }
 
         Column::new_boxed(
-            Fabric,
+            adapter_type,
             field.name().to_string(),
             type_name_or_formatted,
             char_size.map(|p| p as u32),

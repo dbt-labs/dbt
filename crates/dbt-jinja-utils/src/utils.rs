@@ -17,15 +17,16 @@ use minijinja::{
 };
 use regex::Regex;
 use serde::Serialize;
-use sqlparser::dialect::GenericDialect;
+use sqlparser::dialect::{Dialect, GenericDialect};
 use sqlparser::keywords::Keyword;
-use sqlparser::tokenizer::{Location, Token, Tokenizer};
+use sqlparser::tokenizer::{Location, Token, TokenWithSpan, Tokenizer};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::{
     collections::{HashMap, HashSet},
+    iter::Peekable,
     path::Path,
     sync::Mutex,
 };
@@ -266,6 +267,99 @@ struct Insertion {
     added_bytes: u32,
     added_cols: u32,
     trailing_cols: u32,
+}
+
+/// Splices `ctes` (a comma-separated `name as (...)` list) into `sql`'s leading
+/// `WITH` chain. Returns `None` when `sql` doesn't start with `WITH`.
+pub fn splice_ctes_into_leading_with(sql: &str, ctes: &str) -> Option<String> {
+    inject_ctes_into_existing_with(sql, ctes).map(|(sql, _)| sql)
+}
+
+/// Splits a query that starts with `WITH` into its CTE list (`a as (...), b as (...)`,
+/// without the `WITH`) and the statement that follows it. Returns `None` when
+/// `sql` doesn't start with `WITH`, or its CTE list can't be walked with
+/// `dialect`'s tokenizer.
+pub fn split_leading_ctes<'a>(sql: &'a str, dialect: &dyn Dialect) -> Option<(&'a str, &'a str)> {
+    let mut tokens = Vec::new();
+    // A later token may be unsupported by the dialect; the CTE list only needs
+    // the tokens before it.
+    let _ = Tokenizer::new(dialect, sql).tokenize_with_location_into_buf(&mut tokens);
+    let mut tokens = tokens
+        .iter()
+        .filter(|token| !matches!(token.token, Token::Whitespace(_)))
+        .peekable();
+
+    let list_start = after_leading_with(sql, tokens.next()?)?;
+    let list_end = cte_list_end(sql, &mut tokens)?;
+    Some((sql[list_start..list_end].trim(), &sql[list_end..]))
+}
+
+/// The byte offset just past the `WITH` that opens `sql`, or `None` when the
+/// first token is something else.
+fn after_leading_with(sql: &str, token: &TokenWithSpan) -> Option<usize> {
+    match &token.token {
+        Token::Word(word) if word.keyword == Keyword::WITH => {
+            byte_offset_at_location(sql, token.span.end)
+        }
+        _ => None,
+    }
+}
+
+/// Walks the `name as (...)` list and returns the offset just past the last
+/// CTE body.
+fn cte_list_end<'a, I>(sql: &'a str, tokens: &mut Peekable<I>) -> Option<usize>
+where
+    I: Iterator<Item = &'a TokenWithSpan>,
+{
+    loop {
+        skip_cte_head(tokens)?;
+        let close = skip_cte_body(tokens)?;
+        let Some(token) = tokens.peek() else {
+            return byte_offset_at_location(sql, close.span.end);
+        };
+        if !matches!(token.token, Token::Comma) {
+            return byte_offset_at_location(sql, close.span.end);
+        }
+        tokens.next();
+    }
+}
+
+/// Skips a CTE's name and its optional column list, up to and including the
+/// `AS` that opens its body.
+fn skip_cte_head<'a>(tokens: &mut impl Iterator<Item = &'a TokenWithSpan>) -> Option<()> {
+    let mut depth = 0i32;
+    loop {
+        match &tokens.next()?.token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth -= 1,
+            Token::Word(word) if depth == 0 && word.keyword == Keyword::AS => return Some(()),
+            _ => {}
+        }
+    }
+}
+
+/// Skips a CTE body, whose opening parenthesis is the next token, and returns
+/// its closing parenthesis.
+fn skip_cte_body<'a>(
+    tokens: &mut impl Iterator<Item = &'a TokenWithSpan>,
+) -> Option<&'a TokenWithSpan> {
+    if !matches!(tokens.next()?.token, Token::LParen) {
+        return None;
+    }
+    let mut depth = 1;
+    loop {
+        let token = tokens.next()?;
+        match token.token {
+            Token::LParen => depth += 1,
+            Token::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(token);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Uses token locations to splice ephemeral CTEs into a leading WITH chain
@@ -894,10 +988,12 @@ mod tests {
 
     use crate::listener::DefaultRenderingEventListener;
 
+    use sqlparser::dialect::MsSqlDialect;
+
     use super::{
         find_macro_template, inject_and_persist_ephemeral_models, inject_ctes_into_existing_with,
         macro_spans_to_macro_span_vec, raw_source_spans_to_macro_span_vec,
-        shift_macro_spans_after_insertion,
+        shift_macro_spans_after_insertion, split_leading_ctes,
     };
     use crate::jinja_environment::JinjaEnv;
 
@@ -914,6 +1010,26 @@ mod tests {
 
         assert!(find_macro_template(&env, "bad_macro", "root", "current").is_err());
         super::clear_template_cache();
+    }
+
+    #[test]
+    fn splits_leading_ctes_from_the_statement() {
+        let sql = "-- note\nwith [a b] (x, y) as (select 1, ')' ), b as (select (x) from [a b])\nselect * from b";
+        let (ctes, body) = split_leading_ctes(sql, &MsSqlDialect {}).expect("leading WITH");
+        assert_eq!(
+            ctes,
+            "[a b] (x, y) as (select 1, ')' ), b as (select (x) from [a b])"
+        );
+        assert_eq!(body, "\nselect * from b");
+    }
+
+    #[test]
+    fn split_leading_ctes_needs_a_leading_with() {
+        assert_eq!(split_leading_ctes("select 1", &MsSqlDialect {}), None);
+        assert_eq!(
+            split_leading_ctes("with a as select 1", &MsSqlDialect {}),
+            None
+        );
     }
 
     #[test]
