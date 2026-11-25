@@ -1,0 +1,7 @@
+kind: Fixes
+body: Warn when an exposure's `depends_on` entry calls neither `ref()`, `source()`
+  nor `metric()`, instead of silently leaving the exposure without that parent
+time: 2026-09-23T02:45:00.000000-03:00
+custom:
+    Author: Rodrigo-Palma
+    Issue: "16380"

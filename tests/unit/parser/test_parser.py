@@ -27,7 +27,7 @@ from dbt.contracts.graph.nodes import (
     SnapshotNode,
     UnpatchedSourceDefinition,
 )
-from dbt.events.types import FreshnessConfigProblem
+from dbt.events.types import FreshnessConfigProblem, InvalidValueForField
 from dbt.exceptions import CompilationError, ParsingError, SchemaConfigError
 from dbt.flags import set_from_args
 from dbt.node_types import NodeType
@@ -2159,3 +2159,66 @@ class AnalysisParserTest(BaseParserTest):
         self.assertEqual(
             self.parser.manifest.files[file_id].nodes, ["analysis.snowplow.analysis_1"]
         )
+
+
+EXPOSURE_WITH_UNRECOGNIZED_DEPENDS_ON = """
+version: 2
+exposures:
+  - name: dashboard
+    type: dashboard
+    owner:
+      name: someone
+      email: someone@example.com
+    depends_on:
+      - nonsense('anything_at_all')
+      - my_model
+"""
+
+
+EXPOSURE_WITH_SUPPORTED_DEPENDS_ON = """
+version: 2
+exposures:
+  - name: dashboard
+    type: dashboard
+    owner:
+      name: someone
+      email: someone@example.com
+    depends_on:
+      - ref('my_model')
+      - source('my_source', 'my_table')
+"""
+
+
+class SchemaParserExposureTest(SchemaParserTest):
+    def catch_invalid_value_events(self) -> EventCatcher:
+        catcher = EventCatcher(event_to_catch=InvalidValueForField)
+        add_callback_to_manager(catcher.catch)
+        return catcher
+
+    def parse_exposures(self, exposure_yml: str) -> None:
+        block = self.file_block_for(exposure_yml, "test_one.yml")
+        self.parser.parse_file(block, yaml.safe_load(exposure_yml))
+
+    def test_unrecognized_depends_on_entry_warns(self):
+        """An entry that calls neither ref(), source() nor metric() is not a dependency."""
+        catcher = self.catch_invalid_value_events()
+
+        self.parse_exposures(EXPOSURE_WITH_UNRECOGNIZED_DEPENDS_ON)
+
+        assert len(catcher.caught_events) == 2
+        caught_values = [event.data.field_value for event in catcher.caught_events]
+        assert caught_values == ["nonsense('anything_at_all')", "my_model"]
+        exposure = self.parser.manifest.exposures["exposure.snowplow.dashboard"]
+        assert exposure.refs == []
+        assert exposure.sources == []
+
+    def test_supported_depends_on_entries_do_not_warn(self):
+        """ref() and source() entries are dependencies and must stay silent."""
+        catcher = self.catch_invalid_value_events()
+
+        self.parse_exposures(EXPOSURE_WITH_SUPPORTED_DEPENDS_ON)
+
+        assert catcher.caught_events == []
+        exposure = self.parser.manifest.exposures["exposure.snowplow.dashboard"]
+        assert [ref.name for ref in exposure.refs] == ["my_model"]
+        assert exposure.sources == [["my_source", "my_table"]]
