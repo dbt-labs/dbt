@@ -12,7 +12,12 @@ import dbt.exceptions
 from dbt import deprecations
 from dbt.adapters.contracts.connection import DEFAULT_QUERY_COMMENT, QueryComment
 from dbt.adapters.factory import load_plugin
-from dbt.config.project import Project, _get_required_version, read_project_flags
+from dbt.config.project import (
+    Project,
+    _all_source_paths,
+    _get_required_version,
+    read_project_flags,
+)
 from dbt.constants import DEPENDENCIES_FILE_NAME
 from dbt.contracts.project import GitPackage, LocalPackage, PackageConfig, ProjectFlags
 from dbt.deprecations import (
@@ -38,10 +43,29 @@ from tests.unit.config import (
 
 class TestProjectMethods:
     def test_all_source_paths(self, project: Project):
-        assert (
-            project.all_source_paths.sort()
-            == ["models", "seeds", "snapshots", "analyses", "macros", "tests"].sort()
-        )
+        assert project.all_source_paths == [
+            "models",
+            "seeds",
+            "snapshots",
+            "analyses",
+            "macros",
+            "tests",
+            "functions",
+        ]
+
+    # https://github.com/dbt-labs/dbt/issues/16507
+    # Nested schema files take their fqn from the first source path containing them,
+    # so the order must follow the config rather than set iteration order.
+    @pytest.mark.parametrize(
+        "test_paths,expected",
+        [
+            (["tests", "tests/dbt"], ["models", "tests", "tests/dbt"]),
+            (["tests/dbt", "tests"], ["models", "tests/dbt", "tests"]),
+            (["tests/dbt/", "tests", "tests/dbt"], ["models", "tests/dbt", "tests"]),
+        ],
+    )
+    def test_all_source_paths_keeps_config_order(self, test_paths, expected):
+        assert _all_source_paths(["models"], test_paths) == expected
 
     def test_generic_test_paths(self, project: Project):
         assert project.generic_test_paths == ["tests/generic"]
