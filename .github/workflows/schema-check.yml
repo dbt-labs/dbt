@@ -41,19 +41,19 @@ jobs:
 
     steps:
       - name: Set up Python
-        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # actions/setup-python@v6
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # actions/setup-python@v6
         with:
           python-version: "3.10"
 
       - name: Checkout dbt repo
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           path: ${{ env.DBT_REPO_DIRECTORY }}
           ref: ${{ inputs.target_branch }}
 
       - name: Check for changes in core/dbt/artifacts
         # https://github.com/marketplace/actions/paths-changes-filter
-        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # dorny/paths-filter@v3
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # dorny/paths-filter@v3
         id: check_artifact_changes
         with:
           filters: |
@@ -69,14 +69,14 @@ jobs:
 
       - name: Checkout schemas.getdbt.com repo
         if: steps.check_artifact_changes.outputs.artifacts_changed == 'true'
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v4
         with:
           repository: dbt-labs/schemas.getdbt.com
           ref: "main"
           path: ${{ env.SCHEMA_REPO_DIRECTORY }}
 
       - name: "Install hatch"
-        uses: pypa/hatch@257e27e51a6a5616ed08a39a408a21c35c9931bc # pypa/hatch@install
+        uses: pypa/hatch@f647ed70d49adb885f53a27d1c7f5bdaeacf2c60 # pypa/hatch@install
 
       - name: Generate current schema
         if: steps.check_artifact_changes.outputs.artifacts_changed == 'true'
@@ -96,7 +96,7 @@ jobs:
           git diff -I='*[0-9]{4}-[0-9]{2}-[0-9]{2}' -I='*[0-9]+\.[0-9]+\.[0-9]+' --exit-code > ${{ env.SCHEMA_DIFF_ARTIFACT }}
 
       - name: Upload schema diff
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7.0.2
         if: ${{ failure() && steps.check_artifact_changes.outputs.artifacts_changed == 'true' }}
         with:
           name: "schema_changes.txt"

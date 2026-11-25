@@ -1,0 +1,6 @@
+kind: "Dependencies"
+body: "chore(deps): bump the actions group across 2 directories with 12 updates"
+time: 2026-11-20T07:22:08.00000Z
+custom:
+  Author: dependabot[bot]
+  Issue: 17248
