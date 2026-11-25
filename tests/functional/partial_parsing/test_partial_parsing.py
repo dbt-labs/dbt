@@ -686,6 +686,72 @@ class TestSnapshots:
         assert len(results) == 1
 
 
+yaml_snapshot_where_macro_sql = """
+{% macro yaml_snapshot_where() %}{{ return('1 = 1') }}{% endmacro %}
+"""
+
+yaml_snapshot_where_macro_edited_sql = """
+{% macro yaml_snapshot_where() %}{{ return('1 = 1') }}{% endmacro %}
+
+{% macro yaml_snapshot_unused() %}{{ return(1) }}{% endmacro %}
+"""
+
+yaml_snapshot_has_rows_test_sql = """
+{% test yaml_snapshot_has_rows(model) %}
+select 1 from {{ model }} where {{ yaml_snapshot_where() }} having count(*) = 0
+{% endtest %}
+"""
+
+yaml_snapshot_with_test_yml = """
+snapshots:
+  - name: orders_yaml_snapshot
+    relation: ref('orders')
+    config:
+      unique_key: id
+      strategy: check
+      check_cols: all
+    data_tests:
+      - yaml_snapshot_has_rows
+"""
+
+
+class TestYamlSnapshotGenericTestMacroChange:
+    """Changing a macro used by a generic test on a snapshot defined in YAML
+    must parse the snapshot again, not drop it."""
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {"orders.sql": orders_sql}
+
+    @pytest.fixture(scope="class")
+    def snapshots(self):
+        return {"snapshots.yml": yaml_snapshot_with_test_yml}
+
+    @pytest.fixture(scope="class")
+    def macros(self):
+        return {
+            "yaml_snapshot_where.sql": yaml_snapshot_where_macro_sql,
+            "yaml_snapshot_has_rows.sql": yaml_snapshot_has_rows_test_sql,
+        }
+
+    def test_yaml_snapshot_generic_test_macro_change(self, project):
+        run_dbt(["parse"])
+        write_file(
+            yaml_snapshot_where_macro_edited_sql,
+            project.project_root,
+            "macros",
+            "yaml_snapshot_where.sql",
+        )
+
+        run_dbt(["--partial-parse", "parse"])
+        manifest = get_manifest(project.project_root)
+
+        assert "snapshot.test.orders_yaml_snapshot" in manifest.nodes
+        test_ids = [uid for uid in manifest.nodes if uid.startswith("test.")]
+        assert len(test_ids) == 1
+        assert manifest.nodes[test_ids[0]].attached_node == "snapshot.test.orders_yaml_snapshot"
+
+
 class TestGenericTests:
     @pytest.fixture(scope="class")
     def models(self):

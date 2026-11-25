@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix partial parsing dropping a snapshot defined in YAML when a macro used by
+  its generic test changes
+time: 2026-11-25T21:48:11.190149+09:00
+custom:
+    Author: permitroot
+    Issue: "17325"
