@@ -81,7 +81,7 @@ jobs:
       - name: Compute installer URL and release date
         shell: bash
         run: |
-          echo "INSTALLER_URL=https://github.com/dbt-labs/dbt-core/releases/download/v${VERSION}/dbt-core-${VERSION}-x86_64-pc-windows-msvc.zip" >> "$GITHUB_ENV"
+          echo "INSTALLER_URL=https://github.com/dbt-labs/dbt/releases/download/v${VERSION}/dbt-core-${VERSION}-x86_64-pc-windows-msvc.zip" >> "$GITHUB_ENV"
           echo "RELEASE_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
 
       - name: Install wingetcreate

@@ -18,6 +18,6 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://getdbt.com"
-Repository = "https://github.com/dbt-labs/dbt-core"
-Issues = "https://github.com/dbt-labs/dbt-core/issues"
+Repository = "https://github.com/dbt-labs/dbt"
+Issues = "https://github.com/dbt-labs/dbt/issues"
 Documentation = "https://docs.getdbt.com"

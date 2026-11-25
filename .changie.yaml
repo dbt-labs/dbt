@@ -29,7 +29,7 @@ changeFormat: |-
   {{- if eq $.Custom.project "dbt-core" }}
   {{- range $issueNbr := splitList " " $.Custom.issue }}
     {{- if $issueNbr }}
-      {{- $changeLink := "[#nbr](https://github.com/dbt-labs/dbt-core/issues/nbr)" | replace "nbr" $issueNbr }}
+      {{- $changeLink := "[#nbr](https://github.com/dbt-labs/dbt/issues/nbr)" | replace "nbr" $issueNbr }}
       {{- $IssueList = append $IssueList $changeLink  }}
     {{- end -}}
   {{- end -}}
@@ -75,7 +75,7 @@ footerFormat: |
         {{- if eq $change.Custom.project "dbt-core" }}
         {{- range $issueNbr := splitList " " $change.Custom.issue }}
           {{- if $issueNbr }}
-            {{- $changeLink := "[#nbr](https://github.com/dbt-labs/dbt-core/issues/nbr)" | replace "nbr" $issueNbr }}
+            {{- $changeLink := "[#nbr](https://github.com/dbt-labs/dbt/issues/nbr)" | replace "nbr" $issueNbr }}
             {{- $IssueList = append $IssueList $changeLink }}
           {{- end }}
         {{- end }}
