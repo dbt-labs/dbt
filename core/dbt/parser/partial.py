@@ -802,15 +802,11 @@ class PartialParsing:
             key_diff = self.get_diff_for(dict_key, saved_yaml_dict, new_yaml_dict)
             if key_diff["changed"]:
                 for elem in key_diff["changed"]:
-                    if dict_key == "snapshots" and "relation" in elem:
-                        self.delete_yaml_snapshot(schema_file, elem)
-                    self.delete_schema_mssa_links(schema_file, dict_key, elem)
+                    self._delete_schema_mssa_entry(schema_file, dict_key, elem)
                     self.merge_patch(schema_file, dict_key, elem, True)
             if key_diff["deleted"]:
                 for elem in key_diff["deleted"]:
-                    if dict_key == "snapshots" and "relation" in elem:
-                        self.delete_yaml_snapshot(schema_file, elem)
-                    self.delete_schema_mssa_links(schema_file, dict_key, elem)
+                    self._delete_schema_mssa_entry(schema_file, dict_key, elem)
             if key_diff["added"]:
                 for elem in key_diff["added"]:
                     if dict_key == "models" and "versions" in elem:
@@ -823,9 +819,7 @@ class PartialParsing:
                         continue
                     elem = self.get_schema_element(new_yaml_dict[dict_key], name)
                     if elem:
-                        if dict_key == "snapshots" and "relation" in elem:
-                            self.delete_yaml_snapshot(schema_file, elem)
-                        self.delete_schema_mssa_links(schema_file, dict_key, elem)
+                        self._delete_schema_mssa_entry(schema_file, dict_key, elem)
                         self.merge_patch(schema_file, dict_key, elem, True)
 
         # sources
@@ -1077,6 +1071,13 @@ class PartialParsing:
             elif unique_id in self.saved_manifest.disabled:
                 self.delete_disabled(unique_id, schema_file.file_id)
                 schema_file.snapshots.remove(unique_id)
+
+    def _delete_schema_mssa_entry(self, schema_file, dict_key, elem) -> None:
+        # A snapshot defined in YAML (with "relation") is created from its schema
+        # entry, so remove it before the entry's patches and tests.
+        if dict_key == "snapshots" and "relation" in elem:
+            self.delete_yaml_snapshot(schema_file, elem)
+        self.delete_schema_mssa_links(schema_file, dict_key, elem)
 
     def delete_schema_source(self, schema_file, source_dict):
         # both patches, tests, and source nodes
