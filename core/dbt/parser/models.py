@@ -470,7 +470,14 @@ class ModelParser(SimpleSQLParser[ModelNode]):
 
         # update the unrendered config with values from the file.
         # values from yaml files are in there already
-        node.unrendered_config.update(dict(statically_parsed["configs"]))
+        unrendered_configs = dict(statically_parsed["configs"])
+        if get_flags().state_modified_compare_more_unrendered_values and isinstance(
+            unrendered_configs.get("grants"), dict
+        ):
+            # update_parsed_node_config already accumulated these literal grants with
+            # project and schema grants. Replacing them here hides inherited changes.
+            unrendered_configs.pop("grants")
+        node.unrendered_config.update(unrendered_configs)
 
         # set refs and sources on the node object
         refs: List[RefArgs] = []
