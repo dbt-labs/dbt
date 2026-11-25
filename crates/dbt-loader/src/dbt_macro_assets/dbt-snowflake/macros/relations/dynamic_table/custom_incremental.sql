@@ -92,6 +92,9 @@
         | replace(default_clause, default_clause ~ ' at(offset => 0)')
         | replace(append_only_clause, append_only_clause ~ ' at(offset => 0)') -%}
 
+    {#- Not `get_column_schema_from_query` for now: on Snowflake its types aren't exact yet (VARCHAR
+        lengths, TIMESTAMP_LTZ/TZ and VARIANT/ARRAY/OBJECT are lost), and a CI DT stores these
+        types in its DDL. Switch to it once it returns exact Snowflake types. -#}
     {%- set tmp_relation = make_temp_relation(relation).incorporate(type='table') -%}
     {% call statement('custom_incremental_discovery') -%}
         {{ create_table_as(True, tmp_relation, 'select * from (\n' ~ discovery_sql ~ '\n) limit 0') }}
