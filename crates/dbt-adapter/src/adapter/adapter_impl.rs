@@ -870,7 +870,10 @@ impl AdapterImpl {
             // execute() call avoids the need for cross-call connection caching.
             //
             // Lake compute: also supports batching
-            Bigquery | DuckDB | LakeCompute => vec![sql],
+            //
+            // ClickHouse: the server rejects multi-statement requests and dbt-clickhouse 1.x
+            // sends every SQL string as one statement, so it is not split here either.
+            Bigquery | DuckDB | LakeCompute | ClickHouse => vec![sql],
             _ => splitter.split(sql, adapter_type),
         };
         // Filter out empty and comment-only statements.

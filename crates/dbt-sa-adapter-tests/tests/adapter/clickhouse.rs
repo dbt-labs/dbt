@@ -220,22 +220,6 @@ async fn adapters_clickhouse_query_comment() -> FsResult<()> {
 }
 
 #[dbt_runtime::test]
-async fn adapters_clickhouse_query_comment_with_split() -> FsResult<()> {
-    run_fs_record_replay_task_seq(
-        env!("CARGO_MANIFEST_DIR"),
-        &FS_RUNNER,
-        current_function_name!(),
-        "tests/data/adapter/query_comment_with_split",
-        AdapterType::ClickHouse.as_ref(),
-        None,
-        &["run"],
-        Some("--static-analysis off".to_string()),
-        &[],
-    )
-    .await
-}
-
-#[dbt_runtime::test]
 async fn adapters_clickhouse_store_failures() -> FsResult<()> {
     run_fs_record_replay_task_seq(
         env!("CARGO_MANIFEST_DIR"),
