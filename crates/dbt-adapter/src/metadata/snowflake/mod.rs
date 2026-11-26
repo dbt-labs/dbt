@@ -2040,6 +2040,17 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
         e.sqlstate() == "42501" || e.sqlstate() == "02000"
     }
 
+    fn stage_last_modified_inner<'a>(
+        &'a self,
+        stages: &'a [StageListing],
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, Option<i64>>> {
+        if stages.is_empty() {
+            return Box::pin(async { Ok(BTreeMap::new()) });
+        }
+        stage_listing::list_stages(&self.adapter, stages.to_vec(), token)
+    }
+
     fn fetch_view_definitions_inner<'a>(
         &'a self,
         relations: &'a [Arc<dyn BaseRelation>],

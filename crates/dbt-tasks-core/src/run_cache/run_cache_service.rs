@@ -82,6 +82,7 @@ use dbt_state::request_builder::{
     values_execution_record_from_submit_request,
 };
 use dbt_state::service_client::RunCacheServiceError;
+use dbt_state::stage::{StageDependency, stage_dependencies};
 use dbt_telemetry::{ExecutionPhase, NodeEvaluated, NodeType};
 
 use crate::run_cache::column_aware::{
@@ -3565,6 +3566,7 @@ async fn build_sql_context(
         &query_dependencies.seen_tables,
         &query_dependencies.parser_seen_relations,
         &query_dependencies.unresolvable_tables,
+        &query_dependencies.stages,
         purpose == SqlContextPurpose::Speculative,
     )
     .await?;
@@ -3964,6 +3966,10 @@ struct CollectedViewQueryDependencies {
     parser_seen_relations: BTreeMap<String, Arc<dyn BaseRelation>>,
     /// A subset of `seen_tables` whose view definition could not be fetched.
     unresolvable_tables: BTreeSet<String>,
+    /// Snowflake named stages the SQL reads, directly or through views, keyed
+    /// by dependency name. Each one is sent as a table, with the last modified
+    /// time of the newest file it reads.
+    stages: BTreeMap<String, StageDependency>,
     metadata_complete: bool,
 }
 
@@ -3973,12 +3979,14 @@ impl CollectedViewQueryDependencies {
         seen_tables: BTreeSet<String>,
         parser_seen_relations: BTreeMap<String, Arc<dyn BaseRelation>>,
         unresolvable_tables: BTreeSet<String>,
+        stages: BTreeMap<String, StageDependency>,
     ) -> Self {
         Self {
             dependencies,
             seen_tables,
             parser_seen_relations,
             unresolvable_tables,
+            stages,
             metadata_complete: true,
         }
     }
@@ -3989,6 +3997,7 @@ impl CollectedViewQueryDependencies {
             seen_tables: BTreeSet::new(),
             parser_seen_relations: BTreeMap::new(),
             unresolvable_tables: BTreeSet::new(),
+            stages: BTreeMap::new(),
             metadata_complete: false,
         }
     }
@@ -4008,6 +4017,7 @@ impl CollectedViewQueryDependencies {
             BTreeSet::new(),
             BTreeMap::new(),
             BTreeSet::new(),
+            BTreeMap::new(),
         )
     }
 }
@@ -4019,6 +4029,7 @@ async fn collect_table_modified_infos(
     leaf_tables: &BTreeSet<String>,
     parser_seen_relations: &BTreeMap<String, Arc<dyn BaseRelation>>,
     unresolvable_tables: &BTreeSet<String>,
+    stages: &BTreeMap<String, StageDependency>,
     speculative: bool,
 ) -> FsResult<CollectedTableModifiedInfos> {
     let mut relations = BTreeMap::new();
@@ -4121,6 +4132,21 @@ async fn collect_table_modified_infos(
             table_infos.push(TableModifiedInfo {
                 name,
                 last_modified_epoch,
+                kind: DependencyKind::Unknown as i32,
+            });
+        }
+    }
+
+    // A stage without a last modified time (no files, or `LIST` failed) is
+    // sent without one, which the service treats as modified now.
+    if !target_only {
+        if !speculative {
+            prefetch_stage_last_modified_epochs(ctx, stages).await;
+        }
+        for name in stages.keys() {
+            table_infos.push(TableModifiedInfo {
+                name: name.clone(),
+                last_modified_epoch: last_modified_epoch_for_relation(ctx, name).await?,
                 kind: DependencyKind::Unknown as i32,
             });
         }
@@ -4492,6 +4518,64 @@ async fn refresh_last_modified_epoch_for_relation(
         cache.remove_last_modified_epoch_error(&lookup_name);
     }
     result
+}
+
+/// Caches the last modified time of each stage not cached yet: that of the
+/// newest file its `LIST` returns, or `None` when there is no file or `LIST`
+/// fails. Like a table's, it is cached for the run, so a stage read by many
+/// models is listed once.
+async fn prefetch_stage_last_modified_epochs(
+    ctx: &TaskRunnerCtx,
+    stages: &BTreeMap<String, StageDependency>,
+) {
+    let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+    let misses = stages
+        .values()
+        .filter(|stage| cache.last_modified_epoch(&stage.name).is_none())
+        .collect::<Vec<_>>();
+    if misses.is_empty() {
+        return;
+    }
+    let Some(adapter) = ctx.env.get_adapter_ref() else {
+        return;
+    };
+    let Some(metadata_adapter) = adapter.metadata_adapter() else {
+        return;
+    };
+    let token = adapter.cancellation_token();
+    let metadata_adapter = metadata_adapter.as_ref();
+    let lookups = misses.into_iter().map(|stage| {
+        let listing = [stage.listing()];
+        let token = token.clone();
+        async move {
+            let listing = &listing;
+            let result = cache
+                .get_or_try_insert_last_modified_epoch(&stage.name, || {
+                    let token = token.clone();
+                    async move {
+                        metadata_adapter
+                            .stage_last_modified(listing, token)
+                            .await
+                            .map(|epochs| epochs.get(&listing[0].name).copied().flatten())
+                            .map_err(into_fs_error)
+                    }
+                })
+                .await;
+            if let Err(err) = result {
+                if token.is_cancelled() {
+                    // Not a real lookup failure; don't leave it cached
+                    cache.remove_last_modified_epoch_error(&stage.name);
+                }
+                emit_trace_log_message(|| {
+                    format!(
+                        "dbt State stage last modified lookup failed for {}: {err}",
+                        stage.name
+                    )
+                });
+            }
+        }
+    });
+    futures::future::join_all(lookups).await;
 }
 
 async fn prefetch_last_modified_epochs(
@@ -5011,6 +5095,7 @@ async fn collect_query_dependencies(
     let ParsedSqlRelations {
         relations,
         unsupported_references,
+        stages,
     } = match parse_sql_relations_for_run_cache(
         ctx,
         sql,
@@ -5033,11 +5118,18 @@ async fn collect_query_dependencies(
         // back to the manifest's depends_on graph. Built-ins are exempt:
         // their compiled SQL is always a real query, so an empty result is
         // trustworthy.
-        if node_uses_custom_materialization(node, &ctx.inner.materialization_resolver) {
+        if stages.is_empty()
+            && node_uses_custom_materialization(node, &ctx.inner.materialization_resolver)
+        {
             let manifest_relations = cacheable_manifest_dependency_relations(ctx, node);
             if !manifest_relations.is_empty() {
-                return collect_query_dependencies_from_relations(ctx, node, manifest_relations)
-                    .await;
+                return collect_query_dependencies_from_relations(
+                    ctx,
+                    node,
+                    manifest_relations,
+                    BTreeMap::new(),
+                )
+                .await;
             }
         }
         return Ok(CollectedViewQueryDependencies::complete(
@@ -5045,16 +5137,20 @@ async fn collect_query_dependencies(
             BTreeSet::new(),
             BTreeMap::new(),
             BTreeSet::new(),
+            stages,
         ));
     }
 
-    collect_query_dependencies_from_relations(ctx, node, relations).await
+    collect_query_dependencies_from_relations(ctx, node, relations, stages).await
 }
 
+/// `stages` are the stages the node's own SQL reads; the stages read by the
+/// views it reads are added to them.
 async fn collect_query_dependencies_from_relations(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
     relations: BTreeMap<String, Arc<dyn BaseRelation>>,
+    mut stages: BTreeMap<String, StageDependency>,
 ) -> FsResult<CollectedViewQueryDependencies> {
     let Some(traverser) = ctx.inner.run_cache_ctx.view_traverser.as_deref() else {
         return Ok(CollectedViewQueryDependencies::incomplete());
@@ -5100,6 +5196,7 @@ async fn collect_query_dependencies_from_relations(
 
     let seen_tables = traversal.seen_tables;
     let unresolvable_tables = traversal.unresolvable_tables;
+    stages.extend(traversal.stages);
     let dependencies = traversal
         .view_definitions
         .into_values()
@@ -5119,6 +5216,7 @@ async fn collect_query_dependencies_from_relations(
         seen_tables,
         parser_seen_relations,
         unresolvable_tables,
+        stages,
     ))
 }
 
@@ -5154,6 +5252,7 @@ async fn query_dependencies_for_parse_error(
     let ParsedSqlRelations {
         relations,
         unsupported_references,
+        stages,
     } = if upstreams.tables.is_empty() && upstreams.table_functions.is_empty() {
         ParsedSqlRelations::default()
     } else {
@@ -5163,6 +5262,8 @@ async fn query_dependencies_for_parse_error(
         relations_from_upstreams(
             node.node_adapter(),
             upstreams,
+            node.database(),
+            node.schema(),
             adapter.engine().type_ops().as_ref(),
         )?
     };
@@ -5176,9 +5277,17 @@ async fn query_dependencies_for_parse_error(
     if relations.is_empty() {
         // Same fallback as in `collect_query_dependencies`: an empty
         // expression-parse result isn't proof of no upstreams.
-        let manifest_relations = cacheable_manifest_dependency_relations(ctx, node);
-        if !manifest_relations.is_empty() {
-            return collect_query_dependencies_from_relations(ctx, node, manifest_relations).await;
+        if stages.is_empty() {
+            let manifest_relations = cacheable_manifest_dependency_relations(ctx, node);
+            if !manifest_relations.is_empty() {
+                return collect_query_dependencies_from_relations(
+                    ctx,
+                    node,
+                    manifest_relations,
+                    BTreeMap::new(),
+                )
+                .await;
+            }
         }
 
         emit_trace_log_message(|| {
@@ -5191,9 +5300,10 @@ async fn query_dependencies_for_parse_error(
             BTreeSet::new(),
             BTreeMap::new(),
             BTreeSet::new(),
+            stages,
         ));
     }
-    collect_query_dependencies_from_relations(ctx, node, relations).await
+    collect_query_dependencies_from_relations(ctx, node, relations, stages).await
 }
 
 /// Resolves a node's manifest depends_on graph into relations, restricted
@@ -5244,12 +5354,14 @@ fn node_uses_custom_materialization(
         .is_some_and(|model| model_is_custom_materialization(model, materialization_resolver))
 }
 
-/// Relations parsed from SQL, plus references dbt State cannot check (such as
-/// Snowflake stages and table-valued functions).
+/// Relations and Snowflake named stages parsed from SQL, plus references dbt
+/// State cannot check (such as user and table stages and table-valued
+/// functions).
 #[derive(Default)]
 struct ParsedSqlRelations {
     relations: BTreeMap<String, Arc<dyn BaseRelation>>,
     unsupported_references: BTreeSet<String>,
+    stages: BTreeMap<String, StageDependency>,
 }
 
 /// Warns that the node reads unsupported references and returns incomplete
@@ -5330,7 +5442,13 @@ fn parse_sql_relations_for_adapter(
             })?,
     };
 
-    relations_from_upstreams(adapter_type, upstreams, type_ops)
+    relations_from_upstreams(
+        adapter_type,
+        upstreams,
+        default_catalog,
+        default_schema,
+        type_ops,
+    )
 }
 
 fn extract_standalone_expression_upstreams_for_run_cache(
@@ -5357,17 +5475,28 @@ fn extract_standalone_expression_upstreams_for_run_cache(
         })
 }
 
+/// Unqualified stage names are qualified with `default_catalog` and
+/// `default_schema`, the defaults the request sends, so the stage names match
+/// the ones the dbt State service extracts from the SQL.
 fn relations_from_upstreams(
     adapter_type: AdapterType,
     upstreams: ExtractedUpstreams,
+    default_catalog: &str,
+    default_schema: &str,
     type_ops: &dyn TypeOps,
 ) -> FsResult<ParsedSqlRelations> {
     let mut relations = BTreeMap::new();
-    // Table-valued functions read data State cannot see, like stages.
-    let mut unsupported_references = upstreams.table_functions;
+    // Table-valued functions read data State cannot see, like user stages.
+    let mut unsupported_references = upstreams.table_functions.clone();
+    let stages = stage_dependencies(
+        adapter_type,
+        &upstreams,
+        default_catalog,
+        default_schema,
+        &mut unsupported_references,
+    );
     for upstream in upstreams.tables.into_iter() {
         if dbt_state::view_traversal::is_snowflake_stage_reference(adapter_type, &upstream) {
-            unsupported_references.insert(upstream.table().name().to_string());
             continue;
         }
         let relation = create_relation(
@@ -5388,6 +5517,7 @@ fn relations_from_upstreams(
     Ok(ParsedSqlRelations {
         relations,
         unsupported_references,
+        stages,
     })
 }
 
@@ -5741,6 +5871,7 @@ pub(crate) mod tests {
     };
     use dbt_frontend_common::named_reference::NamedReference;
     use dbt_frontend_common::span::ReclassifySpan;
+    use dbt_frontend_common::stage_ref::StageReference;
     use dbt_jinja_utils::jinja_environment::JinjaEnv;
     use dbt_jinja_utils::listener::DefaultRenderingEventListenerFactory;
     use dbt_jinja_utils::phases::NodeAdapterGlobals;
@@ -7501,6 +7632,7 @@ pub(crate) mod tests {
             &BTreeSet::from([upstream_fqn.clone()]),
             &BTreeMap::new(),
             &BTreeSet::new(),
+            &BTreeMap::new(),
             false,
         )
         .await
@@ -7563,6 +7695,7 @@ pub(crate) mod tests {
             &BTreeSet::from([upstream_fqn.clone()]),
             &BTreeMap::new(),
             &BTreeSet::new(),
+            &BTreeMap::new(),
             false,
         )
         .await
@@ -7633,6 +7766,7 @@ pub(crate) mod tests {
             &BTreeSet::from([upstream_fqn.clone()]),
             &BTreeMap::new(),
             &BTreeSet::new(),
+            &BTreeMap::new(),
             true,
         )
         .await
@@ -7666,6 +7800,7 @@ pub(crate) mod tests {
             &BTreeSet::from([upstream_fqn.clone()]),
             &BTreeMap::new(),
             &BTreeSet::new(),
+            &BTreeMap::new(),
             false,
         )
         .await
@@ -9451,6 +9586,215 @@ pub(crate) mod tests {
         assert!(!deps.metadata_complete);
     }
 
+    /// Returns a table and a named stage with its details, the stage also as a
+    /// table named by its location, like the SQL frontend does.
+    struct NamedStageSourcesExtractor {
+        with_table: bool,
+    }
+
+    impl NamedStageSourcesExtractor {
+        fn upstreams(&self) -> ExtractedUpstreams {
+            let mut tables = vec![FullyQualifiedName::new("db", "s", "@stg/2024/").into()];
+            if self.with_table {
+                tables.push(FullyQualifiedName::new("db", "s", "t").into());
+            }
+            ExtractedUpstreams {
+                tables,
+                stages: BTreeSet::from([StageReference {
+                    location: "@stg/2024/".to_string(),
+                    pattern: Some(".*csv".to_string()),
+                }]),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl SourcesExtractor for NamedStageSourcesExtractor {
+        fn extract_upstreams(
+            &self,
+            _adapter_type: AdapterType,
+            _sql: &str,
+            _default_catalog: &str,
+            _default_schema: &str,
+            _quoted_name_ignore_case: bool,
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(self.upstreams())
+        }
+
+        fn extract_standalone_expression_upstreams(
+            &self,
+            _adapter_type: AdapterType,
+            _sql: &str,
+            _default_catalog: &str,
+            _default_schema: &str,
+            _quoted_name_ignore_case: bool,
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(self.upstreams())
+        }
+    }
+
+    /// The name the dbt State service gives the stage
+    /// [`NamedStageSourcesExtractor`] returns, read by a model in `db.s`.
+    const NAMED_STAGE: &str = r#"@"DB"."S"."STG"/2024/ (PATTERN => '.*csv')"#;
+
+    #[test]
+    fn parse_sql_relations_for_adapter_tracks_named_stages() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
+        let parsed = parse_sql_relations_for_adapter(
+            AdapterType::Snowflake,
+            "select * from t, @stg/2024/ (pattern => '.*csv')",
+            "db",
+            "s",
+            false,
+            &NamedStageSourcesExtractor { with_table: true },
+            &type_ops,
+        )
+        .expect("stage references should not fail parsing");
+
+        assert_eq!(
+            parsed.relations.keys().cloned().collect::<Vec<_>>(),
+            vec![fqn_of("db", "s", "t")]
+        );
+        assert!(parsed.unsupported_references.is_empty());
+        assert_eq!(
+            parsed.stages.keys().map(String::as_str).collect::<Vec<_>>(),
+            [NAMED_STAGE]
+        );
+        assert_eq!(
+            parsed.stages[NAMED_STAGE].list_sql,
+            r#"LIST @"DB"."S"."STG"/2024/ PATTERN = '.*csv'"#
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn model_reading_named_stage_directly_tracks_it() {
+        let ctx = test_task_runner_ctx_with_mode_and_sources_extractor(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(NamedStageSourcesExtractor { with_table: false }),
+        );
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Snowflake)
+            .expect("mock adapter");
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+        let model = make_model(
+            "model.test.reads_stage",
+            "db",
+            "s",
+            "reads_stage",
+            DbtMaterialization::Table,
+        );
+
+        let deps = collect_query_dependencies(&ctx, model.as_ref(), "select 1", false)
+            .await
+            .expect("named stages are tracked");
+
+        assert!(deps.metadata_complete);
+        assert_eq!(
+            deps.stages.keys().map(String::as_str).collect::<Vec<_>>(),
+            [NAMED_STAGE]
+        );
+        assert!(deps.seen_tables.is_empty());
+        assert!(deps.parser_seen_relations.is_empty());
+    }
+
+    #[dbt_runtime::test]
+    async fn custom_materialization_reading_named_stage_tracks_it() {
+        let ctx = test_task_runner_ctx_with_mode_and_sources_extractor(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(NamedStageSourcesExtractor { with_table: false }),
+        );
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Snowflake)
+            .expect("mock adapter");
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+        let model = make_model(
+            "model.test.custom_reads_stage",
+            "db",
+            "s",
+            "custom_reads_stage",
+            DbtMaterialization::Unknown("custom_table".to_string()),
+        );
+
+        let deps = query_dependencies_for_parse_error(
+            &ctx,
+            model.as_ref(),
+            "select 1",
+            synthetic_extraction_error(),
+        )
+        .await
+        .expect("named stages are tracked");
+
+        assert!(deps.metadata_complete);
+        assert_eq!(
+            deps.stages.keys().map(String::as_str).collect::<Vec<_>>(),
+            [NAMED_STAGE]
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn stages_are_sent_as_tables_with_their_last_modified_epoch() {
+        let model = make_model(
+            "model.test.reads_stage",
+            "db",
+            "s",
+            "reads_stage",
+            DbtMaterialization::Table,
+        );
+        let ctx = test_task_runner_ctx_with_nodes(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(EmptySourcesExtractor),
+            nodes_from(vec![model.clone()], vec![]),
+            ["model.test.reads_stage".to_string()].into_iter().collect(),
+        );
+        let stage = |name: &str| StageDependency {
+            name: name.to_string(),
+            list_sql: format!("LIST {name}"),
+        };
+        let listed = r#"@"DB"."S"."LISTED""#;
+        let unlisted = r#"@"DB"."S"."UNLISTED""#;
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_last_modified_epoch(listed, Some(1694505600000));
+
+        // Speculative: reads the cache only, so the unlisted stage has no epoch
+        let tables = collect_table_modified_infos(
+            &ctx,
+            model.as_ref(),
+            false,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeMap::from([
+                (listed.to_string(), stage(listed)),
+                (unlisted.to_string(), stage(unlisted)),
+            ]),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(tables.metadata_complete);
+        assert!(tables.tables.contains(&TableModifiedInfo {
+            name: listed.to_string(),
+            last_modified_epoch: Some(1694505600000),
+            kind: DependencyKind::Unknown as i32,
+        }));
+        assert!(tables.tables.contains(&TableModifiedInfo {
+            name: unlisted.to_string(),
+            last_modified_epoch: None,
+            kind: DependencyKind::Unknown as i32,
+        }));
+    }
+
     /// Returns the given tables and table-valued functions.
     struct TableFunctionSourcesExtractor {
         tables: Vec<FullyQualifiedName>,
@@ -9462,6 +9806,7 @@ pub(crate) mod tests {
             ExtractedUpstreams {
                 tables: self.tables.iter().cloned().map(Into::into).collect(),
                 table_functions: self.table_functions.iter().map(|f| f.to_string()).collect(),
+                ..Default::default()
             }
         }
     }

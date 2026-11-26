@@ -20,11 +20,13 @@ use dbt_adapter::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_adapter::metadata::{MetadataAdapter, ViewDefinition};
 use dbt_common::cancellation::{Cancellable, CancellationToken};
 use dbt_common::collections::SccHashMap;
-use dbt_common::sources_extractor::SourcesExtractor;
+use dbt_common::sources_extractor::{ExtractedUpstreams, SourcesExtractor};
 use dbt_frontend_common::FullyQualifiedName;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use tokio::task::JoinSet;
 use tracing::Instrument as _;
+
+use crate::stage::{StageDependency, stage_dependencies};
 
 /// The result of a recursive view-definition traversal.
 #[derive(Debug, Clone)]
@@ -53,9 +55,14 @@ pub struct ViewTraversalResult {
     pub unresolvable_tables: BTreeSet<String>,
 
     /// Raw text of references skipped because they are not tables (for
-    /// example, Snowflake stage paths or table-valued function names);
-    /// nothing can check their freshness.
+    /// example, Snowflake user and table stages or table-valued function
+    /// names); nothing can check their freshness.
     pub unsupported_references: BTreeSet<String>,
+
+    /// Snowflake named stages read by the traversed views, keyed by
+    /// dependency name. Stages have no view definition; they are leaves, but
+    /// are not in `seen_tables` because they are not relations.
+    pub stages: BTreeMap<String, StageDependency>,
 }
 
 /// Drives recursive, concurrent traversal of view definitions across a
@@ -139,6 +146,7 @@ impl ViewDefinitionTraverser {
         let mut view_definitions: BTreeMap<String, Arc<ViewDefinition>> = BTreeMap::new();
         let mut unresolvable_tables: BTreeSet<String> = BTreeSet::new();
         let mut unsupported_references: BTreeSet<String> = BTreeSet::new();
+        let mut stages: BTreeMap<String, StageDependency> = BTreeMap::new();
         let mut queue: VecDeque<Arc<dyn BaseRelation>> = relations.iter().cloned().collect();
         let mut inflight: JoinSet<AdapterResult<FetchTaskResult>> = JoinSet::new();
 
@@ -164,6 +172,7 @@ impl ViewDefinitionTraverser {
                         &mut queue,
                         &seen_fqns,
                         &mut unsupported_references,
+                        &mut stages,
                         &view_def,
                         self.sources_extractor.as_ref(),
                     )?,
@@ -253,6 +262,7 @@ impl ViewDefinitionTraverser {
                     &mut queue,
                     &seen_fqns,
                     &mut unsupported_references,
+                    &mut stages,
                     &v,
                     self.sources_extractor.as_ref(),
                 )?;
@@ -280,6 +290,7 @@ impl ViewDefinitionTraverser {
             leaf_relations,
             unresolvable_tables,
             unsupported_references,
+            stages,
         })
     }
 }
@@ -288,7 +299,7 @@ impl ViewDefinitionTraverser {
 ///
 /// Routes through `SourcesExtractor::extract_upstreams`, using `adapter_type`
 /// (which carries the dialect) and `view_def.default_catalog` /
-/// `view_def.default_schema`. Returns each upstream reference as a
+/// `view_def.default_schema`. Returns each upstream table reference as a
 /// `FullyQualifiedName` (parsed catalog/schema/table parts), not a stringified
 /// form.
 ///
@@ -303,7 +314,7 @@ fn extract_referenced_tables(
     adapter_type: AdapterType,
     view_def: &ViewDefinition,
     sources_extractor: &dyn SourcesExtractor,
-) -> AdapterResult<(BTreeSet<FullyQualifiedName>, BTreeSet<String>)> {
+) -> AdapterResult<ExtractedUpstreams> {
     sources_extractor
         .extract_upstreams(
             adapter_type,
@@ -316,16 +327,6 @@ fn extract_referenced_tables(
             AdapterError::new(
                 AdapterErrorKind::UnexpectedResult,
                 format!("failed to extract source tables from view DDL: {e}"),
-            )
-        })
-        .map(|upstreams| {
-            (
-                upstreams
-                    .tables
-                    .into_iter()
-                    .map(|nr| nr.into_inner())
-                    .collect(),
-                upstreams.table_functions,
             )
         })
 }
@@ -351,16 +352,23 @@ fn record_and_enqueue(
     queue: &mut VecDeque<Arc<dyn BaseRelation>>,
     seen_tables: &BTreeSet<String>,
     unsupported_references: &mut BTreeSet<String>,
+    stages: &mut BTreeMap<String, StageDependency>,
     view_def: &Arc<ViewDefinition>,
     sources_extractor: &dyn SourcesExtractor,
 ) -> AdapterResult<()> {
     view_definitions.insert(view_def.fqn.clone(), Arc::clone(view_def));
-    let (refs, table_functions) =
-        extract_referenced_tables(adapter_type, view_def, sources_extractor)?;
-    unsupported_references.extend(table_functions);
-    for ref_fqn in refs {
+    let upstreams = extract_referenced_tables(adapter_type, view_def, sources_extractor)?;
+    unsupported_references.extend(upstreams.table_functions.iter().cloned());
+    // A stage in a view is qualified with the view's defaults
+    stages.extend(stage_dependencies(
+        adapter_type,
+        &upstreams,
+        &view_def.default_catalog,
+        &view_def.default_schema,
+        unsupported_references,
+    ));
+    for ref_fqn in upstreams.tables.into_iter().map(|nr| nr.into_inner()) {
         if is_snowflake_stage_reference(adapter_type, &ref_fqn) {
-            unsupported_references.insert(ref_fqn.table().name().to_string());
             continue;
         }
         // `ref_fqn` is a `FullyQualifiedName` with separate catalog/schema/table
@@ -418,6 +426,7 @@ mod tests {
     use dbt_common::sources_extractor::ExtractedUpstreams;
     use dbt_frontend_common::error::FrontendResult;
     use dbt_frontend_common::named_reference::NamedReference;
+    use dbt_frontend_common::stage_ref::StageReference;
     use dbt_schemas::schemas::common::ResolvedQuoting;
     use dbt_schemas::schemas::legacy_catalog::{CatalogTable, ColumnMetadata};
     use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern};
@@ -607,9 +616,9 @@ mod tests {
             default_catalog: "DB".to_string(),
             default_schema: "S".to_string(),
         };
-        let (refs, _) =
-            extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
-                .expect("parse ok");
+        let refs = extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
+            .expect("parse ok")
+            .tables;
         assert!(refs.is_empty(), "expected no upstream refs, got {refs:?}");
     }
 
@@ -622,9 +631,9 @@ mod tests {
             default_catalog: "DB".to_string(),
             default_schema: "S".to_string(),
         };
-        let (refs, _) =
-            extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
-                .expect("parse ok");
+        let refs = extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
+            .expect("parse ok")
+            .tables;
         // The unqualified `upstream_t` must come back qualified against the
         // view's default catalog/schema. Snowflake normalizes unquoted
         // identifiers to uppercase.
@@ -708,11 +717,11 @@ mod tests {
             default_catalog: "DB".to_string(),
             default_schema: "S".to_string(),
         };
-        let (refs, _) =
-            extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
-                .expect("parse ok");
+        let refs = extract_referenced_tables(AdapterType::Snowflake, &v, &DefaultSourcesExtractor)
+            .expect("parse ok")
+            .tables;
         assert_eq!(refs.len(), 1);
-        let parsed = refs.into_iter().next().unwrap();
+        let parsed = refs.into_iter().next().unwrap().into_inner();
         let r2 =
             synthetic_relation_from_parts(&parsed, AdapterType::Snowflake).expect("synthetic ok");
         assert_eq!(original_fqn, r2.semantic_fqn());
@@ -1167,6 +1176,8 @@ mod tests {
         let _ = result; // either Err(cancelled) or Ok depending on timing — both acceptable
     }
 
+    /// Returns a stage only as a table named by its location, without stage
+    /// details, like an extractor that doesn't report stages.
     struct StageExtractor;
 
     impl SourcesExtractor for StageExtractor {
@@ -1272,6 +1283,124 @@ mod tests {
             );
         }
         assert_eq!(mock.count_for(&v1), 1, "V1 fetched more than once");
+    }
+
+    /// Returns the given stages, each also as a table named by its location,
+    /// like the SQL frontend does.
+    struct StageDetailsExtractor(Vec<StageReference>);
+
+    impl SourcesExtractor for StageDetailsExtractor {
+        fn extract_upstreams(
+            &self,
+            _adapter_type: AdapterType,
+            _sql: &str,
+            default_catalog: &str,
+            default_schema: &str,
+            _quoted_name_ignore_case: bool,
+        ) -> FrontendResult<ExtractedUpstreams> {
+            Ok(ExtractedUpstreams {
+                tables: self
+                    .0
+                    .iter()
+                    .map(|stage| {
+                        NamedReference::new(
+                            FullyQualifiedName::new(
+                                default_catalog,
+                                default_schema,
+                                &stage.location,
+                            ),
+                            false,
+                        )
+                    })
+                    .collect(),
+                stages: self.0.iter().cloned().collect(),
+                ..Default::default()
+            })
+        }
+
+        fn extract_standalone_expression_upstreams(
+            &self,
+            adapter_type: AdapterType,
+            sql: &str,
+            default_catalog: &str,
+            default_schema: &str,
+            quoted_name_ignore_case: bool,
+        ) -> FrontendResult<ExtractedUpstreams> {
+            self.extract_upstreams(
+                adapter_type,
+                sql,
+                default_catalog,
+                default_schema,
+                quoted_name_ignore_case,
+            )
+        }
+    }
+
+    #[dbt_runtime::test]
+    async fn view_over_named_stage_reports_stage_dependency() {
+        let (v1, mock) = stage_graph();
+        let adapter: Arc<dyn MetadataAdapter> = mock.clone();
+        let traverser = ViewDefinitionTraverser::new(
+            adapter,
+            Arc::new(StageDetailsExtractor(vec![StageReference {
+                location: "@stg/2024/".to_string(),
+                pattern: Some(".*csv".to_string()),
+            }])),
+        );
+
+        for _ in 0..2 {
+            let result = traverser
+                .traverse(
+                    &[rel("V1")],
+                    &BTreeSet::new(),
+                    CancellationToken::never_cancels(),
+                )
+                .await
+                .expect("ok");
+
+            // An unqualified stage in a view is qualified with the view's defaults
+            let stage = r#"@"DB"."S"."STG"/2024/ (PATTERN => '.*csv')"#;
+            assert_eq!(result.stages.keys().collect::<Vec<_>>(), [stage]);
+            assert_eq!(
+                result.stages[stage].list_sql,
+                r#"LIST @"DB"."S"."STG"/2024/ PATTERN = '.*csv'"#
+            );
+            assert!(result.unsupported_references.is_empty());
+            assert!(result.seen_tables.is_empty());
+        }
+        assert_eq!(mock.count_for(&v1), 1, "V1 fetched more than once");
+        assert!(
+            mock.call_counts.lock().keys().all(|k| !k.contains('@')),
+            "stage reference was fetched"
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn view_over_user_stage_reports_unsupported_reference() {
+        let (_, mock) = stage_graph();
+        let adapter: Arc<dyn MetadataAdapter> = mock.clone();
+        let traverser = ViewDefinitionTraverser::new(
+            adapter,
+            Arc::new(StageDetailsExtractor(vec![StageReference {
+                location: "@~/f.csv".to_string(),
+                pattern: None,
+            }])),
+        );
+
+        let result = traverser
+            .traverse(
+                &[rel("V1")],
+                &BTreeSet::new(),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .expect("ok");
+
+        assert!(result.stages.is_empty());
+        assert_eq!(
+            result.unsupported_references,
+            BTreeSet::from(["@~/f.csv".to_string()])
+        );
     }
 
     /// Returns one table-valued function and no tables.

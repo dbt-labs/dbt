@@ -7,6 +7,7 @@ pub mod ident;
 pub mod listener;
 pub mod result;
 pub mod span;
+pub mod stage_ref;
 pub mod table_functions;
 pub mod table_ref;
 pub mod types;

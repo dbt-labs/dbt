@@ -251,6 +251,21 @@ impl MetadataResultDeserialize for BTreeMap<String, bool> {
     }
 }
 
+impl MetadataResultSerialize for BTreeMap<String, Option<i64>> {
+    fn to_recording_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+impl MetadataResultDeserialize for BTreeMap<String, Option<i64>> {
+    fn from_recording_json(
+        json: &serde_json::Value,
+        _adapter_type: AdapterType,
+    ) -> Result<Self, String> {
+        serde_json::from_value(json.clone()).map_err(|e| e.to_string())
+    }
+}
+
 impl MetadataResultSerialize for BTreeMap<String, MetadataFreshness> {
     fn to_recording_json(&self) -> serde_json::Value {
         let entries: serde_json::Map<String, serde_json::Value> = self
@@ -869,6 +884,18 @@ pub fn args_fetch_view_definitions(
         relations: relations
             .into_iter()
             .map(|r| r.as_ref().to_string())
+            .collect(),
+    }
+}
+
+/// Create MetadataCallArgs for stage_last_modified.
+pub fn args_stage_last_modified(
+    list_statements: impl IntoIterator<Item = impl AsRef<str>>,
+) -> MetadataCallArgs {
+    MetadataCallArgs::StageLastModified {
+        list_statements: list_statements
+            .into_iter()
+            .map(|s| s.as_ref().to_string())
             .collect(),
     }
 }

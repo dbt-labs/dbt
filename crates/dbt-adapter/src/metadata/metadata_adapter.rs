@@ -6,7 +6,8 @@ use crate::sql_types::{SdfSchema, arrow_schema_to_sdf_schema};
 use crate::time_machine::{
     args_fetch_view_definitions, args_freshness, args_freshness_all_in_schema,
     args_list_relations_in_parallel, args_list_relations_schemas,
-    args_list_relations_schemas_by_patterns, args_list_udfs, with_time_machine_metadata_wrapper,
+    args_list_relations_schemas_by_patterns, args_list_udfs, args_stage_last_modified,
+    with_time_machine_metadata_wrapper,
 };
 use crate::{AdapterEngine, metadata::*};
 
@@ -634,6 +635,41 @@ pub trait MetadataAdapter: Send + Sync {
             "fetch_view_definitions",
             args_fetch_view_definitions(relations.iter().map(|r| r.semantic_fqn())),
             self.fetch_view_definitions_inner(relations, token),
+        )
+    }
+
+    /// The newest last modified time, in epoch milliseconds, of the files each
+    /// stage's `LIST` statement returns, keyed by [`StageListing::name`].
+    ///
+    /// A stage maps to `None` when it has no files or its `LIST` failed; a
+    /// failure also emits a warning.
+    ///
+    /// The default implementation returns `NotSupported`; adapters with
+    /// stages override it.
+    fn stage_last_modified_inner<'a>(
+        &'a self,
+        _stages: &'a [StageListing],
+        _token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, Option<i64>>> {
+        Box::pin(async {
+            Err(Cancellable::Error(AdapterError::new(
+                AdapterErrorKind::NotSupported,
+                "stage_last_modified is not supported by this adapter",
+            )))
+        })
+    }
+
+    /// Public, time-machine-recorded wrapper around `stage_last_modified_inner`.
+    fn stage_last_modified<'a>(
+        &'a self,
+        stages: &'a [StageListing],
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, Option<i64>>> {
+        with_time_machine_metadata_wrapper(
+            "global",
+            "stage_last_modified",
+            args_stage_last_modified(stages.iter().map(|stage| &stage.list_sql)),
+            self.stage_last_modified_inner(stages, token),
         )
     }
 
