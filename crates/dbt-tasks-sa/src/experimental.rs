@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::FsCommand;
 use dbt_common::stats::NodeStatus;
 use dbt_common::{ErrorCode, FsResult};
@@ -31,6 +30,7 @@ pub use dbt_parser::resolve::resolvable_node::{
     ResolvableNode, ResolvableNodes, ResolveCtx,
 };
 
+use crate::graph::command_phases;
 use crate::injected::{InjectedCommand, InjectedRun, InjectedTasks, StartCtx, TasksCtx};
 pub use crate::node_run::{
     AssertionOutcome, NodeRunCtx, RenderedDataTest, TargetRelation, record_assertion_result,
@@ -121,7 +121,6 @@ impl ExperimentalNodeRef {
                 ExperimentalDependency {
                     unique_id: unique_id.clone(),
                     relation_name: dependency.and_then(|node| node.base().relation_name.clone()),
-                    adapter_type: dependency.map(|node| node.base().adapter),
                 }
             })
             .collect();
@@ -140,7 +139,6 @@ pub struct ExperimentalDependency {
     pub unique_id: String,
     /// The relation it writes, if any.
     pub relation_name: Option<String>,
-    pub(crate) adapter_type: Option<AdapterType>,
 }
 
 /// How an experimental node's run went. An error is the `Err` of [`ExperimentalRun::run`].
@@ -201,7 +199,8 @@ impl Task for ExperimentalTask {
 #[derive(Clone, Default)]
 pub struct Experimentals {
     experimentals: Vec<Arc<dyn Experimental>>,
-    /// The tasks of the experimentals' nodes, one source for each experimental.
+    /// What gives the task graph the tasks of injected nodes: one source for each
+    /// experimental, and one for each kind added with [`Self::with_tasks`].
     tasks: Vec<Arc<dyn InjectedTasks>>,
     /// The kinds of node that have nothing to run: [`Self::with_kind`].
     kinds: Vec<Arc<dyn ResolvableNode>>,
@@ -253,6 +252,42 @@ impl Experimentals {
         self
     }
 
+    /// Adds `feature`: a kind of node, and the tasks that its nodes run as. The kinds of its
+    /// nodes are [`InjectedTasks::kinds`].
+    ///
+    /// It resolves as a kind added with [`Self::with_kind`] does, and is held to the same
+    /// rules.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::new`] does, for the kind's keys, its flag and the kinds of its nodes. Also
+    /// if the command it adds is one that dbt builds a task graph for, or one that another
+    /// feature adds.
+    pub fn with_tasks<T>(mut self, feature: Arc<T>) -> Self
+    where
+        T: ResolvableNode + InjectedTasks + 'static,
+    {
+        let node_kinds = feature.kinds().to_vec();
+        let name = node_kinds.first().expect("a kind adds nodes of some kind");
+        self.register(name, &node_kinds, feature.as_ref());
+        if let Some(command) = feature.command() {
+            assert!(
+                command_phases(FsCommand::Extension(command.name), &[]).is_none(),
+                "`{name}` adds the command `{}`, a command of dbt",
+                command.name
+            );
+            assert!(
+                command_phases(FsCommand::Extension(command.name), &self.tasks).is_none(),
+                "the command `{}` is added twice",
+                command.name
+            );
+        }
+        self.kinds
+            .push(Arc::clone(&feature) as Arc<dyn ResolvableNode>);
+        self.tasks.push(feature);
+        self
+    }
+
     /// Checks `kind`, which adds nodes of the kinds `node_kinds`, against dbt's own names and
     /// what is registered so far. `name` names it in an error.
     fn register(&mut self, name: &str, node_kinds: &[&'static str], kind: &dyn ResolvableNode) {
@@ -294,7 +329,7 @@ impl Experimentals {
         self
     }
 
-    /// What gives the task graph the tasks of the experimentals' nodes.
+    /// What gives the task graph the tasks of injected nodes.
     pub fn injected_tasks(&self) -> &[Arc<dyn InjectedTasks>] {
         &self.tasks
     }
@@ -782,6 +817,108 @@ mod tests {
     #[should_panic(expected = "experimental type `widget` is registered twice")]
     fn a_kind_adds_nodes_of_kinds_that_nothing_else_adds() {
         experimentals(&[WIDGET]).with_kind(Arc::new(WithKeys(&[GIZMO])), &[GADGET, WIDGET]);
+    }
+
+    /// A kind of node of the kind `kinds`, with tasks for its nodes, which reads the keys
+    /// `keys` and may add a command.
+    struct WithTasks {
+        kinds: [&'static str; 1],
+        keys: &'static [&'static str],
+        command: Option<&'static str>,
+    }
+
+    impl WithTasks {
+        fn new(kind: &'static str) -> Self {
+            Self {
+                kinds: [kind],
+                keys: own_key(kind),
+                command: None,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ResolvableNode for WithTasks {
+        fn flag(&self) -> Option<&'static FlagDef> {
+            Some(&TEST_FLAG)
+        }
+        fn properties_keys(&self) -> &'static [&'static str] {
+            self.keys
+        }
+        async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl InjectedTasks for WithTasks {
+        fn kinds(&self) -> &[&'static str] {
+            &self.kinds
+        }
+        fn command(&self) -> Option<InjectedCommand> {
+            self.command.map(InjectedCommand::runs)
+        }
+        async fn start(&self, _cx: &StartCtx<'_>) -> FsResult<Option<Arc<dyn InjectedRun>>> {
+            Ok(None)
+        }
+    }
+
+    /// A kind added with its tasks resolves with the kinds that have nothing to run, its flag
+    /// is known, and the task graph gets its tasks.
+    #[test]
+    fn a_kind_with_tasks_resolves_and_gives_the_graph_its_tasks() {
+        let dbt_keys = ResolvableNodes::dbt().properties_keys().count();
+        let registry = Experimentals::default()
+            .with_tasks(Arc::new(WithTasks {
+                command: Some("gadgets"),
+                ..WithTasks::new(GADGET)
+            }))
+            .with_kind(Arc::new(WithKeys(&[GIZMO])), &[GIZMO]);
+        let keys: Vec<&str> = registry.resolvable_nodes().properties_keys().collect();
+        assert_eq!(keys[dbt_keys..], [GADGET, GIZMO]);
+        assert!(
+            registry
+                .known_flags()
+                .iter()
+                .any(|flag| flag.name == TEST_FLAG.name)
+        );
+        let tasks = registry.injected_tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].kinds(), [GADGET]);
+        assert_eq!(
+            command_phases(FsCommand::Extension("gadgets"), tasks),
+            Some(&[TP::Run][..])
+        );
+    }
+
+    /// A kind has one source of tasks.
+    #[test]
+    #[should_panic(expected = "experimental type `widget` is registered twice")]
+    fn a_kind_has_one_source_of_tasks() {
+        Experimentals::default()
+            .with_tasks(Arc::new(WithTasks::new(WIDGET)))
+            .with_tasks(Arc::new(WithTasks {
+                keys: own_key(GIZMO),
+                ..WithTasks::new(WIDGET)
+            }));
+    }
+
+    #[test]
+    #[should_panic(expected = "`widget` adds the command `lineage`, a command of dbt")]
+    fn a_features_command_is_not_a_command_of_dbt() {
+        Experimentals::default().with_tasks(Arc::new(WithTasks {
+            command: Some("lineage"),
+            ..WithTasks::new(WIDGET)
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "the command `widgets` is added twice")]
+    fn a_command_is_added_by_one_feature() {
+        experimentals(&[WIDGET]).with_tasks(Arc::new(WithTasks {
+            command: Some("widgets"),
+            ..WithTasks::new(GADGET)
+        }));
     }
 
     #[test]

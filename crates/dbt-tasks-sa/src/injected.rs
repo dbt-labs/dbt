@@ -48,6 +48,11 @@ pub trait InjectedTasks: Send + Sync {
 /// One invocation's tasks for a feature's nodes, and what those tasks share.
 pub trait InjectedRun: Send + Sync {
     /// The tasks of `node`: any of render, analyze, run and show.
+    ///
+    /// A task's [`Task::task_phase`] is the phase of its slot. A node has one task of a
+    /// [`Task::task_type`], so a node's tasks in two phases have two types. dbt's own tasks
+    /// name the type for the phase (`render`, `analyze`, `run`, `show`), and the graph reads
+    /// `run` in a type as a task of the run phase.
     fn tasks_for_node(&self, node: &Arc<dyn InjectedNode>, cx: &TasksCtx<'_>) -> TasksForNode;
 
     /// Runs once when the invocation ends, also after an error or a cancel.

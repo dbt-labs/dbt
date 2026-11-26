@@ -32,7 +32,7 @@ use minijinja::arg_utils::ArgParser;
 use minijinja::listener::RenderingEventListener;
 use minijinja::value::{Object, OverlayMap};
 
-use crate::experimental::{ExperimentalDependency, ExperimentalError};
+use crate::experimental::ExperimentalError;
 
 /// What the run of a node can reach.
 pub struct NodeRunCtx {
@@ -82,16 +82,14 @@ impl NodeRunCtx {
             .await
     }
 
-    /// Runs `sql` on the adapter `dependency` runs on and returns its rows.
+    /// Runs `sql` on the adapter that `node` runs on and returns its rows. For a query on a
+    /// node that the task's node depends on.
     pub async fn query_for(
         &self,
-        dependency: &ExperimentalDependency,
+        node: &dyn InternalDbtNodeAttributes,
         sql: &str,
     ) -> Result<Arc<RecordBatch>, ExperimentalError> {
-        let adapter_type = dependency
-            .adapter_type
-            .unwrap_or_else(|| self.adapter_store.default_adapter_type());
-        self.query_on(adapter_type, sql).await
+        self.query_on(node.base().adapter, sql).await
     }
 
     /// The target's adapter type.
