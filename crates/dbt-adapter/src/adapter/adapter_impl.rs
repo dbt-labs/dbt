@@ -57,7 +57,7 @@ use adbc_core::options::OptionValue;
 use arrow::array::{BooleanArray, RecordBatch, StringArray};
 use arrow_array::{Array as _, ArrayRef, Decimal128Array};
 use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::cow::lowercase;
 use dbt_adapter_engine::databricks::query_tags::QueryTags;
@@ -2799,6 +2799,32 @@ impl AdapterImpl {
             )
         {
             return Ok("text".to_string());
+        }
+
+        if self.adapter_type() == ClickHouse {
+            // dbt-clickhouse impl.py `convert_*_type` and the inherited
+            // SQLAdapter `convert_integer_type`. Python never types a column
+            // with fractional seconds as a datetime, and `DateTime` rejects
+            // such values, so those keep the generic `DateTime64(6)`.
+            let has_subseconds = || {
+                batch
+                    .column(col_idx as usize)
+                    .as_any()
+                    .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
+                    .is_some_and(|col| col.iter().flatten().any(|v| v % 1_000_000 != 0))
+            };
+            let v1_type = match data_type {
+                DataType::Int64 => Some("Int32"),
+                DataType::Float64 => Some("Float32"),
+                DataType::Date32 => Some("Date"),
+                DataType::Timestamp(TimeUnit::Microsecond, _) if !has_subseconds() => {
+                    Some("DateTime")
+                }
+                _ => None,
+            };
+            if let Some(v1_type) = v1_type {
+                return Ok(v1_type.to_string());
+            }
         }
 
         let mut out = String::new();
@@ -7578,9 +7604,56 @@ mod tests {
 
         assert_eq!(
             adapter.convert_type(&state, Arc::clone(&table), 0).unwrap(),
-            "Int64"
+            "Int32"
         );
-        assert_eq!(adapter.convert_type(&state, table, 1).unwrap(), "Int64");
+        assert_eq!(adapter.convert_type(&state, table, 1).unwrap(), "Int32");
+    }
+
+    #[test]
+    fn test_convert_type_clickhouse_matches_python_adapter() {
+        use arrow_array::{Date32Array, Float64Array, Int64Array, TimestampMicrosecondArray};
+
+        let timestamp = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("int", DataType::Int64, true),
+            Field::new("frac", DataType::Float64, true),
+            Field::new("integral_float", DataType::Float64, true),
+            Field::new("date", DataType::Date32, true),
+            Field::new("datetime", timestamp.clone(), true),
+            Field::new("datetime_subseconds", timestamp, true),
+        ]));
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int64Array::from(vec![1, 3_000_000_000])),
+            Arc::new(Float64Array::from(vec![1.5, 2.0])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0])),
+            Arc::new(Date32Array::from(vec![Some(19_737), None])),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                Some(1_705_314_600_000_000),
+                None,
+            ])),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                1_705_314_600_000_000,
+                1_705_314_600_500_000,
+            ])),
+        ];
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+        let table = Arc::new(AgateTable::from_record_batch(Arc::new(batch)));
+
+        let adapter = clickhouse_adapter(Mapping::new());
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+
+        let convert = |idx| {
+            adapter
+                .convert_type(&state, Arc::clone(&table), idx)
+                .unwrap()
+        };
+        assert_eq!(convert(0), "Int32");
+        assert_eq!(convert(1), "Float32");
+        assert_eq!(convert(2), "Int32");
+        assert_eq!(convert(3), "Date");
+        assert_eq!(convert(4), "DateTime");
+        assert_eq!(convert(5), "DateTime64(6)");
     }
 
     #[test]
