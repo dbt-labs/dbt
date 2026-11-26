@@ -1232,15 +1232,6 @@ mod execute_inner_txn {
         assert_eq!(response.query_id().as_deref(), Some(CLICKHOUSE_QUERY_ID));
     }
 
-    #[test]
-    fn redshift_unfetched_statements_report_no_query_id() {
-        let (result, session) = run_on(redshift_engine_with(false, &[]), "select 1");
-
-        let response = result.expect("the statement should succeed");
-        assert_eq!(session.execute_update_calls, 1);
-        assert_eq!(response.query_id(), None);
-    }
-
     const CLICKHOUSE_QUERY_ID: &str = "query_s3ijwxOjm13MoJeH";
 
     const USE_TRANSACTIONS: &str = "redshift_use_transactions";

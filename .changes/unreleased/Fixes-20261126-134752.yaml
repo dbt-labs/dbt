@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[ClickHouse] Report the query id for statements dbt runs without reading their result.'
+time: 2026-11-26T13:47:52.408462+01:00
+custom:
+    author: koletzilla
+    issue: ""
+    project: dbt-core
