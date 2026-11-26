@@ -209,18 +209,14 @@ fn snowflake_show_objects_sql(
     let from_clause = from_name
         .map(|name| format!(" FROM {}", snowflake_string_literal(name)))
         .unwrap_or_default();
-    let scope = match (
-        db_schema.resolved_catalog.is_empty(),
-        db_schema.resolved_schema.is_empty(),
-    ) {
-        (true, _) => Ident::from_unquoted(db_schema.resolved_schema.as_str()).to_string(),
-        (_, true) => Ident::from_unquoted(db_schema.resolved_catalog.as_str()).to_string(),
-        (false, false) => format!(
-            "{}.{}",
-            Ident::from_unquoted(db_schema.resolved_catalog.as_str()),
-            Ident::from_unquoted(db_schema.resolved_schema.as_str())
-        ),
+    let catalog = db_schema.resolved_catalog.as_str();
+    let schema = db_schema.resolved_schema.as_str();
+    let parts: &[&str] = match (catalog.is_empty(), schema.is_empty()) {
+        (true, _) => &[schema],
+        (_, true) => &[catalog],
+        (false, false) => &[catalog, schema],
     };
+    let scope = join_dotted(parts.iter().map(|part| Ident::from_unquoted(*part)));
     format!("SHOW OBJECTS IN SCHEMA {scope} LIMIT {limit}{from_clause}")
 }
 
@@ -251,7 +247,7 @@ fn snowflake_relation_sql_name(relation: &dyn BaseRelation) -> String {
         include.identifier,
         quoting.identifier,
     );
-    join_dotted(&parts)
+    join_dotted(parts.iter()).to_string()
 }
 
 fn snowflake_relation_patterns_sql(database: &str, patterns: &[&RelationPattern]) -> String {

@@ -215,14 +215,20 @@ impl From<&dyn BaseRelation> for CatalogAndSchema {
         let rendered_catalog = if resolved_catalog.is_empty() {
             "".to_string()
         } else {
-            relation.quoted(&resolved_catalog)
+            relation
+                .quoted(&resolved_catalog)
+                .display(relation.adapter_type())
+                .to_string()
         };
 
         let resolved_schema = relation.schema_as_resolved_str().unwrap_or_default();
         let rendered_schema = if resolved_schema.is_empty() {
             "".to_string()
         } else {
-            relation.quoted(&resolved_schema)
+            relation
+                .quoted(&resolved_schema)
+                .display(relation.adapter_type())
+                .to_string()
         };
 
         Self {

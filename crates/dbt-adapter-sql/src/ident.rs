@@ -1,5 +1,7 @@
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
+use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::num::NonZero;
 
 use dbt_adapter_core::{AdapterType, quote_char};
@@ -92,6 +94,12 @@ impl Ident {
         IdentDisplay(self, backend)
     }
 
+    /// Like [Ident::display], but takes ownership of the identifier, so the result can
+    /// outlive the expression that created the [Ident] (e.g. be returned from a closure).
+    pub fn into_display(self, backend: AdapterType) -> IdentDisplayOwned {
+        IdentDisplayOwned(self, backend)
+    }
+
     /// Converts the identifier to a string losing any quoting information.
     ///
     /// This is bad because quoting governs how an identifier is interpreted
@@ -108,6 +116,67 @@ impl Ident {
     pub fn is_empty(&self) -> bool {
         self.as_ref().is_empty()
     }
+
+    /// Compare and hash the identifier by how it renders for `backend`.
+    ///
+    /// Equality and ordering need the [AdapterType] because quoting and escaping
+    /// rules differ between backends, and [Ident] doesn't store one.
+    ///
+    /// Two [IdentKeyBorrowed]s are equal when [Ident::display] would render the same text,
+    /// and they order like those rendered strings, without allocating them.
+    ///
+    /// XXX: should we try to implement warehouse equivalence instead?
+    pub fn key(&self, backend: AdapterType) -> IdentKeyBorrowed<'_> {
+        IdentKeyBorrowed(self, backend)
+    }
+
+    /// Like [Ident::key], but takes ownership of the identifier, so the key can be
+    /// stored, e.g. in a map.
+    pub fn into_key(self, backend: AdapterType) -> IdentKey {
+        IdentKey(self, backend)
+    }
+
+    /// The characters [Ident::display] writes for `backend`: the opening quote,
+    /// the escaped identifier, and the closing quote.
+    #[inline]
+    fn rendered_chars(&self, backend: AdapterType) -> impl Iterator<Item = char> + '_ {
+        let (opening, s, closing, quote) = match self {
+            Ident::Plain(s) => ("", s.as_str(), "", None),
+            Ident::Unquoted(style, s) => {
+                let closing = style.closing();
+                let quote = closing.chars().next();
+                (style.opening(), s.as_str(), closing, quote)
+            }
+        };
+        opening
+            .chars()
+            .chain(Self::escaped_identifier_chars(s, backend, quote))
+            .chain(closing.chars())
+    }
+
+    /// The characters of [escaped_identifier], one at a time, without allocating.
+    ///
+    /// With no `quote`, as for a plain identifier, nothing is escaped.
+    #[inline]
+    fn escaped_identifier_chars(
+        id: &str,
+        backend: AdapterType,
+        quote: Option<char>,
+    ) -> impl Iterator<Item = char> + '_ {
+        id.chars().flat_map(move |c| {
+            let (first, second) = match quote {
+                None => (c, None),
+                Some(q) => match backend {
+                    AdapterType::Bigquery if c == '\\' => ('\\', Some('\\')),
+                    AdapterType::Bigquery if c == q => ('\\', Some(q)),
+                    AdapterType::ClickHouse if c == '\\' => ('\\', Some('\\')),
+                    _ if c == q => (q, Some(q)),
+                    _ => (c, None),
+                },
+            };
+            std::iter::once(first).chain(second)
+        })
+    }
 }
 
 pub struct IdentDisplay<'a>(&'a Ident, AdapterType);
@@ -115,25 +184,199 @@ pub struct IdentDisplay<'a>(&'a Ident, AdapterType);
 impl fmt::Display for IdentDisplay<'_> {
     #[inline(never)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            Ident::Unquoted(quote, s) => _render_ident_in_quotes(*quote, s, self.1, f),
-            Ident::Plain(s) => write!(f, "{s}"),
-        }
+        use fmt::Write;
+        self.0
+            .rendered_chars(self.1)
+            .try_for_each(|c| f.write_char(c))
     }
 }
 
-#[inline(always)]
-fn _render_ident_in_quotes(
-    quote: QuotingStyle,
-    s: &str,
-    backend: AdapterType,
-    f: &mut fmt::Formatter<'_>,
-) -> fmt::Result {
-    write!(f, "{}", quote.opening())?;
-    let closing: &str = quote.closing();
-    let q = closing.chars().next().unwrap(); // `, ", or '
-    write!(f, "{}", escaped_identifier(s.into(), backend, q))?;
-    write!(f, "{closing}")
+impl IdentDisplay<'_> {
+    #[inline]
+    pub fn adapter_type(&self) -> AdapterType {
+        self.1
+    }
+    #[inline]
+    pub fn inner(&self) -> &Ident {
+        self.0
+    }
+}
+
+/// An owning counterpart of [IdentDisplay], created by [Ident::into_display].
+pub struct IdentDisplayOwned(Ident, AdapterType);
+
+impl fmt::Display for IdentDisplayOwned {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.display(self.1).fmt(f)
+    }
+}
+
+impl IdentDisplayOwned {
+    #[inline]
+    pub fn adapter_type(&self) -> AdapterType {
+        self.1
+    }
+    #[inline]
+    pub fn into_inner(self) -> Ident {
+        self.0
+    }
+}
+
+/// An [Ident] bound to an [AdapterType] for comparison and hashing, created by
+/// [Ident::key].
+///
+/// See [IdentKey] for the owned version.
+#[derive(Debug, Clone, Copy)]
+pub struct IdentKeyBorrowed<'a>(&'a Ident, AdapterType);
+
+impl<'a> IdentKeyBorrowed<'a> {
+    /// Clone the identifier into an [IdentKey].
+    #[inline]
+    pub fn into_owned(self) -> IdentKey {
+        IdentKey(self.0.clone(), self.1)
+    }
+
+    /// View this key as the type an [IdentKey] lends through [Borrow], to look
+    /// up maps and sets keyed by [IdentKey].
+    #[inline]
+    pub fn as_dyn(&self) -> &(dyn AsIdentKey + 'a) {
+        self
+    }
+}
+
+impl PartialEq for IdentKeyBorrowed<'_> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for IdentKeyBorrowed<'_> {}
+
+impl PartialOrd for IdentKeyBorrowed<'_> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IdentKeyBorrowed<'_> {
+    #[inline(never)]
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Comparing chars orders like comparing the UTF-8 rendered strings.
+        self.0
+            .rendered_chars(self.1)
+            .cmp(other.0.rendered_chars(other.1))
+    }
+}
+
+impl Hash for IdentKeyBorrowed<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let mut buf = [0; 4];
+        for c in self.0.rendered_chars(self.1) {
+            state.write(c.encode_utf8(&mut buf).as_bytes());
+        }
+        // Like str's Hash, end with a byte UTF-8 never contains, so a tuple of keys
+        // hashes differently from the same text split another way.
+        state.write_u8(0xff);
+    }
+}
+
+/// An owned [IdentKeyBorrowed], created by [Ident::into_key] or
+/// [IdentKeyBorrowed::into_owned]. It compares and hashes the same way.
+#[derive(Debug, Clone)]
+pub struct IdentKey(Ident, AdapterType);
+
+impl IdentKey {
+    #[inline]
+    pub fn borrowed(&self) -> IdentKeyBorrowed<'_> {
+        IdentKeyBorrowed(&self.0, self.1)
+    }
+}
+
+impl PartialEq for IdentKey {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.borrowed().eq(&other.borrowed())
+    }
+}
+
+impl Eq for IdentKey {}
+
+impl PartialOrd for IdentKey {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IdentKey {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.borrowed().cmp(&other.borrowed())
+    }
+}
+
+impl Hash for IdentKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.borrowed().hash(state)
+    }
+}
+
+/// The form both [IdentKey] and [IdentKeyBorrowed] can be borrowed as.
+pub trait AsIdentKey {
+    fn as_ident_key(&self) -> IdentKeyBorrowed<'_>;
+}
+
+impl AsIdentKey for IdentKey {
+    #[inline]
+    fn as_ident_key(&self) -> IdentKeyBorrowed<'_> {
+        self.borrowed()
+    }
+}
+
+impl AsIdentKey for IdentKeyBorrowed<'_> {
+    #[inline]
+    fn as_ident_key(&self) -> IdentKeyBorrowed<'_> {
+        *self
+    }
+}
+
+impl<'a> Borrow<dyn AsIdentKey + 'a> for IdentKey {
+    #[inline]
+    fn borrow(&self) -> &(dyn AsIdentKey + 'a) {
+        self
+    }
+}
+
+impl PartialEq for dyn AsIdentKey + '_ {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ident_key() == other.as_ident_key()
+    }
+}
+
+impl Eq for dyn AsIdentKey + '_ {}
+
+impl PartialOrd for dyn AsIdentKey + '_ {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for dyn AsIdentKey + '_ {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_ident_key().cmp(&other.as_ident_key())
+    }
+}
+
+impl Hash for dyn AsIdentKey + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_ident_key().hash(state)
+    }
 }
 
 pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>> {
@@ -173,7 +416,7 @@ pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     match backend {
         Bigquery | Databricks | Spark | Athena => QuotingStyle::Backtick,
         ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB
-        | MotherDuck => QuotingStyle::Double,
+        | LakeCompute | MotherDuck => QuotingStyle::Double,
         // https://learn.microsoft.com/en-us/sql/t-sql/statements/set-quoted-identifier-transact-sql?view=sql-server-ver17
         Fabric => QuotingStyle::Double,
         // Fabric => QuotingStyle::Bracketed,
@@ -271,24 +514,12 @@ pub fn must_be_quoted(id: &str, backend: AdapterType) -> bool {
 /// through. Other backends currently pass the name through unchanged.
 pub fn sanitize_identifier(name: &str, backend: AdapterType) -> String {
     match backend {
-        AdapterType::DuckDB | AdapterType::MotherDuck => name
+        AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::MotherDuck => name
             .bytes()
             .filter(|&b| b.is_ascii_alphanumeric() || b == b'_')
             .map(char::from)
             .collect(),
         _ => name.to_string(),
-    }
-}
-
-/// Escape all occurrences of `from` in `s` with `to` avoiding allocations when possible.
-///
-/// Always inline to avoid passing [Cow] over the stack where possible.
-#[inline(always)]
-fn with_replaced_char<'a>(s: Cow<'a, str>, from: char, to: &str) -> Cow<'a, str> {
-    if s.contains(from) {
-        Cow::Owned(s.replace(from, to))
-    } else {
-        s
     }
 }
 
@@ -298,31 +529,15 @@ fn with_replaced_char<'a>(s: Cow<'a, str>, from: char, to: &str) -> Cow<'a, str>
 /// rules.
 ///
 /// Always inline to avoid passing [Cow] over the stack where possible.
-#[inline(always)]
+#[inline(never)]
 pub fn escaped_identifier<'a>(id: Cow<'a, str>, backend: AdapterType, quote: char) -> Cow<'a, str> {
-    match backend {
-        AdapterType::Bigquery => {
-            let id = with_replaced_char(id, '\\', "\\\\");
-            with_replaced_char(id, quote, &format!("\\{quote}"))
-        }
-        AdapterType::ClickHouse => {
-            let id = with_replaced_char(id, '\\', "\\\\");
-            with_replaced_char(id, quote, &format!("{quote}{quote}"))
-        }
-        _ => with_replaced_char(id, quote, &format!("{quote}{quote}")),
+    let escaped = || Ident::escaped_identifier_chars(&id, backend, Some(quote));
+    // Keep `id` when there is nothing to escape.
+    if escaped().eq(id.chars()) {
+        id
+    } else {
+        Cow::Owned(escaped().collect())
     }
-}
-
-/// Render `id` as an unconditionally quoted identifier for `backend`, escaping
-/// embedded delimiters using the backend's identifier rules. Unlike
-/// [`Ident::new`], which quotes only when required, this always quotes — for
-/// composing SQL over identifiers of unknown provenance (e.g. DuckDB
-/// `DESCRIBE "db"."schema"."table"`), where an unquoted rendering could
-/// re-interpret case or special characters.
-pub fn quote_identifier(id: &str, backend: AdapterType) -> String {
-    Ident::from_unquoted(id, backend)
-        .display(backend)
-        .to_string()
 }
 
 /// Define an `Ident` newtype over [Ident] that is bound to one [AdapterType],
@@ -391,6 +606,92 @@ pub(crate) use define_adapter_ident;
 #[cfg(test)]
 mod sanitize_tests {
     use super::*;
+    use strum::IntoEnumIterator;
+
+    const P: Option<QuotingStyle> = None;
+    const S: Option<QuotingStyle> = Some(QuotingStyle::Single);
+    const D: Option<QuotingStyle> = Some(QuotingStyle::Double);
+    const B: Option<QuotingStyle> = Some(QuotingStyle::Backtick);
+    const U: Option<QuotingStyle> = Some(QuotingStyle::UAndDouble);
+
+    /// Identifiers as (quoting style, name), where `P` means [Ident::Plain].
+    #[rustfmt::skip]
+    const KEY_IDENTS: &[(Option<QuotingStyle>, &str)] = &[
+        (P, ""),     (S, ""),     (D, ""),     (B, ""),     (U, ""),
+        (P, "a"),    (S, "a"),    (D, "a"),    (B, "a"),    (U, "a"),
+        (P, "A"),    (S, "A"),    (D, "A"),    (B, "A"),    (U, "A"),
+        (P, "z"),    (S, "z"),    (D, "z"),    (B, "z"),    (U, "z"),
+        (P, "a\"b"), (S, "a\"b"), (D, "a\"b"), (B, "a\"b"), (U, "a\"b"),
+        (P, "a`b"),  (S, "a`b"),  (D, "a`b"),  (B, "a`b"),  (U, "a`b"),
+        (P, "a'b"),  (S, "a'b"),  (D, "a'b"),  (B, "a'b"),  (U, "a'b"),
+        (P, "a\\b"), (S, "a\\b"), (D, "a\\b"), (B, "a\\b"), (U, "a\\b"),
+        (P, "日本"), (S, "日本"), (D, "日本"), (B, "日本"), (U, "日本"),
+    ];
+
+    fn key_ident(&(style, name): &(Option<QuotingStyle>, &str)) -> Ident {
+        match style {
+            None => Ident::plain(name),
+            Some(style) => Ident::unquoted(style, name),
+        }
+    }
+
+    #[test]
+    fn key_compares_like_rendered_strings() {
+        use std::hash::BuildHasher;
+        let hasher = std::collections::hash_map::RandomState::new();
+        for backend in AdapterType::iter() {
+            for a in KEY_IDENTS.iter().map(key_ident) {
+                let rendered = a.display(backend).to_string();
+                let ctx = format!("{backend:?} {a:?}");
+                assert_eq!(
+                    a.rendered_chars(backend).collect::<String>(),
+                    rendered,
+                    "{ctx}"
+                );
+                for b in KEY_IDENTS.iter().map(key_ident) {
+                    let other = b.display(backend).to_string();
+                    let (ka, kb) = (a.key(backend), b.key(backend));
+                    assert_eq!(ka.cmp(&kb), rendered.cmp(&other), "{ctx} {b:?}");
+                    assert_eq!(ka == kb, rendered == other, "{ctx} {b:?}");
+                    if ka == kb {
+                        assert_eq!(hasher.hash_one(ka), hasher.hash_one(kb), "{ctx} {b:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ident_key_maps_can_be_queried_with_borrowed_keys() {
+        use std::collections::{BTreeMap, HashMap};
+        let at = AdapterType::Snowflake;
+        let mut hash_map = HashMap::new();
+        let mut btree_map = BTreeMap::new();
+        for (i, row) in KEY_IDENTS.iter().enumerate() {
+            let key = key_ident(row).into_key(at);
+            hash_map.insert(key.clone(), i);
+            btree_map.insert(key, i);
+        }
+        for row in KEY_IDENTS {
+            let ident = key_ident(row);
+            let borrowed = ident.key(at);
+            let owned = ident.clone().into_key(at);
+            assert_eq!(
+                hash_map.get(borrowed.as_dyn()),
+                hash_map.get(&owned),
+                "{ident:?}"
+            );
+            assert_eq!(
+                btree_map.get(borrowed.as_dyn()),
+                btree_map.get(&owned),
+                "{ident:?}"
+            );
+            assert!(hash_map.contains_key(borrowed.as_dyn()), "{ident:?}");
+        }
+        let missing = Ident::plain("missing");
+        assert_eq!(hash_map.get(missing.key(at).as_dyn()), None);
+        assert_eq!(btree_map.get(missing.key(at).as_dyn()), None);
+    }
 
     #[test]
     fn snowflake_hyphen_must_be_quoted() {
@@ -405,28 +706,24 @@ mod sanitize_tests {
     }
 
     #[test]
-    fn quote_identifier_always_quotes_and_escapes() {
+    fn from_unquoted_always_quotes_and_escapes_per_backend() {
+        let quoted = |id: &str, backend: AdapterType| {
+            Ident::from_unquoted(id, backend)
+                .display(backend)
+                .to_string()
+        };
+        assert_eq!(quoted("orders", AdapterType::DuckDB), "\"orders\"");
+        assert_eq!(quoted("od\"d", AdapterType::DuckDB), "\"od\"\"d\"");
+        assert_eq!(quoted("col", AdapterType::Bigquery), "`col`");
         assert_eq!(
-            quote_identifier("orders", AdapterType::DuckDB),
-            "\"orders\""
-        );
-        assert_eq!(
-            quote_identifier("od\"d", AdapterType::DuckDB),
-            "\"od\"\"d\""
-        );
-        assert_eq!(quote_identifier("col", AdapterType::Bigquery), "`col`");
-        assert_eq!(
-            quote_identifier(r"odd\`name", AdapterType::Bigquery),
+            quoted(r"odd\`name", AdapterType::Bigquery),
             r"`odd\\\`name`"
         );
         assert_eq!(
-            quote_identifier(r#"we\"ird"#, AdapterType::ClickHouse),
+            quoted(r#"we\"ird"#, AdapterType::ClickHouse),
             r#""we\\""ird""#
         );
-        assert_eq!(
-            quote_identifier("trail\\", AdapterType::ClickHouse),
-            r#""trail\\""#
-        );
+        assert_eq!(quoted("trail\\", AdapterType::ClickHouse), r#""trail\\""#);
     }
 
     #[test]
@@ -567,7 +864,9 @@ mod quote_ident_tests {
     fn assert_equivalent(adapter_type: AdapterType, identifier: &str) {
         assert_eq!(
             quote_ident(adapter_type, identifier),
-            quote_identifier(identifier, adapter_type),
+            Ident::from_unquoted(identifier, adapter_type)
+                .display(adapter_type)
+                .to_string(),
             "adapter_type={adapter_type:?} identifier={identifier:?}",
         );
     }
@@ -597,7 +896,7 @@ mod quote_ident_tests {
     ];
 
     #[test]
-    fn quote_ident_matches_quote_identifier_for_all_adapters_and_identifiers() {
+    fn quote_ident_matches_from_unquoted_for_all_adapters_and_identifiers() {
         for &adapter_type in COMPARABLE_ADAPTERS {
             for identifier in IDENTIFIERS {
                 assert_equivalent(adapter_type, identifier);

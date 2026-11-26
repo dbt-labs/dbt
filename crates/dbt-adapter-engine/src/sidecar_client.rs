@@ -8,6 +8,7 @@ use arrow::record_batch::RecordBatch;
 use minijinja::State;
 
 use dbt_adapter_sql::ident::duckdb::Ident;
+use dbt_adapter_sql::join_dotted;
 use dbt_adbc::{Connection, QueryCtx};
 use dbt_schemas::{dbt_types::RelationType, schemas::common::ResolvedQuoting};
 
@@ -28,12 +29,7 @@ pub struct ColumnInfo {
 /// double-quoted, with an embedded `"` escaped. Plain parts do not change, so
 /// their case-folding stays the same.
 pub fn sidecar_relation_name(database: &str, schema: &str, identifier: &str) -> String {
-    format!(
-        "{}.{}.{}",
-        Ident::new(database),
-        Ident::new(schema),
-        Ident::new(identifier)
-    )
+    join_dotted([database, schema, identifier].into_iter().map(Ident::new)).to_string()
 }
 
 /// Delegation interface for adapters that route execution to a sidecar subprocess or

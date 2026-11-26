@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dbt_adapter::AdapterType;
 use dbt_adapter::metadata::StageListing;
+use dbt_adapter_sql::ident::snowflake::Ident;
+use dbt_adapter_sql::join_dotted;
 use dbt_common::sources_extractor::ExtractedUpstreams;
 use dbt_frontend_common::stage_ref::StageReference;
 
@@ -131,9 +133,9 @@ pub fn normalize_stage_reference(
         .chain(catalog)
         .chain(schema)
         .chain(std::iter::once(table))
-        .map(|part| dbt_adapter::quote_identifier(&part, AdapterType::Snowflake))
-        .collect::<Vec<_>>()
-        .join(".");
+        .map(Ident::from_unquoted)
+        .collect::<Vec<_>>();
+    let qualified = join_dotted(qualified.iter());
 
     let location = format!("@{qualified}{path}");
     let location_sql = if path_needs_quotes(path) {

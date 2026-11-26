@@ -1,4 +1,7 @@
 use dbt_adapter_engine::cow::{lowercase, uppercase};
+use dbt_adapter_sql::ident::Ident;
+use dbt_adapter_sql::join_comma_separated;
+use dbt_adapter_sql::tokenizer::QuotingStyle;
 use dbt_adapter_sql::types::{SqlType, StructField};
 use dbt_common::current_function_name;
 use regex::Regex;
@@ -186,17 +189,22 @@ impl ColumnStatic {
         )
     }
 
-    /// TODO: reconcile with [quote_char] for ClickHouse and remove the special handling
-    /// For ClickHouse, this function returns "{s}" (double quotes), while [quote_char]
-    /// returns `{s}` (backticks). This was done deliberately to avoid changing goldie
-    /// recordings and avoid CI job failures
-    fn quote(&self, s: &str) -> String {
+    /// Quote a column name with `dbt-adapter-sql`'s [Ident]. Render it with
+    /// `.display(adapter_type)`.
+    ///
+    /// Like dbt-adapters v1, this always quotes. Unlike v1, which wraps the
+    /// name in quotes without escaping it, quote characters (and backslashes,
+    /// where the adapter treats them as escapes) inside the name are escaped,
+    /// so such names render as valid SQL.
+    fn quoted(&self, name: &str) -> Ident {
         match self.0 {
-            AdapterType::ClickHouse => format!("\"{s}\""),
-            _ => {
-                let q = quote_char(self.0);
-                format!("{q}{s}{q}")
-            }
+            // TODO: reconcile with the backtick that relations use for
+            // ClickHouse. Columns keep "..." to avoid changing goldie
+            // recordings.
+            AdapterType::ClickHouse => Ident::unquoted(QuotingStyle::Double, name),
+            // Athena's DML runs on Trino, which quotes identifiers with "...".
+            AdapterType::Athena => Ident::unquoted(QuotingStyle::Double, name),
+            adapter_type => Ident::from_string(name, true, adapter_type),
         }
     }
 
@@ -319,11 +327,12 @@ impl ColumnStatic {
             unimplemented!("Only available for Databricks")
         };
 
-        Ok(columns
-            .iter()
-            .map(|c| format!("{} {}", c.quoted(), c.core_dtype))
-            .collect::<Vec<String>>()
-            .join(", "))
+        Ok(join_comma_separated(
+            columns
+                .iter()
+                .map(|c| format!("{} {}", c.quoted().display(self.0), c.core_dtype)),
+        )
+        .to_string())
     }
 
     /// https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/column.py#L62
@@ -335,11 +344,10 @@ impl ColumnStatic {
             unimplemented!("Only available for Databricks")
         };
 
-        Ok(columns
-            .iter()
-            .map(|c| c.quoted())
-            .collect::<Vec<String>>()
-            .join(", "))
+        Ok(
+            join_comma_separated(columns.iter().map(|c| c.quoted().into_display(self.0)))
+                .to_string(),
+        )
     }
 
     /// https://github.com/databricks/dbt-databricks/blob/5e20eeaef43e671913f995d8079d4ec2b8a1da6d/dbt/adapters/databricks/column.py#L34
@@ -349,7 +357,7 @@ impl ColumnStatic {
         };
 
         if column.quote.unwrap_or(false) {
-            self.quote(&column.name)
+            self.quoted(&column.name).display(self.0).to_string()
         } else {
             column.name.to_string()
         }
@@ -1044,8 +1052,9 @@ impl Column {
         }
     }
 
-    fn quoted(&self) -> String {
-        self.as_static().quote(&self.name)
+    /// The name, always quoted. See [ColumnStatic::quoted].
+    fn quoted(&self) -> Ident {
+        self.as_static().quoted(&self.name)
     }
 
     pub fn dtype(&self) -> &str {
@@ -1090,7 +1099,10 @@ impl Column {
                             .iter()
                             .map(|f| {
                                 let field_type = bigquery_data_type_inner(f);
-                                format!("{} {field_type}", col.as_static().quote(f.name()))
+                                format!(
+                                    "{} {field_type}",
+                                    col.as_static().quoted(f.name()).display(col._adapter_type)
+                                )
                             })
                             .collect::<Vec<_>>()
                             .join(", ");
@@ -1138,8 +1150,12 @@ impl Column {
     /// Reference: https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/column.py#L167-L179
     pub fn render_for_create(&self) -> String {
         match self._adapter_type {
-            AdapterType::Databricks | AdapterType::Spark => {
-                let mut s = format!("{} {}", self.quoted(), self.data_type());
+            adapter_type @ (AdapterType::Databricks | AdapterType::Spark) => {
+                let mut s = format!(
+                    "{} {}",
+                    self.quoted().display(adapter_type),
+                    self.data_type()
+                );
                 if self._nullable == Some(false) {
                     s.push_str(" NOT NULL");
                 }
@@ -1294,7 +1310,9 @@ impl Object for Column {
         match key.as_str() {
             // @property methods
             Some("name") | Some("column") => Some(Value::from(&self.name)),
-            Some("quoted") => Some(Value::from(self.quoted())),
+            Some("quoted") => Some(Value::from(
+                self.quoted().display(self._adapter_type).to_string(),
+            )),
             Some("data_type") => Some(Value::from(self.data_type())),
             // direct fields
             Some("dtype") => Some(Value::from(&self.core_dtype)),
@@ -1407,6 +1425,128 @@ mod tests {
         );
     }
 
+    /// `Column::quoted` renders exactly like dbt-adapters v1 unless the name
+    /// has something to escape, where v1 would emit broken SQL.
+    mod quoted {
+        use super::*;
+        use dbt_adapter_sql::ident::escaped_identifier;
+
+        /// The quote character v1 wraps column names in.
+        fn quote_char_v1(adapter_type: AdapterType) -> char {
+            match adapter_type {
+                AdapterType::ClickHouse => '"',
+                _ => quote_char(adapter_type),
+            }
+        }
+
+        /// The old string-based `ColumnStatic::quote`: wrap the name in the
+        /// quote character without escaping it, like dbt-adapters v1.
+        fn quoted_v1(adapter_type: AdapterType, name: &str) -> String {
+            let q = quote_char_v1(adapter_type);
+            format!("{q}{name}{q}")
+        }
+
+        /// Every adapter [quote_char] supports.
+        const ADAPTERS: &[AdapterType] = &[
+            AdapterType::Snowflake,
+            AdapterType::Bigquery,
+            AdapterType::Databricks,
+            AdapterType::Spark,
+            AdapterType::Redshift,
+            AdapterType::Postgres,
+            AdapterType::Salesforce,
+            AdapterType::Fabric,
+            AdapterType::DuckDB,
+            AdapterType::LakeCompute,
+            AdapterType::MotherDuck,
+            AdapterType::Athena,
+            AdapterType::Trino,
+            AdapterType::Starburst,
+            AdapterType::Datafusion,
+            AdapterType::ClickHouse,
+            AdapterType::Exasol,
+        ];
+
+        const NAMES: &[&str] = &[
+            "",
+            "a",
+            "MixedCase",
+            "UPPER",
+            "snake_case",
+            "with$dollar",
+            "1leading_digit",
+            "select",
+            "a-b",
+            "a b",
+            "a.b",
+            "a\"b",
+            "\"",
+            "a`b",
+            "a\\b",
+            "a'b",
+            "日本語",
+            "café",
+        ];
+
+        fn column(adapter_type: AdapterType, name: &str) -> Column {
+            Column::new(
+                adapter_type,
+                name.to_string(),
+                "int".to_string(),
+                None,
+                None,
+                None,
+            )
+        }
+
+        #[test]
+        fn matches_v1_when_nothing_needs_escaping() {
+            for &adapter_type in ADAPTERS {
+                let q = quote_char_v1(adapter_type);
+                for &name in NAMES {
+                    if escaped_identifier(name.into(), adapter_type, q) != name {
+                        continue;
+                    }
+                    assert_eq!(
+                        column(adapter_type, name)
+                            .quoted()
+                            .display(adapter_type)
+                            .to_string(),
+                        quoted_v1(adapter_type, name),
+                        "adapter_type={adapter_type:?} name={name:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn escapes_where_v1_emits_broken_sql() {
+            #[rustfmt::skip]
+            let cases = [
+                (AdapterType::Snowflake,  "a\"b",  "\"a\"\"b\""),
+                (AdapterType::Postgres,   "a\"b",  "\"a\"\"b\""),
+                (AdapterType::Athena,     "a\"b",  "\"a\"\"b\""),
+                (AdapterType::Bigquery,   "a`b",   "`a\\`b`"),
+                (AdapterType::Bigquery,   "a\\b",  "`a\\\\b`"),
+                (AdapterType::Databricks, "a`b",   "`a``b`"),
+                (AdapterType::Spark,      "a`b",   "`a``b`"),
+                (AdapterType::ClickHouse, "a\"b",  "\"a\"\"b\""),
+                (AdapterType::ClickHouse, "a\\b",  "\"a\\\\b\""),
+            ];
+            for (adapter_type, name, expected) in cases {
+                assert_ne!(quoted_v1(adapter_type, name), expected);
+                assert_eq!(
+                    column(adapter_type, name)
+                        .quoted()
+                        .display(adapter_type)
+                        .to_string(),
+                    expected,
+                    "adapter_type={adapter_type:?} name={name:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_identifier_quoting_per_adapter() {
         // Spark, like Databricks and BigQuery, quotes identifiers with backticks.
@@ -1425,7 +1565,7 @@ mod tests {
                 None,
             );
             assert_eq!(
-                col.quoted(),
+                col.quoted().display(adapter).to_string(),
                 "`id`",
                 "{adapter:?} should backtick-quote identifiers"
             );
@@ -1441,7 +1581,7 @@ mod tests {
                 None,
             );
             assert_eq!(
-                col.quoted(),
+                col.quoted().display(adapter).to_string(),
                 "\"id\"",
                 "{adapter:?} should double-quote identifiers"
             );

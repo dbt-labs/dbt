@@ -539,7 +539,7 @@ fn spark_get_relation_sql(
     }
     parts.push(Ident::from_string(schema, quoting.schema));
     parts.push(Ident::from_string(identifier, quoting.identifier));
-    format!("DESCRIBE TABLE EXTENDED {}", join_dotted(&parts))
+    format!("DESCRIBE TABLE EXTENDED {}", join_dotted(parts.iter()))
 }
 
 #[allow(clippy::too_many_arguments)]

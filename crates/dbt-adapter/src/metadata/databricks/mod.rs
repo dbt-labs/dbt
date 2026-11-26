@@ -346,28 +346,10 @@ WHERE table_catalog = {catalog}
     Ok(relations)
 }
 
-fn get_relation_with_quote_policy(
-    relation: &Arc<dyn BaseRelation>,
-) -> AdapterResult<(Ident, Ident, Ident)> {
-    let database = relation.database_as_str()?;
-    let schema = relation.schema_as_str()?;
-    let identifier = relation.identifier_as_str()?;
-
-    let database = if database.is_empty() {
-        Ident::plain("")
-    } else {
-        Ident::from_string(database, relation.quote_policy().database)
-    };
-    let schema = Ident::from_string(&schema, relation.quote_policy().schema);
-    let identifier = Ident::from_string(&identifier, relation.quote_policy().identifier);
-
-    Ok((database, schema, identifier))
-}
-
 pub(crate) fn databricks_relation_sql_name(
     relation: &Arc<dyn BaseRelation>,
 ) -> AdapterResult<String> {
-    let (database, schema, identifier) = get_relation_with_quote_policy(relation)?;
+    let (database, schema, identifier) = relation.fqn_pieces()?;
     let include = relation.include_policy();
     let mut parts = Vec::new();
     if include.database && !database.is_empty() {
@@ -379,7 +361,8 @@ pub(crate) fn databricks_relation_sql_name(
     if include.identifier {
         parts.push(identifier);
     }
-    Ok(join_dotted(parts.iter()))
+    let adapter_type = relation.adapter_type();
+    Ok(join_dotted(parts.iter().map(|part| part.display(adapter_type))).to_string())
 }
 
 fn databricks_safely_quoted_relation(
@@ -1626,7 +1609,14 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
         let map_f = move |conn: &mut ConnectionGuard<'_>,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Arc<Schema>> {
-            let (database, schema, identifier) = get_relation_with_quote_policy(relation)?;
+            let (database, schema, identifier) = relation.fqn_pieces()?;
+            let adapter_type = relation.adapter_type();
+            let database_is_empty = database.is_empty();
+            let (database, schema, identifier) = (
+                database.display(adapter_type),
+                schema.display(adapter_type),
+                identifier.display(adapter_type),
+            );
 
             // Databricks system tables doesn't support `DESCRIBE TABLE EXTENDED .. AS JSON` :(
             // More details refer to the test adapter::repros::databricks_use_system_relations
@@ -1672,7 +1662,7 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
                 // Schema-enabled Fabric lakehouses carry the lakehouse name in
                 // `database` (3-part naming); classic lakehouses and plain
                 // Spark leave it empty.
-                AdapterType::Spark if database.is_empty() => {
+                AdapterType::Spark if database_is_empty => {
                     format!("{schema}.{identifier}")
                 }
                 AdapterType::Spark => format!("{database}.{schema}.{identifier}"),
@@ -2575,97 +2565,51 @@ mod tests {
     }
 
     #[test]
-    fn test_get_relation_with_quote_policy_no_quoting() {
-        let relation =
-            create_test_relation("test_db", "test_schema", "test_table", false, false, false);
+    fn test_fqn_pieces() {
+        const NAMES: [&str; 3] = ["test_db", "test_schema", "test_table"];
+        const T: bool = true;
+        const F: bool = false;
 
-        let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
+        // (names, quote policy, expected), each as [database, schema, identifier].
+        #[rustfmt::skip]
+        let cases: &[([&str; 3], [bool; 3], [&str; 3])] = &[
+            // no quoting
+            (NAMES, [F, F, F], ["test_db",   "test_schema",   "test_table"]),
+            // identifier only
+            (NAMES, [F, F, T], ["test_db",   "test_schema",   "`test_table`"]),
+            // database and schema only
+            (NAMES, [T, T, F], ["`test_db`", "`test_schema`", "test_table"]),
+            // mixed
+            (NAMES, [T, F, T], ["`test_db`", "test_schema",   "`test_table`"]),
+            // all parts
+            (NAMES, [T, T, T], ["`test_db`", "`test_schema`", "`test_table`"]),
+            // an empty database stays empty even when quoting is on
+            (["", "test_schema", "test_table"], [T, T, T],
+             ["", "`test_schema`", "`test_table`"]),
+            // special characters are quoted regardless of the policy
+            (["test-db", "test-schema", "test-table"], [F, F, T],
+             ["`test-db`", "`test-schema`", "`test-table`"]),
+            // reserved keywords
+            (["order", "select", "table"], [T, T, T],
+             ["`order`", "`select`", "`table`"]),
+        ];
 
-        assert_eq!(database.to_string(), "test_db");
-        assert_eq!(schema.to_string(), "test_schema");
-        assert_eq!(identifier.to_string(), "test_table");
-    }
-
-    #[test]
-    fn test_get_relation_with_quote_policy_identifier_only() {
-        let relation =
-            create_test_relation("test_db", "test_schema", "test_table", false, false, true);
-
-        let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
-
-        assert_eq!(database.to_string(), "test_db");
-        assert_eq!(schema.to_string(), "test_schema");
-        assert_eq!(identifier.to_string(), "`test_table`");
-    }
-
-    #[test]
-    fn test_get_relation_with_quote_policy_all_parts() {
-        let relation =
-            create_test_relation("test_db", "test_schema", "test_table", true, true, true);
-
-        let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
-
-        assert_eq!(database.to_string(), "`test_db`");
-        assert_eq!(schema.to_string(), "`test_schema`");
-        assert_eq!(identifier.to_string(), "`test_table`");
-    }
-
-    #[test]
-    fn test_get_relation_with_quote_policy_all_parts_empty_db() {
-        let relation = create_test_relation("", "test_schema", "test_table", true, true, true);
-
-        let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
-
-        assert_eq!(database.to_string(), "");
-        assert_eq!(schema.to_string(), "`test_schema`");
-        assert_eq!(identifier.to_string(), "`test_table`");
-    }
-
-    #[test]
-    fn test_get_relation_with_quote_policy_mixed_scenario() {
-        let relation =
-            create_test_relation("test_db", "test_schema", "test_table", true, false, true);
-
-        let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
-
-        assert_eq!(database.to_string(), "`test_db`");
-        assert_eq!(schema.to_string(), "test_schema");
-        assert_eq!(identifier.to_string(), "`test_table`");
-    }
-
-    #[test]
-    fn test_get_relation_with_quote_policy_with_special_characters() {
-        let relation =
-            create_test_relation("test-db", "test-schema", "test-table", false, false, true);
-
-        let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
-
-        assert_eq!(database.to_string(), "`test-db`");
-        assert_eq!(schema.to_string(), "`test-schema`");
-        assert_eq!(identifier.to_string(), "`test-table`");
-    }
-
-    #[test]
-    fn test_get_relation_with_quote_policy_with_reserved_keywords() {
-        let relation = create_test_relation("order", "select", "table", true, true, true);
-
-        let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
-
-        assert_eq!(database.to_string(), "`order`");
-        assert_eq!(schema.to_string(), "`select`");
-        assert_eq!(identifier.to_string(), "`table`");
-    }
-
-    #[test]
-    fn test_get_relation_with_quote_policy_database_schema_only() {
-        let relation =
-            create_test_relation("test_db", "test_schema", "test_table", true, true, false);
-
-        let (database, schema, identifier) = get_relation_with_quote_policy(&relation).unwrap();
-
-        assert_eq!(database.to_string(), "`test_db`");
-        assert_eq!(schema.to_string(), "`test_schema`");
-        assert_eq!(identifier.to_string(), "test_table");
+        for &(names, quote, expected) in cases {
+            let [database, schema, identifier] = names;
+            let [quote_database, quote_schema, quote_identifier] = quote;
+            let relation = create_test_relation(
+                database,
+                schema,
+                identifier,
+                quote_database,
+                quote_schema,
+                quote_identifier,
+            );
+            let (database, schema, identifier) = relation.fqn_pieces().unwrap();
+            let actual = [database, schema, identifier]
+                .map(|part| part.display(AdapterType::Databricks).to_string());
+            assert_eq!(actual, expected, "names: {names:?}, quote: {quote:?}");
+        }
     }
 
     #[test]

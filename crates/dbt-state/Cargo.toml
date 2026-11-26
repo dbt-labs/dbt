@@ -19,6 +19,7 @@ path = "src/mod.rs"
 
 [dependencies]
 dbt-adapter = { workspace = true }
+dbt-adapter-sql = { workspace = true }
 dbt-cloud-config = { workspace = true }
 dbt-common = { workspace = true }
 dbt-frontend-common = { workspace = true }
