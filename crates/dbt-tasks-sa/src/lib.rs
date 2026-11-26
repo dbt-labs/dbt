@@ -21,6 +21,7 @@ pub mod graph;
 pub mod injected;
 pub mod materialize;
 pub mod microbatch;
+pub mod node_run;
 pub mod register_seeds;
 pub mod renderable;
 pub mod run_adhoc;
