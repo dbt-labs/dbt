@@ -17,10 +17,38 @@ pub(crate) fn split_statements(sql: &str) -> Vec<&str> {
     let mut statements = Vec::new();
     let mut start = 0;
     let mut scanner = Scanner::new(sql);
+    // `INSERT … FORMAT <name>` is followed by raw data up to the end of the
+    // query (ClickHouse `ParserInsertQuery`), so a `;` after it is data. Only
+    // the words outside parentheses matter: the column list may name anything.
+    let mut depth = 0usize;
+    let mut words = 0usize;
+    let mut insert = false;
     while let Some((pos, byte)) = scanner.next_significant() {
-        if byte == b';' {
-            statements.push(&sql[start..pos]);
-            start = pos + 1;
+        match byte {
+            b';' => {
+                statements.push(&sql[start..pos]);
+                start = pos + 1;
+                (depth, words, insert) = (0, 0, false);
+            }
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && is_word_byte(byte) => {
+                let word = scanner.take_word(pos);
+                words += 1;
+                if words == 1 {
+                    insert = word.eq_ignore_ascii_case("insert");
+                } else if insert && word.eq_ignore_ascii_case("format") {
+                    if scanner.peek_significant().is_some_and(is_word_byte) {
+                        break;
+                    }
+                } else if ["select", "with", "values", "watch"]
+                    .iter()
+                    .any(|keyword| word.eq_ignore_ascii_case(keyword))
+                {
+                    insert = false;
+                }
+            }
+            _ => {}
         }
     }
     let tail = &sql[start..];
@@ -41,6 +69,10 @@ fn trim_keeping_hash_comment_space(sql: &str) -> &str {
     } else {
         trimmed
     }
+}
+
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 /// Whether `sql` holds no statement at all: only whitespace and comments. A
@@ -93,6 +125,24 @@ impl<'a> Scanner<'a> {
             }
         }
         None
+    }
+
+    /// The word starting at `start`, whose first byte was just yielded; the
+    /// scanner moves past it.
+    fn take_word(&mut self, start: usize) -> &'a str {
+        let len = self.bytes[start..]
+            .iter()
+            .take_while(|byte| is_word_byte(**byte))
+            .count();
+        self.pos = start + len;
+        &self.sql[start..self.pos]
+    }
+
+    fn peek_significant(&mut self) -> Option<u8> {
+        let pos = self.pos;
+        let next = self.next_significant().map(|(_, byte)| byte);
+        self.pos = pos;
+        next
     }
 
     /// Quoted literal/identifier with backslash escapes and doubled quotes
@@ -312,5 +362,40 @@ mod tests {
         ] {
             assert!(!is_empty_or_comment_only(sql), "{sql:?}");
         }
+    }
+
+    #[test]
+    fn insert_format_data_is_never_split() {
+        for sql in [
+            "insert into t (id, txt) format CSV\n1,a; b\n2,c",
+            "INSERT INTO `db`.`t` (`id`)\n-- settings_section\nSETTINGS max_insert_threads=2\nFORMAT CSV\n1,it's; here\n",
+            "/* comment */ insert into t (format, select) format JSONEachRow {\"a\": \"x;y\"}; {\"a\": 2}",
+        ] {
+            assert_eq!(split_statements(sql), vec![sql.trim()], "{sql:?}");
+        }
+        assert_eq!(
+            split_statements("truncate table t; insert into t format CSV\n1;2\n3;4"),
+            vec!["truncate table t", " insert into t format CSV\n1;2\n3;4"]
+        );
+    }
+
+    #[test]
+    fn format_outside_insert_data_still_splits() {
+        assert_eq!(
+            split_statements("insert into t select format from s; select 2"),
+            vec!["insert into t select format from s", " select 2"]
+        );
+        assert_eq!(
+            split_statements("insert into t (format) values ('a;b'); select 2"),
+            vec!["insert into t (format) values ('a;b')", " select 2"]
+        );
+        assert_eq!(
+            split_statements("select 1 format CSV; select 2"),
+            vec!["select 1 format CSV", " select 2"]
+        );
+        assert_eq!(
+            split_statements("insert into t format; select 2"),
+            vec!["insert into t format", " select 2"]
+        );
     }
 }
