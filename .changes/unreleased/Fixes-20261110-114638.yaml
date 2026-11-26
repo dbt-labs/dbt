@@ -1,0 +1,7 @@
+kind: Fixes
+body: Compare modules.pytz.timezone objects by zone name, so timezones looked up by different names are no longer equal
+time: 2026-11-10T11:46:38.766275-03:00
+custom:
+    author: luc-pimentel
+    issue: "16973"
+    project: dbt-core
