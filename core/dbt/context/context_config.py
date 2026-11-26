@@ -305,13 +305,17 @@ class UnrenderedConfigGenerator(BaseContextConfigGenerator[Dict[str, Any]]):
         validate: bool = False,
     ) -> Dict[str, Any]:
         translated = self._active_project.credentials.translate_aliases(partial)
-        # Merge dict_key_append configs (grants) like the rendered config does, so that
+        # Merge dict_key_append configs (grants) like the rendered config does, using the same
+        # dbt-common merge (_merge_field_value is private there), so that
         # unrendered_config reflects grants inherited from parent levels. A plain update
         # would let the deepest level clobber them, hiding parent changes from state:modified.
+        # The accumulated value is merged onto {} first so that its own `+` keys are folded in,
+        # as they are when the rendered config starts from its default.
         for key in BaseConfig.mergebehavior["dict_key_append"]:
             if isinstance(result.get(key), dict) and isinstance(translated.get(key), dict):
+                accumulated = _merge_field_value(MergeBehavior.DictKeyAppend, {}, result[key])
                 translated[key] = _merge_field_value(
-                    MergeBehavior.DictKeyAppend, result[key], translated[key]
+                    MergeBehavior.DictKeyAppend, accumulated, translated[key]
                 )
         result.update(translated)
         return result

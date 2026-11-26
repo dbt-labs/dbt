@@ -1,5 +1,6 @@
 from dbt.clients.jinja_static import statically_parse_unrendered_config
 from dbt.flags import get_flags
+from dbt_common.contracts.config.base import BaseConfig
 
 
 def upgrade_manifest_json_dbt_version(manifest: dict) -> dict:
@@ -30,6 +31,12 @@ def upgrade_unrendered_config(manifest: dict) -> dict:
                 new_unrendered_config_from_code = (
                     statically_parse_unrendered_config(node.get("raw_code", "")) or {}
                 )
+                # stored grants already include the code's grants merged with inherited grants
+                for key in BaseConfig.mergebehavior["dict_key_append"]:
+                    if isinstance(node["unrendered_config"].get(key), dict) and isinstance(
+                        new_unrendered_config_from_code.get(key), dict
+                    ):
+                        new_unrendered_config_from_code.pop(key)
                 manifest["nodes"][unique_id]["unrendered_config"].update(
                     new_unrendered_config_from_code
                 )
