@@ -18,7 +18,11 @@ use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_dag::schedule::Schedule;
 use dbt_schemas::schemas::{InjectedNode, Nodes};
 use dbt_tasks_core::RunTasksArgs;
-use dbt_tasks_core::task::{TP, Task, TasksForNode};
+
+// What a feature writes a task with, beside what this module defines.
+pub use dbt_tasks_core::context::TaskRunnerCtx;
+pub use dbt_tasks_core::task::{TP, Task, TasksForNode};
+pub use dbt_telemetry::NodeType;
 
 use crate::graph::command_phases;
 
@@ -295,16 +299,13 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::AtomicUsize;
 
+    use super::*;
     use dbt_common::stats::NodeStatus;
     use dbt_common::{ErrorCode, fs_err};
     use dbt_schemas::jinja_node::JinjaNodeFields;
     use dbt_schemas::schemas::{
         CommonAttributes, InjectedNodeType, InternalDbtNodeAttributes, NodeBaseAttributes,
     };
-    use dbt_tasks_core::context::TaskRunnerCtx;
-    use dbt_telemetry::NodeType;
-
-    use super::*;
 
     const WIDGET: &str = "widget";
     const GADGET: &str = "gadget";
