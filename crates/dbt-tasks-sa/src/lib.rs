@@ -18,6 +18,7 @@ pub mod debug;
 pub mod experimental;
 pub mod extract_sources;
 pub mod graph;
+pub mod injected;
 pub mod materialize;
 pub mod microbatch;
 pub mod register_seeds;

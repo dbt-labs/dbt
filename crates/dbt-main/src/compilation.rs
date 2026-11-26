@@ -93,10 +93,8 @@ use dbt_schemas::{
     state::{CacheState, DbtPackage, DbtState, Macros, ModelStatus, ResolverState},
     stats::Stats,
 };
-use dbt_tasks_core::task::TP;
 use dbt_tasks_core::task_runner_hooks::TaskRunnerHooksFactory;
-use dbt_tasks_sa::experimental::ExperimentalRuns;
-use dbt_tasks_sa::graph::command_phases;
+use dbt_tasks_sa::injected::InjectedRuns;
 use dbt_tasks_sa::utils::{
     update_columns_from_schemas, update_resolved_states_manifest_with_schemas_and_compiled_sql,
 };
@@ -2506,17 +2504,13 @@ impl DbtProjectCompilation {
         let tasks_for_node_factory = Arc::clone(&feature_stack.task_runner.tasks_for_node_factory);
         let compare_task_graph_builder =
             feature_stack.task_runner.compare_task_graph_builder.clone();
-        // Start the experimentals with selected nodes before the graph is built, so one that can't
-        // run stops the invocation before any node runs.
-        let experimentals = feature_stack.experimentals.experimentals.clone();
-        let runs_nodes = command_phases(run_task_args.command, &experimentals)
-            .is_some_and(|phases| phases.contains(&TP::Run));
-        let experimental_runs = ExperimentalRuns::start(
-            &experimentals,
+        // Start the features that have selected nodes before the graph is built, so one that
+        // can't run stops the invocation before any node runs.
+        let injected_runs = InjectedRuns::start(
+            feature_stack.experimentals.experimentals.injected_tasks(),
             &run_task_args,
             &resolved_state.nodes,
             &schedule,
-            runs_nodes,
         )
         .await?;
         let graph_builder = GraphBuilder::new(
@@ -2524,8 +2518,7 @@ impl DbtProjectCompilation {
             Arc::clone(&static_analysis_buckets),
             tasks_for_node_factory,
             compare_task_graph_builder,
-            experimentals,
-            experimental_runs.clone(),
+            injected_runs.clone(),
         );
 
         // Increment counters used in final run reporting.
@@ -2546,10 +2539,10 @@ impl DbtProjectCompilation {
             if node_type == NodeType::Check && !count_checks {
                 return;
             }
-            // An experimental node is graph work only while its experimental runs.
+            // An injected node is graph work only while the feature of its kind runs.
             if node
                 .injected_kind()
-                .is_some_and(|experimental_type| !experimental_runs.is_running(experimental_type))
+                .is_some_and(|kind| !injected_runs.has_started(kind))
             {
                 return;
             }
@@ -2643,9 +2636,9 @@ impl DbtProjectCompilation {
                         token.clone(),
                     )
                     .await;
-                // Experimental runs finish whatever the graph's outcome. A run that fails to finish
-                // is reported without discarding the results.
-                experimental_runs.finish();
+                // The runs of features finish whatever the graph's outcome. A run that fails to
+                // finish is reported without discarding the results.
+                injected_runs.finish();
                 if run_result.is_err() {
                     run_cache_service_after_run_failed(
                         &run_cache_ctx_on_error,

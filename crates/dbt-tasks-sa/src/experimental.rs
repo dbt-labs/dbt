@@ -10,7 +10,6 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -23,7 +22,6 @@ use dbt_common::io_args::FsCommand;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
 use dbt_common::{ErrorCode, FsResult};
-use dbt_dag::schedule::Schedule;
 use dbt_flags::{FlagDef, Stage};
 use dbt_jinja_utils::DocMacro;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -34,9 +32,8 @@ use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::profiles::TargetContext;
 use dbt_schemas::schemas::relations::base::{BaseRelation, ComponentName};
 use dbt_schemas::schemas::{InjectedNode, InternalDbtNodeAttributes, Nodes};
-use dbt_tasks_core::RunTasksArgs;
 use dbt_tasks_core::context::TaskRunnerCtx;
-use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation};
+use dbt_tasks_core::task::{TP, Task, TasksForNode, run_blocking_task_operation};
 use dbt_telemetry::NodeType;
 use minijinja::State;
 use minijinja::Value as MinijinjaValue;
@@ -51,6 +48,8 @@ pub use dbt_parser::resolve::resolvable_node::{
     Extension, ExtensionSet, Extensions, IndexCtx, IndexedName, LinkCtx, NoExtension, NoExtensions,
     ResolvableNode, ResolvableNodes, ResolveCtx,
 };
+
+use crate::injected::{InjectedCommand, InjectedRun, InjectedTasks, StartCtx, TasksCtx};
 
 /// Adds its own kind of node to a project ([`ResolvableNode`]) and runs the ones selected.
 ///
@@ -654,6 +653,8 @@ impl Task for ExperimentalTask {
 #[derive(Clone, Default)]
 pub struct Experimentals {
     experimentals: Vec<Arc<dyn Experimental>>,
+    /// The tasks of the experimentals' nodes, one source for each experimental.
+    tasks: Vec<Arc<dyn InjectedTasks>>,
     /// The kinds of node that have nothing to run: [`Self::with_kind`].
     kinds: Vec<Arc<dyn ResolvableNode>>,
     /// The kinds of the nodes that the experimentals and the kinds add.
@@ -679,6 +680,10 @@ impl Experimentals {
                 &[experimental_type],
                 experimental.as_ref(),
             );
+            registry.tasks.push(Arc::new(ExperimentalTasks {
+                experimental: Arc::clone(experimental),
+                kinds: [experimental_type],
+            }));
         }
         registry.experimentals = experimentals;
         registry
@@ -741,8 +746,9 @@ impl Experimentals {
         self
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Experimental>> {
-        self.experimentals.iter()
+    /// What gives the task graph the tasks of the experimentals' nodes.
+    pub fn injected_tasks(&self) -> &[Arc<dyn InjectedTasks>] {
+        &self.tasks
     }
 
     /// Every feature flag this binary knows: dbt's own, and the flags that turn on its
@@ -769,16 +775,6 @@ impl Experimentals {
             .filter(|flag| flag.stage == Stage::Beta)
             .map(|flag| (flag.name, flag.description))
             .collect()
-    }
-
-    /// The experimental that owns `command`, if one does.
-    pub fn command_owner(&self, command: FsCommand) -> Option<&Arc<dyn Experimental>> {
-        let FsCommand::Extension(name) = command else {
-            return None;
-        };
-        self.experimentals
-            .iter()
-            .find(|experimental| experimental.command() == Some(name))
     }
 
     /// The kinds of node a project resolves with: dbt's own, then the experimentals', then
@@ -832,132 +828,84 @@ fn is_dbt_name(name: &str) -> bool {
         || NodeType::from_str_name(&format!("NODE_TYPE_{}", name.to_ascii_uppercase())).is_some()
 }
 
-/// One invocation's experimental runs, by experimental type.
-#[derive(Clone, Default)]
-pub struct ExperimentalRuns {
-    started: Arc<StartedRuns>,
+/// An experimental as the source of its nodes' tasks: each selected node gets one task, in the
+/// run phase, which calls [`ExperimentalRun::run`].
+struct ExperimentalTasks {
+    experimental: Arc<dyn Experimental>,
+    /// The experimental's type.
+    kinds: [&'static str; 1],
 }
 
-/// The runs that have started. Dropping them finishes any not yet finished, so an invocation that
-/// stops early, or an experimental that can't start, still finishes the runs that did.
-#[derive(Default)]
-struct StartedRuns {
-    runs: BTreeMap<&'static str, Arc<dyn ExperimentalRun>>,
-    finished: AtomicBool,
-}
+#[async_trait]
+impl InjectedTasks for ExperimentalTasks {
+    fn kinds(&self) -> &[&'static str] {
+        &self.kinds
+    }
 
-impl StartedRuns {
-    fn finish(&self) {
-        if self.finished.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        for (experimental_type, run) in &self.runs {
-            if let Err(error) = run.finish() {
-                emit_error_log_from_fs_error(
-                    *error.into_fs_error(experimental_type, ErrorCode::ExperimentalError),
-                );
-            }
-        }
+    fn command(&self) -> Option<InjectedCommand> {
+        self.experimental.command().map(InjectedCommand::runs)
+    }
+
+    async fn start(&self, cx: &StartCtx<'_>) -> FsResult<Option<Arc<dyn InjectedRun>>> {
+        let [experimental_type] = self.kinds;
+        let selected: Vec<ExperimentalNodeRef> = cx
+            .selected
+            .iter()
+            .map(|node| ExperimentalNodeRef::new(node, cx.nodes))
+            .collect();
+        let args = ExperimentalRunArgs {
+            command: cx.command,
+            invocation_id: cx.invocation_id,
+            project_dir: cx.project_dir,
+            target_dir: cx.target_dir,
+            selected: &selected,
+            command_options: cx.command_options,
+        };
+        let run = self.experimental.start(&args).await.map_err(|error| {
+            error.into_fs_error(experimental_type, ErrorCode::ExperimentalError)
+        })?;
+        Ok(run.map(|run| {
+            Arc::new(StartedExperimental {
+                experimental_type,
+                run,
+            }) as Arc<dyn InjectedRun>
+        }))
     }
 }
 
-impl Drop for StartedRuns {
-    fn drop(&mut self) {
-        self.finish();
-    }
+/// One invocation's run of an experimental, as the source of its nodes' tasks.
+struct StartedExperimental {
+    experimental_type: &'static str,
+    run: Arc<dyn ExperimentalRun>,
 }
 
-impl ExperimentalRuns {
-    /// Starts every experimental with selected nodes, giving each its own, in schedule order.
-    ///
-    /// Experimental nodes only run, so a command whose graph has no Run phase starts no
-    /// experimental. An experimental's own command runs only that experimental's nodes.
-    pub async fn start(
-        experimentals: &Experimentals,
-        arg: &RunTasksArgs,
-        nodes: &Nodes,
-        schedule: &Schedule<String>,
-        runs_nodes: bool,
-    ) -> FsResult<Self> {
-        if !runs_nodes {
-            return Ok(Self::default());
-        }
-        let mut started = StartedRuns::default();
-        let command_owner = experimentals
-            .command_owner(arg.command)
-            .map(|experimental| experimental.experimental_type());
-        let invocation_id = arg.io.invocation_id.to_string();
-        for experimental in experimentals.iter() {
-            let experimental_type = experimental.experimental_type();
-            if command_owner.is_some_and(|owner| owner != experimental_type) {
-                continue;
-            }
-            let selected: Vec<ExperimentalNodeRef> = schedule
-                .sorted_nodes
-                .iter()
-                .filter(|unique_id| schedule.selected_nodes.contains(*unique_id))
-                .filter_map(|unique_id| nodes.injected.get(unique_id))
-                .filter(|node| node.injected_kind() == Some(experimental_type))
-                .map(|node| ExperimentalNodeRef::new(node, nodes))
-                .collect();
-            if selected.is_empty() {
-                continue;
-            }
-            let args = ExperimentalRunArgs {
-                command: arg.command,
-                invocation_id: &invocation_id,
-                project_dir: &arg.io.in_dir,
-                target_dir: &arg.io.out_dir,
-                selected: &selected,
-                command_options: &arg.command_options,
-            };
-            match experimental.start(&args).await {
-                Ok(Some(run)) => {
-                    started.runs.insert(experimental_type, run);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    return Err(
-                        error.into_fs_error(experimental_type, ErrorCode::ExperimentalError)
-                    );
-                }
-            }
-        }
-        Ok(Self {
-            started: Arc::new(started),
+impl InjectedRun for StartedExperimental {
+    fn tasks_for_node(&self, node: &Arc<dyn InjectedNode>, cx: &TasksCtx<'_>) -> TasksForNode {
+        cx.run_task_if_selected(|| ExperimentalTask {
+            experimental_type: self.experimental_type,
+            node: Arc::clone(node),
+            node_ref: ExperimentalNodeRef::new(node, cx.nodes),
+            run: Arc::clone(&self.run),
         })
     }
 
-    /// Whether the experimental that adds nodes of `experimental_type` is running.
-    pub fn is_running(&self, experimental_type: &str) -> bool {
-        self.started.runs.contains_key(experimental_type)
-    }
-
-    /// The task for an experimental node, if its experimental is running.
-    pub fn task(&self, node: &Arc<dyn InjectedNode>, nodes: &Nodes) -> Option<Arc<dyn Task>> {
-        let (experimental_type, run) = self.started.runs.get_key_value(node.injected_kind()?)?;
-        Some(Arc::new(ExperimentalTask {
-            experimental_type,
-            node: Arc::clone(node),
-            node_ref: ExperimentalNodeRef::new(node, nodes),
-            run: Arc::clone(run),
-        }))
-    }
-
-    /// Finishes every run, once, reporting any that fails to. Runs not finished by the time the
-    /// last clone is dropped are finished then.
-    pub fn finish(&self) {
-        self.started.finish();
+    fn finish(&self) -> FsResult<()> {
+        self.run.finish().map_err(|error| {
+            error.into_fs_error(self.experimental_type, ErrorCode::ExperimentalError)
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::injected::InjectedRuns;
+    use dbt_dag::schedule::Schedule;
     use dbt_flags::Remote;
     use dbt_schemas::jinja_node::JinjaNodeFields;
     use dbt_schemas::schemas::{CommonAttributes, InjectedNodeType, NodeBaseAttributes};
-    use std::sync::atomic::AtomicUsize;
+    use dbt_tasks_core::RunTasksArgs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     static TEST_FLAG: FlagDef = flag(false, Stage::Beta);
     static ON_BY_DEFAULT: FlagDef = flag(true, Stage::Beta);
@@ -1069,7 +1017,6 @@ mod tests {
 
     /// An experimental whose runs count how often they finish, or one that can't start.
     struct CountingExperimental {
-        experimental_type: &'static str,
         starts: bool,
         finishes: Arc<AtomicUsize>,
     }
@@ -1080,7 +1027,7 @@ mod tests {
             Some(&TEST_FLAG)
         }
         fn properties_keys(&self) -> &'static [&'static str] {
-            own_key(self.experimental_type)
+            own_key(WIDGET)
         }
         async fn resolve(&self, _ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
             Ok(())
@@ -1090,7 +1037,7 @@ mod tests {
     #[async_trait]
     impl Experimental for CountingExperimental {
         fn experimental_type(&self) -> &'static str {
-            self.experimental_type
+            WIDGET
         }
         async fn start(
             &self,
@@ -1120,63 +1067,45 @@ mod tests {
         }
     }
 
-    /// Starts `widget` and then `gadget`, both with a selected node, and counts how often the
-    /// `widget` run finishes.
-    fn start_counting(gadget_starts: bool) -> (FsResult<ExperimentalRuns>, Arc<AtomicUsize>) {
-        let finishes = Arc::new(AtomicUsize::new(0));
-        let experimentals = Experimentals::new(vec![
-            Arc::new(CountingExperimental {
-                experimental_type: WIDGET,
-                starts: true,
-                finishes: Arc::clone(&finishes),
-            }),
-            Arc::new(CountingExperimental {
-                experimental_type: GADGET,
-                starts: gadget_starts,
-                finishes: Arc::new(AtomicUsize::new(0)),
-            }),
-        ]);
+    /// Starts `experimentals` for `command`, with a `widget` node and a `gadget` node selected.
+    fn start(experimentals: &Experimentals, command: FsCommand) -> FsResult<InjectedRuns> {
         let (nodes, schedule) = nodes_and_schedule();
         let arg = RunTasksArgs {
-            command: FsCommand::Build,
+            command,
             ..Default::default()
         };
-        let runs = futures::executor::block_on(ExperimentalRuns::start(
-            &experimentals,
+        futures::executor::block_on(InjectedRuns::start(
+            experimentals.injected_tasks(),
             &arg,
             &nodes,
             &schedule,
-            true,
-        ));
-        (runs, finishes)
+        ))
     }
 
     #[test]
-    fn a_experimental_that_cant_start_finishes_the_runs_that_did() {
-        let (runs, finishes) = start_counting(false);
-        assert!(runs.is_err());
-        assert_eq!(finishes.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn runs_finish_once() {
-        let (runs, finishes) = start_counting(true);
-        let runs = runs.unwrap();
-        let clone = runs.clone();
-        runs.finish();
-        clone.finish();
-        drop(runs);
-        drop(clone);
-        assert_eq!(finishes.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn runs_not_finished_finish_when_dropped() {
-        let (runs, finishes) = start_counting(true);
-        let runs = runs.unwrap();
+    fn a_started_experimental_finishes_once() {
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let experimentals = Experimentals::new(vec![Arc::new(CountingExperimental {
+            starts: true,
+            finishes: Arc::clone(&finishes),
+        })]);
+        let runs = start(&experimentals, FsCommand::Build).unwrap();
+        assert!(runs.has_started(WIDGET));
         assert_eq!(finishes.load(Ordering::SeqCst), 0);
+        runs.finish();
         drop(runs);
         assert_eq!(finishes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_experimental_that_cant_start_stops_the_invocation() {
+        let experimentals = Experimentals::new(vec![Arc::new(CountingExperimental {
+            starts: false,
+            finishes: Arc::new(AtomicUsize::new(0)),
+        })]);
+        let error = start(&experimentals, FsCommand::Build).err().unwrap();
+        assert_eq!(error.code, ErrorCode::ExperimentalError);
+        assert_eq!(error.to_string(), "widget: can't start");
     }
 
     fn experimentals(experimental_types: &[&'static str]) -> Experimentals {
@@ -1236,87 +1165,37 @@ mod tests {
         (nodes, schedule)
     }
 
-    /// The experimental types `command` starts, with only `selected` experimental types' nodes
-    /// selected.
-    fn started(command: FsCommand, runs_nodes: bool, selected: &[&str]) -> Vec<&'static str> {
-        let experimentals = experimentals(&[WIDGET, GADGET, GIZMO]);
-        let (nodes, mut schedule) = nodes_and_schedule();
-        schedule
-            .selected_nodes
-            .retain(|id| selected.iter().any(|kind| id.starts_with(kind)));
-        let arg = RunTasksArgs {
-            command,
-            ..Default::default()
-        };
-        let runs = futures::executor::block_on(ExperimentalRuns::start(
-            &experimentals,
-            &arg,
-            &nodes,
-            &schedule,
-            runs_nodes,
-        ))
-        .unwrap();
-        ["widget", "gadget", "gizmo"]
-            .into_iter()
-            .filter(|experimental_type| runs.is_running(experimental_type))
-            .collect()
-    }
-
+    /// An experimental node has one task, in the run phase, when it is selected.
     #[test]
-    fn only_experimentals_with_selected_nodes_start() {
-        assert_eq!(
-            started(FsCommand::Build, true, &["widget", "gadget"]),
-            ["widget", "gadget"]
-        );
-        assert_eq!(started(FsCommand::Build, true, &["gadget"]), ["gadget"]);
-    }
-
-    #[test]
-    fn graphs_that_run_no_nodes_start_no_experimental() {
-        assert!(started(FsCommand::Compile, false, &["widget", "gadget"]).is_empty());
-    }
-
-    #[test]
-    fn a_experimentals_own_command_starts_only_that_experimental() {
-        assert_eq!(
-            started(FsCommand::Extension("widgets"), true, &["widget", "gadget"]),
-            ["widget"]
-        );
-    }
-
-    #[test]
-    fn running_experimentals_hand_out_tasks_for_their_nodes() {
+    fn a_started_experimental_gives_its_selected_nodes_a_run_task() {
         let experimentals = experimentals(&[WIDGET, GADGET]);
-        let (nodes, mut schedule) = nodes_and_schedule();
-        schedule
-            .selected_nodes
-            .retain(|id| id.starts_with("widget"));
-        let arg = RunTasksArgs {
-            command: FsCommand::Build,
-            ..Default::default()
+        let runs = start(&experimentals, FsCommand::Build).unwrap();
+        let (nodes, _) = nodes_and_schedule();
+        let tasks = |selected: bool| {
+            let cx = TasksCtx {
+                phases: &[TP::Render, TP::Analyze, TP::Run],
+                nodes: &nodes,
+                selected,
+            };
+            runs.tasks_for_node(&nodes.injected["widget.p.n"], &cx)
         };
-        let runs = futures::executor::block_on(ExperimentalRuns::start(
-            &experimentals,
-            &arg,
-            &nodes,
-            &schedule,
-            true,
-        ))
-        .unwrap();
-        assert!(runs.task(&nodes.injected["widget.p.n"], &nodes).is_some());
-        assert!(runs.task(&nodes.injected["gadget.p.n"], &nodes).is_none());
+        let selected = tasks(true);
+        let task = selected.runnable.expect("a selected node runs");
+        assert_eq!(task.task_type(), WIDGET);
+        assert_eq!(task.task_phase(), Some(TP::Run));
+        assert!(selected.renderable.is_none() && selected.analyzeable.is_none());
+        assert!(tasks(false).runnable.is_none());
         runs.finish();
     }
 
+    /// An experimental's own command has only the run phase, and starts only that experimental.
     #[test]
-    fn experimentals_are_found_by_command() {
+    fn a_experimentals_own_command_runs_only_its_nodes() {
         let experimentals = experimentals(&[WIDGET, GADGET]);
-        assert_eq!(
-            experimentals
-                .command_owner(FsCommand::Extension("widgets"))
-                .map(|experimental| experimental.experimental_type()),
-            Some(WIDGET)
-        );
+        let runs = start(&experimentals, FsCommand::Extension("widgets")).unwrap();
+        assert_eq!(runs.own_command(), Some((&[TP::Run][..], &[WIDGET][..])));
+        assert!(runs.has_started(WIDGET));
+        assert!(!runs.has_started(GADGET));
     }
 
     /// A project resolves with dbt's kinds of node, then the experimentals'.
@@ -1348,7 +1227,7 @@ mod tests {
                 .any(|flag| flag.name == TEST_FLAG.name)
         );
         // It is not an experimental: nothing starts it.
-        assert_eq!(with_kind.iter().count(), 1);
+        assert_eq!(with_kind.injected_tasks().len(), 1);
     }
 
     #[test]
