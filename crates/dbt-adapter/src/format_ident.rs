@@ -63,6 +63,12 @@ pub fn need_quotes(id: &str, adapter: AdapterType) -> bool {
         return true;
     }
 
+    // Redshift normalizes unquoted identifiers to lowercase, so any uppercase
+    // letter forces quoting to preserve case.
+    if adapter == AdapterType::Redshift && id.chars().any(|c| c.is_ascii_uppercase()) {
+        return true;
+    }
+
     false
 }
 
@@ -574,6 +580,35 @@ mod tests {
     fn test_need_quotes_reserved_keyword() {
         assert!(need_quotes("SELECT", AdapterType::Fabric));
         assert!(need_quotes("select", AdapterType::Fabric));
+    }
+
+    #[test]
+    fn test_need_quotes_preserves_case_where_the_backend_folds() {
+        // Snowflake folds unquoted identifiers to uppercase, Redshift to
+        // lowercase; both need quoting to keep the original casing.
+        assert!(need_quotes("MyTable", AdapterType::Redshift));
+        assert!(need_quotes("myTable", AdapterType::Snowflake));
+        // Casing that survives the fold needs no quotes.
+        assert!(!need_quotes("mytable", AdapterType::Redshift));
+        assert!(!need_quotes("MYTABLE", AdapterType::Snowflake));
+        // A backend that preserves case either way is unaffected.
+        assert!(!need_quotes("MyTable", AdapterType::Postgres));
+    }
+
+    #[test]
+    fn test_format_ident_agrees_with_need_quotes_for_ident() {
+        // `TypeOps` exposes both, so they must answer the same question the
+        // same way for the same identifier.
+        for adapter in [AdapterType::Redshift, AdapterType::Snowflake] {
+            for id in ["MyTable", "mytable", "MYTABLE"] {
+                let quoted = format_ident(id, adapter) != id;
+                assert_eq!(
+                    quoted,
+                    crate::need_quotes::need_quotes(adapter, id),
+                    "format_ident and need_quotes disagree for {id:?} on {adapter:?}"
+                );
+            }
+        }
     }
 
     #[test]
