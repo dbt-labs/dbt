@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import shutil
@@ -1360,3 +1361,163 @@ class TestSeedHashMigration(BaseModifiedState):
             ["ls", "--resource-type", "seed", "--select", "state:modified", "--state", "./state"]
         )
         assert len(results) == 0
+
+
+def _layered_grants_config(layer_2_select_key):
+    return {
+        "models": {
+            "test": {
+                "layer_1": {
+                    "+grants": {"select": ["role_a"]},
+                    "layer_2": {
+                        "+grants": {layer_2_select_key: ["role_b"]},
+                        "layer_3": {
+                            "+grants": {"+select": "role_c"},
+                        },
+                    },
+                },
+            }
+        }
+    }
+
+
+class TestModifiedInheritedGrants(BaseModifiedState):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {"layer_1": {"layer_2": {"layer_3": {"my_model.sql": "select 1 as id"}}}}
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return _layered_grants_config("select")
+
+    def test_changed_inherited_grants(self, project):
+        manifest = run_dbt(["parse"])
+        model = manifest.nodes["model.test.my_model"]
+        assert model.config.grants == {"select": ["role_b", "role_c"]}
+        self.copy_state()
+        assert run_dbt(["ls", "--select", "state:modified", "--state", "./state"]) == []
+
+        # switch the inherited `select` grant from replacing to additive
+        update_config_file(
+            _layered_grants_config("+select"), project.project_root, "dbt_project.yml"
+        )
+        manifest = run_dbt(["parse"])
+        model = manifest.nodes["model.test.my_model"]
+        assert model.config.grants == {"select": ["role_a", "role_b", "role_c"]}
+
+        results = run_dbt(["ls", "--select", "state:modified", "--state", "./state"])
+        assert results == ["test.layer_1.layer_2.layer_3.my_model"]
+
+
+class TestModifiedInheritedGrantsLegacyUnrenderedValues(TestModifiedInheritedGrants):
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            **_layered_grants_config("select"),
+            "flags": {"state_modified_compare_more_unrendered_values": False},
+        }
+
+
+def _extend_then_child_grants(layer_3_select_key):
+    return {
+        "models": {
+            "test": {
+                "layer_1": {
+                    "+grants": {"+select": ["role_b"]},
+                    "layer_2": {
+                        "+grants": {layer_3_select_key: ["role_c"]},
+                    },
+                },
+            }
+        }
+    }
+
+
+class TestModifiedChildGrantsAfterAdditiveParent(BaseModifiedState):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {"layer_1": {"layer_2": {"my_model.sql": "select 1 as id"}}}
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return _extend_then_child_grants("+select")
+
+    def test_child_grants_switch_to_replacing(self, project):
+        manifest = run_dbt(["parse"])
+        assert manifest.nodes["model.test.my_model"].config.grants == {
+            "select": ["role_b", "role_c"]
+        }
+        self.copy_state()
+
+        # the child level stops extending the parent's `+select` grant
+        update_config_file(
+            _extend_then_child_grants("select"), project.project_root, "dbt_project.yml"
+        )
+        manifest = run_dbt(["parse"])
+        assert manifest.nodes["model.test.my_model"].config.grants == {"select": ["role_c"]}
+
+        results = run_dbt(["ls", "--select", "state:modified", "--state", "./state"])
+        assert results == ["test.layer_1.layer_2.my_model"]
+
+
+inline_grants_static_model_sql = """
+{{ config(grants={'+select': ['role_b']}) }}
+select 1 as id
+"""
+
+# the `set` block keeps the static parser from handling this model
+inline_grants_jinja_model_sql = """
+{{ config(grants={'+select': ['role_b']}) }}
+{% set n = 1 %}
+select {{ n }} as id
+"""
+
+yaml_grants_schema_yml = """
+models:
+  - name: yaml_model
+    config:
+      grants:
+        +select: ["role_b"]
+"""
+
+
+def _project_grants_config(role):
+    return {"models": {"test": {"+grants": {"select": [role]}}}}
+
+
+class TestModifiedProjectGrantsUnderModelGrants(BaseModifiedState):
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "static_model.sql": inline_grants_static_model_sql,
+            "jinja_model.sql": inline_grants_jinja_model_sql,
+            "yaml_model.sql": "select 1 as id",
+            "schema.yml": yaml_grants_schema_yml,
+        }
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return _project_grants_config("role_a")
+
+    def test_changed_project_grants(self, project):
+        manifest = run_dbt(["parse"])
+        for name in ["static_model", "jinja_model", "yaml_model"]:
+            assert manifest.nodes[f"model.test.{name}"].config.grants == {
+                "select": ["role_a", "role_b"]
+            }
+        self.copy_state()
+        assert run_dbt(["ls", "--select", "state:modified", "--state", "./state"]) == []
+
+        # state from another dbt version goes through the manifest upgrade
+        with open("state/manifest.json") as f:
+            state_manifest = json.load(f)
+        state_manifest["metadata"]["dbt_version"] = "1.10.0"
+        with open("state/manifest.json", "w") as f:
+            json.dump(state_manifest, f)
+        assert run_dbt(["ls", "--select", "state:modified", "--state", "./state"]) == []
+
+        update_config_file(
+            _project_grants_config("role_x"), project.project_root, "dbt_project.yml"
+        )
+        results = run_dbt(["ls", "--select", "state:modified", "--state", "./state"])
+        assert sorted(results) == ["test.jinja_model", "test.static_model", "test.yaml_model"]

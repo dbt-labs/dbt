@@ -1,5 +1,6 @@
 from dbt.clients.jinja_static import statically_parse_unrendered_config
 from dbt.flags import get_flags
+from dbt_common.contracts.config.base import BaseConfig
 
 
 def upgrade_manifest_json_dbt_version(manifest: dict) -> dict:
@@ -27,14 +28,29 @@ def upgrade_unrendered_config(manifest: dict) -> dict:
             if _node_is_simple_builtin_generic_test(node):
                 continue
             if node.get("raw_code") and node.get("unrendered_config"):
-                new_unrendered_config_from_code = (
-                    statically_parse_unrendered_config(node.get("raw_code", "")) or {}
+                new_unrendered_config_from_code = _without_merged_grants(
+                    node["unrendered_config"],
+                    statically_parse_unrendered_config(node.get("raw_code", "")) or {},
                 )
                 manifest["nodes"][unique_id]["unrendered_config"].update(
                     new_unrendered_config_from_code
                 )
 
     return manifest
+
+
+def _without_merged_grants(stored: dict, from_code: dict) -> dict:
+    """Drop dict_key_append configs (grants) from `from_code` when `stored` has them as a dict:
+    stored grants already include the code's grants merged with inherited grants."""
+    return {
+        key: value
+        for key, value in from_code.items()
+        if not (
+            key in BaseConfig.mergebehavior["dict_key_append"]
+            and isinstance(stored.get(key), dict)
+            and isinstance(value, dict)
+        )
+    }
 
 
 def _node_is_simple_builtin_generic_test(node: dict) -> bool:

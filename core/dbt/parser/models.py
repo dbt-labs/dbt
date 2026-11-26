@@ -22,7 +22,7 @@ from dbt.flags import get_flags
 from dbt.node_types import ModelLanguage, NodeType
 from dbt.parser.base import SimpleSQLParser
 from dbt.parser.search import FileBlock
-from dbt_common.contracts.config.base import merge_config_dicts
+from dbt_common.contracts.config.base import BaseConfig, merge_config_dicts
 from dbt_common.dataclass_schema import ValidationError
 from dbt_common.exceptions.macros import UndefinedMacroError
 from dbt_extractor import ExtractionError, py_extract_from_source  # type: ignore
@@ -470,7 +470,14 @@ class ModelParser(SimpleSQLParser[ModelNode]):
 
         # update the unrendered config with values from the file.
         # values from yaml files are in there already
-        node.unrendered_config.update(dict(statically_parsed["configs"]))
+        file_configs = dict(statically_parsed["configs"])
+        # grants from the file were already merged with inherited grants above
+        for key in BaseConfig.mergebehavior["dict_key_append"]:
+            if isinstance(node.unrendered_config.get(key), dict) and isinstance(
+                file_configs.get(key), dict
+            ):
+                file_configs.pop(key)
+        node.unrendered_config.update(file_configs)
 
         # set refs and sources on the node object
         refs: List[RefArgs] = []
