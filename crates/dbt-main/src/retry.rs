@@ -4,7 +4,7 @@ use dbt_clap_core::*;
 use dbt_common::FsResult;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_schemas::schemas::{BatchResults, RunResultsArtifact};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -35,6 +35,9 @@ pub struct RetryState {
     pub previous_batch_results: HashMap<String, BatchResults>,
     /// Whether the original run was invoked with --full-refresh
     pub original_full_refresh: bool,
+    /// The `--vars` of the original run. `None` when its run_results.json does
+    /// not record them (written before they were recorded).
+    pub original_vars: Option<BTreeMap<String, dbt_yaml::Value>>,
 }
 
 /// Decode check names from `check.<package>.<name>` unique_ids.
@@ -86,6 +89,19 @@ impl RetryState {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Parse the original run's --vars, so retry renders the retried nodes
+        // with the same values (dbt-labs/dbt#15667).
+        let original_vars = artifact
+            .args
+            .__other__
+            .get("vars")
+            .and_then(|v| v.as_mapping())
+            .map(|vars| {
+                vars.iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.clone())))
+                    .collect()
+            });
+
         // Collect all retryable nodes: error, fail, skipped (and warn only under
         // --warn-error). The graph infrastructure handles dependency ordering.
         let retryable_node_ids: Vec<String> = artifact
@@ -122,14 +138,33 @@ impl RetryState {
             original_static_analysis,
             previous_batch_results,
             original_full_refresh,
+            original_vars,
         })
+    }
+
+    /// The original run's `--vars` to restore for the retried command: `None`
+    /// when the retry passes `--vars` itself or the original run had none.
+    /// Matches dbt-core, which reuses the previous invocation's args and lets
+    /// only `--vars` and `--threads` on the retry command line override them
+    /// (`ALLOW_CLI_OVERRIDE_FLAGS`).
+    pub fn vars_for_retry(
+        &self,
+        retry_args: &RetryArgs,
+    ) -> Option<BTreeMap<String, dbt_yaml::Value>> {
+        if retry_args.common_args.vars.is_some() {
+            return None;
+        }
+        self.original_vars.clone().filter(|vars| !vars.is_empty())
     }
 
     /// Convert the original command string to a CoreCommand.
     ///
     /// Returns an Err containing the original command string if it is not supported for retry.
     pub fn to_command(&self, retry_args: &RetryArgs) -> Result<CoreCommand, String> {
-        let common_args = retry_args.common_args.clone();
+        let mut common_args = retry_args.common_args.clone();
+        if let Some(vars) = self.vars_for_retry(retry_args) {
+            common_args.vars = Some(vars);
+        }
 
         // Determine effective static analysis setting:
         //
@@ -229,6 +264,7 @@ mod tests {
             original_static_analysis: original_sa,
             previous_batch_results: Default::default(),
             original_full_refresh: false,
+            original_vars: None,
         };
         let retry_args = RetryArgs {
             common_args: CommonArgs::default(),
@@ -282,6 +318,7 @@ expected_sa: {expected_sa:?}",
             original_static_analysis: None,
             previous_batch_results: Default::default(),
             original_full_refresh,
+            original_vars: None,
         };
         let retry_args = RetryArgs {
             common_args: CommonArgs::default(),
@@ -345,6 +382,7 @@ expected_sa: {expected_sa:?}",
             original_static_analysis: None,
             previous_batch_results: Default::default(),
             original_full_refresh: false,
+            original_vars: None,
         };
         let retry_args = RetryArgs {
             common_args: CommonArgs::default(),
@@ -645,5 +683,98 @@ expected_sa: {expected_sa:?}",
 
         let state = RetryState::from_run_results(file.path(), false).unwrap();
         assert_eq!(state.original_static_analysis, None);
+    }
+
+    /// Helper to create a `build` run_results.json file whose `args` carry extra raw JSON
+    /// members, for example `, "vars": {"k": "v"}`.
+    fn create_run_results_json_with_extra_args(extra_args: &str) -> NamedTempFile {
+        let json = format!(
+            r#"{{
+                "metadata": {{
+                    "dbt_schema_version": "https://schemas.getdbt.com/dbt/run-results/v6.json",
+                    "dbt_version": "1.9.0",
+                    "generated_at": "2024-01-01T00:00:00Z",
+                    "invocation_id": "test-invocation-id",
+                    "env": {{}}
+                }},
+                "results": [{{"status": "error", "unique_id": "model.pkg.m", "timing": [], "thread_id": "Thread-1", "execution_time": 0.1, "adapter_response": {{}}}}],
+                "elapsed_time": 1.0,
+                "args": {{
+                    "command": "build",
+                    "which": "build"{extra_args}
+                }}
+            }}"#
+        );
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+        file
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> BTreeMap<String, dbt_yaml::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), dbt_yaml::Value::string(v.to_string())))
+            .collect()
+    }
+
+    fn retry_args_with_vars(vars: Option<BTreeMap<String, dbt_yaml::Value>>) -> RetryArgs {
+        RetryArgs {
+            common_args: CommonArgs {
+                vars,
+                ..CommonArgs::default()
+            },
+            static_analysis: None,
+        }
+    }
+
+    #[test]
+    fn test_from_run_results_parses_vars() {
+        let file = create_run_results_json_with_extra_args(r#", "vars": {"probe": "from_build"}"#);
+        let state = RetryState::from_run_results(file.path(), false).unwrap();
+        assert_eq!(state.original_vars, Some(vars(&[("probe", "from_build")])));
+    }
+
+    #[test]
+    fn test_from_run_results_without_vars_key() {
+        // run_results.json written before vars were recorded: nothing to restore.
+        let file = create_run_results_json_with_extra_args("");
+        let state = RetryState::from_run_results(file.path(), false).unwrap();
+        assert_eq!(state.original_vars, None);
+    }
+
+    /// An original run without --vars records `{}`: nothing to restore, so the retry
+    /// keeps its own (empty) vars and logs nothing.
+    #[test]
+    fn test_vars_for_retry_ignores_empty_original_vars() {
+        let file = create_run_results_json_with_extra_args(r#", "vars": {}"#);
+        let state = RetryState::from_run_results(file.path(), false).unwrap();
+        assert_eq!(state.original_vars, Some(BTreeMap::new()));
+        assert_eq!(state.vars_for_retry(&retry_args_with_vars(None)), None);
+    }
+
+    /// dbt-labs/dbt#15667: retry re-runs the command with the original run's --vars.
+    #[test]
+    fn test_command_for_retry_restores_original_vars() {
+        let file = create_run_results_json_with_extra_args(r#", "vars": {"probe": "from_build"}"#);
+        let state = RetryState::from_run_results(file.path(), false).unwrap();
+        let cmd = state.to_command(&retry_args_with_vars(None)).unwrap();
+        assert_eq!(
+            cmd.common_args().vars,
+            Some(vars(&[("probe", "from_build")]))
+        );
+    }
+
+    /// --vars on the retry command line wins, matching dbt-core's ALLOW_CLI_OVERRIDE_FLAGS.
+    #[test]
+    fn test_command_for_retry_cli_vars_override_original() {
+        let file = create_run_results_json_with_extra_args(r#", "vars": {"probe": "from_build"}"#);
+        let state = RetryState::from_run_results(file.path(), false).unwrap();
+        let retry_args = retry_args_with_vars(Some(vars(&[("probe", "from_retry")])));
+        assert_eq!(state.vars_for_retry(&retry_args), None);
+        let cmd = state.to_command(&retry_args).unwrap();
+        assert_eq!(
+            cmd.common_args().vars,
+            Some(vars(&[("probe", "from_retry")]))
+        );
     }
 }
