@@ -65,3 +65,19 @@ models:
         data_tests:
           - unique
 """
+
+incremental_model_sql = """
+{{ config(materialized='incremental') }}
+select 1 as fun
+{% if is_incremental() %}
+where fun > 0
+{% endif %}
+"""
+
+table_model_using_is_incremental_sql = """
+{{ config(materialized='table') }}
+select 1 as fun
+{% if is_incremental() %}
+where fun > 0
+{% endif %}
+"""
