@@ -1,0 +1,7 @@
+kind: Fixes
+body: Compare Jinja datetime values chronologically in the min, max, and sort filters.
+time: 2026-11-27T10:32:45.135556+08:00
+custom:
+    author: Grivn
+    issue: "17318"
+    project: dbt-core
