@@ -68,3 +68,24 @@ pub fn initialize_load_jinja_environment(
         .with_io_args(io_args)
         .build())
 }
+
+/// Initialize a Jinja environment for the load phase of commands that run
+/// without a profile (e.g. `clean`).
+///
+/// Mirrors dbt-core's `UnsetProfile`: there is no adapter and `target` is
+/// empty, so `{{ target.name }}` renders as an empty string.
+pub fn initialize_load_jinja_environment_without_profile(
+    run_started_at: DateTime<Tz>,
+    flags: &BTreeMap<String, MinijinjaValue>,
+    warn_error_options: WarnErrorOptions,
+    io_args: IoArgs,
+) -> JinjaEnv {
+    let load_ctx = LoadCtx::new(run_started_at, Arc::new(BTreeMap::new()), flags.clone());
+
+    JinjaEnvBuilder::new()
+        .with_root_package("dbt".to_string())
+        .with_globals(to_jinja_btreemap(&load_ctx))
+        .with_warn_error_options(warn_error_options)
+        .with_io_args(io_args)
+        .build()
+}
