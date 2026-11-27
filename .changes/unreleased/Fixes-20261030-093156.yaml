@@ -1,0 +1,7 @@
+kind: Fixes
+body: Support DuckDB extension entries with name and optional repo in profiles.yml, such as installing from the community repository.
+time: 2026-10-30T09:31:56.679930125Z
+custom:
+    author: tsanton
+    issue: "16884"
+    project: dbt-core
