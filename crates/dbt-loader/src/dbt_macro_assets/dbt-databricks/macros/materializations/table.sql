@@ -30,6 +30,8 @@
         {% if existing_relation and (existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
         {# DIVERGENCE END #}
           {{ adapter.drop_relation(existing_relation) }}
+        {%- else -%}
+          {{ unset_tags_on_removed_columns(existing_relation, adapter.get_columns_in_relation(intermediate_relation) | map(attribute='name') | list) }}
         {%- endif %}
         {{ create_table_at(target_relation, intermediate_relation, compiled_code) }}
       {% endif %}
@@ -56,6 +58,8 @@
     {% if existing_relation and (existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
     {# DIVERGENCE END #}
       {{ adapter.drop_relation(existing_relation) }}
+    {%- elif existing_relation and language == 'sql' -%}
+      {{ unset_tags_on_removed_columns(existing_relation, get_columns_in_query(compiled_code)) }}
     {%- endif %}
 
     -- build model

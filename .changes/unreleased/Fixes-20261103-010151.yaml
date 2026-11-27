@@ -1,0 +1,7 @@
+kind: Fixes
+body: Unset Databricks tags on columns that a table or incremental full-refresh replace removes, so replacing a table that drops a governed-tagged column no longer fails
+time: 2026-11-03T01:01:51.402488+05:30
+custom:
+    author: sd-db
+    issue: "17005"
+    project: dbt-core
