@@ -1,0 +1,15 @@
+[error] [DbDriverFailed (dbt1308)]: Database Error in model err_type_narrow (../scratch/target/run/test/models/err_type_narrow.sql)
+  [Snowflake] 040050 (22000): CREATE OR ALTER execution failed. Partial updates may have been applied. Please visit https://docs.snowflake.com/sql-reference/sql/create-table#label-create-or-alter-table-atomicity for details. Error message: SQL compilation error: cannot change column NOTE from type VARCHAR(100) to VARCHAR(5) because reducing the byte-length of a varchar is not supported.
+   (sqlstate: 22000, vendor_code: 40050)
+  Hint: this statement was a CREATE OR ALTER, which cannot apply every change in place. If the error above is a change CREATE OR ALTER does not support, re-run with `--full-refresh` to rebuild the object with CREATE OR REPLACE.
+  (in run/test/models/err_type_narrow.sql)
+[error] [DbDriverFailed (dbt1308)]: Database Error in model err_type_change (../scratch/target/run/test/models/err_type_change.sql)
+  [Snowflake] 002108 (22000): CREATE OR ALTER execution failed. Partial updates may have been applied. Please visit https://docs.snowflake.com/sql-reference/sql/create-table#label-create-or-alter-table-atomicity for details. Error message: SQL compilation error: cannot change column AMOUNT from type NUMBER(10,2) to VARCHAR(20)
+   (sqlstate: 22000, vendor_code: 2108)
+  Hint: this statement was a CREATE OR ALTER, which cannot apply every change in place. If the error above is a change CREATE OR ALTER does not support, re-run with `--full-refresh` to rebuild the object with CREATE OR REPLACE.
+  (in run/test/models/err_type_change.sql)
+[error] [DbDriverFailed (dbt1308)]: Database Error in model err_reorder (../scratch/target/run/test/models/err_reorder.sql)
+  [Snowflake] 002830 (0A000): CREATE OR ALTER execution failed. Partial updates may have been applied. Please visit https://docs.snowflake.com/sql-reference/sql/create-table#label-create-or-alter-table-atomicity for details. Error message: SQL compilation error: error line 1 at position 200
+  Cannot reorder Dynamic Table columns in ALTER. Saw NOTE before AMOUNT." (sqlstate: 0A000, vendor_code: 2830)
+  Hint: this statement was a CREATE OR ALTER, which cannot apply every change in place. If the error above is a change CREATE OR ALTER does not support, re-run with `--full-refresh` to rebuild the object with CREATE OR REPLACE.
+  (in run/test/models/err_reorder.sql)

@@ -1,0 +1,7 @@
+kind: Features
+body: 'Snowflake custom incremental dynamic tables: the merge strategy and the changes() macro'
+time: 2026-11-11T21:00:41.936021-08:00
+custom:
+    author: newsatit
+    issue: ""
+    project: dbt-core

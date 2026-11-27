@@ -1,0 +1,20 @@
+2ed3a187:
+- sequence: 0
+  type: execute
+  sql: ALTER DYNAMIC TABLE development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.attrs_kept ADD ROW ACCESS POLICY development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.rap ON (order_id)
+38d30615:
+- sequence: 0
+  type: execute
+  sql: GRANT SELECT ON DYNAMIC TABLE development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.attrs_kept TO ROLE PUBLIC
+72a8dd6d:
+- sequence: 0
+  type: execute
+  sql: SHOW DYNAMIC TABLES IN SCHEMA development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter
+d523d48b:
+- sequence: 0
+  type: execute
+  sql: CREATE OR REPLACE TABLE development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.created_on AS SELECT lower("name") AS name, "created_on" AS created_on FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+dd3430f1:
+- sequence: 0
+  type: execute
+  sql: ALTER DYNAMIC TABLE development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.attrs_kept SET TAG development.adapters_snowflake_custom_incremental_dynamic_table_create_or_alter.mytag = 'v1'

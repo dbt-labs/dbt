@@ -1,0 +1,24 @@
+190d3d33:
+- sequence: 0
+  type: execute
+  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.raw_orders SET amount = 15.00 WHERE order_id = 1
+38db60f1:
+- sequence: 0
+  type: execute
+  sql: ALTER TABLE development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.notes ALTER COLUMN note SET DATA TYPE varchar(32)
+5090664d:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.notes VALUES (2, 'a much longer note value')
+91c50bcf:
+- sequence: 0
+  type: execute
+  sql: UPDATE development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.orders SET amount = 15.00 WHERE order_id = 1
+c9a9dd60:
+- sequence: 0
+  type: execute
+  sql: DELETE FROM development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.raw_orders WHERE order_id = 2
+cb0203b5:
+- sequence: 0
+  type: execute
+  sql: INSERT INTO development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.raw_orders VALUES (3, 30.00)

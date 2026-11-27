@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/sources.yml
+   Parsing models/duplicate_keys.sql
+   Parsing models/no_change_tracking.sql
+   Parsing models/over_replaced_table.sql
+   Parsing models/self_reference.sql
+   Parsing models/stg_orders.sql
+   Parsing models/widened_column.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

@@ -1,0 +1,13 @@
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.widened_column`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:38:1
+[error] [DbDriverFailed (dbt1308)]: Database Error in model widened_column (../scratch/target/run/test/models/widened_column.sql)
+  [Snowflake] 002742 (01000): SQL compilation error: Failed to refresh dynamic table with refresh_trigger MANUAL at data_timestamp 1795632153491 because of the error: SQL compilation error: Target table failed to refresh: String 'a much longer note value' is too long and would be truncated (sqlstate: 01000, vendor_code: 2742)
+  (in run/test/models/widened_column.sql)
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.over_replaced_table`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:38:1
+[warning] [JinjaWarn (dbt1071)]: No configuration changes were identified on: `development.adapters_snowflake_custom_incremental_dynamic_table_edge_cases.duplicate_keys`. Continuing.
+  --> dbt_internal_packages/dbt-snowflake/macros/materializations/dynamic_table.sql:38:1
+[error] [DbDriverFailed (dbt1308)]: Database Error in model duplicate_keys (../scratch/target/run/test/models/duplicate_keys.sql)
+  [Snowflake] 002742 (01000): SQL compilation error: Failed to refresh dynamic table with refresh_trigger MANUAL at data_timestamp 1795632156673 because of the error: SQL compilation error: Target table failed to refresh: Duplicate row detected during DML action
+  Row Values: [1, 1000] (sqlstate: 01000, vendor_code: 2742)
+  (in run/test/models/duplicate_keys.sql)

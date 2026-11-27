@@ -543,6 +543,8 @@ pub struct ProjectModelConfig {
     pub refresh_warehouse: Option<String>,
     #[serde(rename = "+immutable_where")]
     pub immutable_where: Option<String>,
+    #[serde(rename = "+delete_condition")]
+    pub delete_condition: Option<String>,
     #[serde(rename = "+sql_header")]
     pub sql_header: Option<String>,
     #[serde(rename = "+static_analysis")]
@@ -845,6 +847,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.snowflake_warehouse.is_some()
             || self.refresh_warehouse.is_some()
             || self.immutable_where.is_some()
+            || self.delete_condition.is_some()
             || self.sql_header.is_some()
             || self.static_analysis.is_some()
             || self.table_format.is_some()
@@ -1096,6 +1099,7 @@ impl From<ProjectModelConfig> for ModelConfig {
                 snowflake_warehouse: config.snowflake_warehouse,
                 refresh_warehouse: config.refresh_warehouse,
                 immutable_where: config.immutable_where,
+                delete_condition: config.delete_condition,
                 refresh_mode: config.refresh_mode,
                 initialize: config.initialize,
                 scheduler: config.scheduler,
@@ -1315,6 +1319,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             snowflake_warehouse: warehouse_specific.snowflake_warehouse,
             refresh_warehouse: warehouse_specific.refresh_warehouse,
             immutable_where: warehouse_specific.immutable_where,
+            delete_condition: warehouse_specific.delete_condition,
             refresh_mode: warehouse_specific.refresh_mode,
             initialize: warehouse_specific.initialize,
             scheduler: warehouse_specific.scheduler,

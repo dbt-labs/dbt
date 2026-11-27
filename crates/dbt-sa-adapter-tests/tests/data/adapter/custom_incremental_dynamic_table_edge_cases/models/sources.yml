@@ -1,0 +1,8 @@
+sources:
+  - name: raw
+    schema: "{{ target.schema }}"
+    tables:
+      - name: orders
+      - name: untracked
+      - name: notes
+      - name: raw_orders
