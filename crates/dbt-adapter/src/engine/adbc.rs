@@ -511,6 +511,12 @@ impl AdapterEngine for AdbcEngine {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    fn supports_targeted_schema_lookup(&self) -> bool {
+        self.adapter_type == AdapterType::Bigquery
+            && self.mode.has_real_connections()
+            && !self.config.use_dbt_cloud_credentials()
+    }
+
     fn is_mock(&self) -> bool {
         matches!(self.mode, EngineMode::Mock)
     }

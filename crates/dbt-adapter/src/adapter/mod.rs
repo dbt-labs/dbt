@@ -1173,6 +1173,43 @@ impl Adapter {
         }
     }
 
+    /// Find absent schemas by their unquoted names when the engine supports targeted lookup.
+    /// A return value of `None` asks the caller to use schema listing.
+    pub fn missing_schemas_by_name<'a>(
+        &self,
+        state: &State,
+        schemas: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> AdapterResult<Option<Vec<(&'a str, &'a str)>>> {
+        let Typed { adapter } = &self.inner else {
+            return Ok(None);
+        };
+        if self.time_machine().is_some() || !adapter.engine().supports_targeted_schema_lookup() {
+            return Ok(None);
+        }
+
+        let mut schemas = schemas.into_iter().peekable();
+        let mut missing = Vec::new();
+        if schemas.peek().is_some() {
+            let mut conn =
+                adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+            for (database, schema) in schemas {
+                if adapter
+                    .get_dataset_location_for_schema(
+                        state,
+                        conn.as_mut(),
+                        database,
+                        schema,
+                        self.cancellation_token(),
+                    )?
+                    .is_none()
+                {
+                    missing.push((database, schema));
+                }
+            }
+        }
+        Ok(Some(missing))
+    }
+
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/sql/impl.py#L161
     #[tracing::instrument(skip(self, state), level = "trace")]
     pub fn create_schema(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {

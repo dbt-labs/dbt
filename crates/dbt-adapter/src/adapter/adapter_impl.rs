@@ -3675,33 +3675,13 @@ impl AdapterImpl {
                 if let Replay(_, replay) = self.inner_adapter() {
                     return replay.replay_get_dataset_location(state, relation);
                 }
-                // Read the location with datasets.get through the driver, like dbt-core's
-                // `client.get_dataset`: an INFORMATION_SCHEMA.SCHEMATA query per call counts
-                // against BigQuery's per-user INFORMATION_SCHEMA rate limit.
-                let database = relation.database_as_str()?;
-                let schema = relation.schema_as_str()?;
-                let payload = serde_json::json!({ "project": database, "dataset": schema });
-                // Not sent to BigQuery; it identifies the call in logs and recordings.
-                let sql = format!(
-                    "-- adapter.get_dataset_location via BigQuery REST API on `{database}.{schema}`"
-                );
-
-                let ctx =
-                    query_ctx_from_state(state)?.with_desc("get_dataset_location adapter call");
-                let batch = self.engine().execute_with_options(
-                    Some(state),
-                    &ctx,
+                self.get_dataset_location_for_schema(
+                    state,
                     conn,
-                    &sql,
-                    vec![(
-                        GET_DATASET_LOCATION.to_string(),
-                        OptionValue::String(payload.to_string()),
-                    )],
-                    true,
+                    &relation.database_as_str()?,
+                    &relation.schema_as_str()?,
                     token,
-                )?;
-
-                Self::parse_dataset_location(&batch)
+                )
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
@@ -3709,6 +3689,40 @@ impl AdapterImpl {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
+    }
+
+    pub(super) fn get_dataset_location_for_schema(
+        &self,
+        state: &State,
+        conn: &mut dyn Connection,
+        database: &str,
+        schema: &str,
+        token: CancellationToken,
+    ) -> AdapterResult<Option<String>> {
+        // Read the location with datasets.get through the driver, like dbt-core's
+        // `client.get_dataset`: an INFORMATION_SCHEMA.SCHEMATA query per call counts
+        // against BigQuery's per-user INFORMATION_SCHEMA rate limit.
+        let payload = serde_json::json!({ "project": database, "dataset": schema });
+        // Not sent to BigQuery; it identifies the call in logs and recordings.
+        let sql = format!(
+            "-- adapter.get_dataset_location via BigQuery REST API on `{database}.{schema}`"
+        );
+
+        let ctx = query_ctx_from_state(state)?.with_desc("get_dataset_location adapter call");
+        let batch = self.engine().execute_with_options(
+            Some(state),
+            &ctx,
+            conn,
+            &sql,
+            vec![(
+                GET_DATASET_LOCATION.to_string(),
+                OptionValue::String(payload.to_string()),
+            )],
+            true,
+            token,
+        )?;
+
+        Self::parse_dataset_location(&batch)
     }
 
     /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L730

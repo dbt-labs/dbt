@@ -1,0 +1,7 @@
+kind: Fixes
+body: Check only the required BigQuery datasets during schema registration.
+time: 2026-11-24T10:50:01.370909-08:00
+custom:
+    author: ""
+    issue: ""
+    project: dbt-core

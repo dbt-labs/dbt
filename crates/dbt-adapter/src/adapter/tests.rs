@@ -263,6 +263,72 @@ fn make_mock_adapter(adapter_type: AdapterType) -> Arc<Adapter> {
     Arc::new(Adapter::new(Arc::new(concrete), None, never_cancels()))
 }
 
+#[test]
+fn required_schema_lookup_uses_native_bigquery_only() {
+    use crate::engine::query_comment::QueryCommentConfig;
+    use crate::time_machine::EventRecorder;
+
+    let live_engine = |adapter_type, bridge| {
+        let config = AdapterConfig::new(dbt_yaml::Mapping::from_iter([(
+            "use_dbt_cloud_credentials".into(),
+            dbt_yaml::Value::from(bridge),
+        )]));
+        Arc::new(AdbcEngine::new(
+            adapter_type,
+            auth_for_backend(backend_of(adapter_type)).into(),
+            config,
+            DEFAULT_RESOLVED_QUOTING,
+            QueryCommentConfig::from_query_comment(None, adapter_type, false, None),
+            Arc::new(DefaultTypeOps::new(adapter_type)),
+            Arc::new(DefaultStmtSplitter),
+            Arc::new(RelationCache::default()),
+            BTreeMap::new(),
+            None,
+            None,
+        ))
+    };
+    let adapter = |engine: Arc<dyn crate::AdapterEngine>, time_machine| {
+        Adapter::new(
+            Arc::new(AdapterImpl::new(engine, None)),
+            time_machine,
+            never_cancels(),
+        )
+    };
+    let env = minijinja::Environment::new();
+    let state = State::new_for_env(&env);
+    let uses_lookup = |adapter: &Adapter| {
+        adapter
+            .missing_schemas_by_name(&state, [])
+            .unwrap()
+            .is_some()
+    };
+
+    let bigquery = live_engine(AdapterType::Bigquery, false);
+    assert!(uses_lookup(&adapter(bigquery.clone(), None)));
+    assert!(!uses_lookup(&adapter(
+        live_engine(AdapterType::Bigquery, true),
+        None
+    )));
+    assert!(!uses_lookup(&adapter(
+        live_engine(AdapterType::Snowflake, false),
+        None
+    )));
+    assert!(!uses_lookup(&make_mock_adapter(AdapterType::Bigquery)));
+
+    let path = tempfile::tempdir().unwrap();
+    let record = crate::engine::RecordReplayEngine::record(bigquery.clone(), path.path().into());
+    let replay =
+        crate::engine::RecordReplayEngine::replay(bigquery.clone(), path.path().into(), None);
+    assert!(!uses_lookup(&adapter(Arc::new(record), None)));
+    assert!(!uses_lookup(&adapter(Arc::new(replay), None)));
+
+    let (recorder, _receiver) = EventRecorder::new();
+    assert!(!uses_lookup(&adapter(
+        bigquery,
+        Some(TimeMachine::recorder(Arc::new(recorder)))
+    )));
+}
+
 #[dbt_runtime::worker_test]
 fn test_completed_routine_listing_is_reused() {
     use crate::relation::do_create_relation;
