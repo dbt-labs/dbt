@@ -1,0 +1,7 @@
+kind: Fixes
+body: Write declared seed and snapshot columns to node_columns, so checks can read them
+time: 2026-11-20T14:47:53.000000+01:00
+custom:
+    author: larspettermadsstuen
+    issue: "17253"
+    project: dbt

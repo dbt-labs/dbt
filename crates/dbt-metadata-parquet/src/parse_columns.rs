@@ -12,7 +12,8 @@
 //!   meta, tags, granularity — everything the user wrote in schema YAML.
 //! * `compile/columns` adds inferred_type and column_index on top; dbt-index
 //!   reads parse first, compile second — compile wins on overlap.
-//! * Sources and disabled models that are never compiled still get column metadata.
+//! * Covers models, sources, seeds and snapshots. Sources and disabled models
+//!   that are never compiled still get column metadata.
 //! * Latest-wins per `unique_id`: a re-parse replaces the whole column set.
 
 use std::collections::{HashMap, HashSet};
