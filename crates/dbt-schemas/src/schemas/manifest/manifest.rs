@@ -1041,6 +1041,11 @@ fn build_group_map(nodes: &Nodes) -> BTreeMap<String, Vec<String>> {
             group_map.entry(group.clone()).or_default().push(id.clone());
         }
     }
+    for (id, exposure) in &nodes.exposures {
+        if let Some(group) = &exposure.deprecated_config.group {
+            group_map.entry(group.clone()).or_default().push(id.clone());
+        }
+    }
     group_map
 }
 

@@ -25,6 +25,8 @@ pub struct ProjectExposureConfig {
     pub tags: Option<StringOrArrayOfStrings>,
     #[serde(default, rename = "+enabled", deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
+    #[serde(rename = "+group")]
+    pub group: Option<String>,
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectExposureConfig>>,
 }
 
@@ -38,7 +40,7 @@ impl TypedRecursiveConfig for ProjectExposureConfig {
     }
 
     fn has_set_fields(&self) -> bool {
-        self.meta.is_some() || self.tags.is_some() || self.enabled.is_some()
+        self.meta.is_some() || self.tags.is_some() || self.enabled.is_some() || self.group.is_some()
     }
 }
 
@@ -54,6 +56,7 @@ pub struct ExposureConfig {
     pub meta: Option<IndexMap<String, YmlValue>>,
     #[serde(default)]
     pub tags: Tags,
+    pub group: Option<String>,
 }
 
 impl From<ProjectExposureConfig> for ExposureConfig {
@@ -62,6 +65,7 @@ impl From<ProjectExposureConfig> for ExposureConfig {
             enabled: config.enabled,
             meta: config.meta,
             tags: Tags(config.tags),
+            group: config.group,
         }
     }
 }
@@ -72,6 +76,7 @@ impl From<ExposureConfig> for ProjectExposureConfig {
             meta: config.meta,
             tags: config.tags.into_inner(),
             enabled: config.enabled,
+            group: config.group,
             __additional_properties__: BTreeMap::new(),
         }
     }

@@ -644,9 +644,8 @@ fn check_access(
             nodes,
             all_runtime_configs,
             |target_node, diffent_packages| {
-                // Exposures don't have groups, so they can't access private models
-                // unless the private model has no group and they're in the same package
-                target_node.__model_attr__.group.is_some() || diffent_packages
+                // Exposures can access private models if they're in the same group and same package
+                node.deprecated_config.group != target_node.__model_attr__.group || diffent_packages
             },
         ) {
             violations.insert(unique_id.clone());
@@ -2206,6 +2205,68 @@ mod tests {
             ] {
                 assert!(lake_compute_unit_test_warnings(command, &nodes, &all).is_empty());
             }
+        }
+    }
+
+    mod exposure_access {
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        use dbt_schemas::schemas::common::Access;
+        use dbt_schemas::schemas::{DbtExposure, DbtModel, Nodes};
+
+        use super::super::check_access;
+
+        const MODEL_ID: &str = "model.root.private_model";
+        const EXPOSURE_ID: &str = "exposure.root.dashboard";
+
+        fn nodes(model_group: Option<&str>, exposure_group: Option<&str>) -> Nodes {
+            let mut model = DbtModel::default();
+            model.__common_attr__.unique_id = MODEL_ID.to_string();
+            model.__common_attr__.package_name = "root".to_string();
+            model.__model_attr__.access = Access::Private;
+            model.__model_attr__.group = model_group.map(str::to_string);
+
+            let mut exposure = DbtExposure::default();
+            exposure.__common_attr__.unique_id = EXPOSURE_ID.to_string();
+            exposure.__common_attr__.package_name = "root".to_string();
+            exposure.deprecated_config.group = exposure_group.map(str::to_string);
+            exposure
+                .__base_attr__
+                .depends_on
+                .nodes_with_ref_location
+                .push((MODEL_ID.to_string(), Default::default()));
+
+            let mut nodes = Nodes::default();
+            nodes.models.insert(MODEL_ID.to_string(), Arc::new(model));
+            nodes
+                .exposures
+                .insert(EXPOSURE_ID.to_string(), Arc::new(exposure));
+            nodes
+        }
+
+        fn has_violation(nodes: &Nodes) -> bool {
+            check_access(nodes, &BTreeMap::new()).contains(EXPOSURE_ID)
+        }
+
+        #[test]
+        fn ungrouped_exposure_cannot_ref_grouped_private_model() {
+            assert!(has_violation(&nodes(Some("finance"), None)));
+        }
+
+        #[test]
+        fn exposure_in_same_group_can_ref_private_model() {
+            assert!(!has_violation(&nodes(Some("finance"), Some("finance"))));
+        }
+
+        #[test]
+        fn exposure_in_other_group_cannot_ref_private_model() {
+            assert!(has_violation(&nodes(Some("finance"), Some("marketing"))));
+        }
+
+        #[test]
+        fn ungrouped_exposure_can_ref_ungrouped_private_model() {
+            assert!(!has_violation(&nodes(None, None)));
         }
     }
 
