@@ -272,17 +272,13 @@ fn cast_decimal_128_to_string(new_batches_slice: &[RecordBatch]) -> Vec<RecordBa
                         .downcast_ref::<arrow::array::Decimal128Array>()
                         .unwrap();
 
-                    let string_vec: Vec<Option<String>> = decimal_column
-                        .iter()
-                        .map(|maybe_decimal| {
-                            maybe_decimal
-                                .map(|decimal| Some(decimal.to_string()))
-                                .unwrap_or(None)
+                    // `value_as_string` applies the column's scale; the raw i128 value does not.
+                    let a: StringArray = (0..decimal_column.len())
+                        .map(|row| {
+                            (!decimal_column.is_null(row))
+                                .then(|| decimal_column.value_as_string(row))
                         })
                         .collect();
-
-                    let a =
-                        StringArray::from_iter(string_vec.iter().map(|option| option.as_deref()));
                     let string_array: ArrayRef = Arc::new(a);
                     new_columns.push(string_array);
                     new_schema_fields.push(Field::new(
@@ -534,7 +530,7 @@ pub fn pretty_vec_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, StringArray};
+    use arrow::array::{Decimal128Array, Int32Array, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -580,6 +576,62 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["name"], "alice");
         assert_eq!(rows[1]["name"], "bob");
+    }
+
+    fn make_decimal_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Decimal128(38, 18), true),
+            Field::new("b", DataType::Decimal128(10, 2), true),
+        ]));
+        let a = Decimal128Array::from(vec![Some(10_000_500_000_000_000_000_000_i128), None])
+            .with_precision_and_scale(38, 18)
+            .unwrap();
+        let b = Decimal128Array::from(vec![Some(125_i128), Some(-5_i128)])
+            .with_precision_and_scale(10, 2)
+            .unwrap();
+        RecordBatch::try_new(schema, vec![Arc::new(a), Arc::new(b)]).unwrap()
+    }
+
+    fn render(format: DisplayFormat) -> String {
+        let columns = ["a".to_string(), "b".to_string()];
+        let rendered = pretty_data_table(
+            "",
+            "",
+            &columns,
+            &[make_decimal_batch()],
+            format,
+            None,
+            false,
+            None,
+        );
+        match rendered {
+            Ok(out) => out,
+            Err(_) => panic!("pretty_data_table failed"),
+        }
+    }
+
+    #[test]
+    fn test_csv_keeps_decimal_scale() {
+        assert_eq!(
+            render(DisplayFormat::Csv),
+            "a,b\n10000.500000000000000000,1.25\n,-0.05\n"
+        );
+    }
+
+    #[test]
+    fn test_tsv_keeps_decimal_scale() {
+        assert_eq!(
+            render(DisplayFormat::Tsv),
+            "a\tb\n10000.500000000000000000\t1.25\n\t-0.05\n"
+        );
+    }
+
+    #[test]
+    fn test_ndjson_keeps_decimal_scale() {
+        assert_eq!(
+            render(DisplayFormat::NdJson),
+            "{\"a\":\"10000.500000000000000000\",\"b\":\"1.25\"}\n{\"a\":null,\"b\":\"-0.05\"}\n"
+        );
     }
 
     #[test]
