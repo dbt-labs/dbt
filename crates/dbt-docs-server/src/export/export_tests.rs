@@ -220,6 +220,32 @@ fn views_sql_travels_with_the_parquet_but_bookkeeping_does_not() {
 }
 
 #[test]
+fn tables_that_a_build_adds_stay_behind() {
+    // A table that is not in the catalog holds a build's own records, not the project's: a
+    // site published elsewhere doesn't carry it, nor the view `views.sql` gives it. The
+    // catalog's own `dbt_rt` tables travel.
+    let harness =
+        Harness::out_of_place(&["dbt.models", "dbt_rt.run_results", "dbt_rt.widget_runs"]);
+    let view = views::statement_for_file("dbt_rt.widget_runs.parquet").unwrap();
+    std::fs::write(
+        harness.info_schema_dir.join("views.sql"),
+        format!("CREATE SCHEMA dbt;\n{view};\n"),
+    )
+    .unwrap();
+
+    let _ = export(&harness, Arc::new(MockBackend::new()));
+
+    let dest = harness.output_dir.join(data_dir());
+    assert!(dest.join("dbt.models.parquet").exists());
+    assert!(dest.join("dbt_rt.run_results.parquet").exists());
+    assert!(!dest.join("dbt_rt.widget_runs.parquet").exists());
+    assert_eq!(
+        std::fs::read_to_string(dest.join("views.sql")).unwrap(),
+        "CREATE SCHEMA dbt;\n"
+    );
+}
+
+#[test]
 fn column_lineage_is_reported_from_rows_not_from_the_file() {
     // Rows, because the file is always there: the information schema writes every
     // table even at zero rows. It is not even a size signal — a populated

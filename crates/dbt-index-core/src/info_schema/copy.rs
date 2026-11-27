@@ -125,7 +125,7 @@ const MAX_COPY_THREADS: usize = 4;
 
 /// The in-memory database the write runs on, with at most [`MAX_COPY_THREADS`]
 /// threads.
-fn open_copy_db() -> Result<Db, IndexError> {
+pub(super) fn open_copy_db() -> Result<Db, IndexError> {
     let mut db = Db::open_memory().map_err(|e| {
         IndexError::Other(format!("info schema COPY: DuckDB driver unavailable: {e}"))
     })?;
@@ -138,17 +138,27 @@ fn open_copy_db() -> Result<Db, IndexError> {
 }
 
 fn copy_table(db: &mut Db, spec: &TableSpec, path: &Path, with_kv: bool) -> Result<(), IndexError> {
-    let sql = copy_sql(spec, path, with_kv);
+    let sql = copy_sql(&spec.qualified_name(), path, with_kv);
     db.execute_update(&sql)?;
     Ok(())
 }
 
-fn copy_sql(spec: &TableSpec, path: &Path, with_kv: bool) -> String {
+/// Copies the view `qualified`, which `db` has, to the parquet file `path`, with the
+/// information schema's version in the file's metadata.
+pub(super) fn copy_view(db: &mut Db, qualified: &str, path: &Path) -> Result<(), IndexError> {
+    if db.execute_update(&copy_sql(qualified, path, true)).is_err() {
+        // This driver can't set the version in the copy: it is stamped below.
+        db.execute_update(&copy_sql(qualified, path, false))
+            .map_err(|e| IndexError::Other(format!("info schema COPY {qualified}: {e}")))?;
+    }
+    stamp_version_kv(path)
+}
+
+fn copy_sql(qualified: &str, path: &Path, with_kv: bool) -> String {
     let quoted = path.display().to_string().replace('\'', "''");
     let base = format!(
-        "COPY (SELECT * FROM {q}) TO '{quoted}' \
+        "COPY (SELECT * FROM {qualified}) TO '{quoted}' \
          (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 1",
-        q = spec.qualified_name(),
     );
     if with_kv {
         format!(

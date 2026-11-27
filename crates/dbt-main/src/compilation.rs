@@ -24,11 +24,12 @@ use dbt_dag::{deps_mgmt::reverse, schedule::Schedule};
 use dbt_defer::DeferState;
 use dbt_features::feature_stack::FeatureStack;
 use dbt_features::index::write_metadata_parquet;
+use dbt_index_core::info_schema::injected::ResolvedInjectedTable;
 use dbt_index_core::ingest::ingest_state::IngestState;
 use dbt_index_core::ingest::metadata_to_parquet::{
     has_persisted_state, ingest_from_metadata_direct,
 };
-use dbt_index_core::{WriteSource, save_artifact_meta, write_info_schema};
+use dbt_index_core::{WriteSource, save_artifact_meta, write_info_schema_with_injected};
 use dbt_jinja_utils::{
     JinjaFactory,
     invocation_args::InvocationArgs,
@@ -573,7 +574,13 @@ impl<'a> CompilationPhasesExecutor<'a> {
                 crate::metadata::write_catalog_epochs(catalog, self.arg.as_ref()).await;
             }
 
-            write_parse_artifacts(&self.arg);
+            write_parse_artifacts(
+                &self.arg,
+                &crate::metadata::resolved_injected_tables(
+                    feature_stack,
+                    &project_flag_lookup(loaded_project.dbt_state().root_project().flags.as_ref()),
+                ),
+            );
         }
 
         if self.arg.io.should_show(ShowOptions::Manifest) {
@@ -3290,7 +3297,7 @@ async fn create_run_cache_state_selector_args(
 ///
 /// What `parse` can produce is limited: nodes and node-level lineage, but no
 /// column types and no column-level lineage, both of which need a compile.
-fn write_parse_artifacts(arg: &EvalArgs) {
+fn write_parse_artifacts(arg: &EvalArgs, injected_tables: &[ResolvedInjectedTable<'_>]) {
     let metadata_dir = arg.metadata_dir();
 
     if arg.write_index {
@@ -3336,7 +3343,12 @@ fn write_parse_artifacts(arg: &EvalArgs) {
         } else {
             arg.info_schema_staging_dir()
         };
-        match write_info_schema(&metadata_dir, &info_schema_dir, &staging_dir) {
+        match write_info_schema_with_injected(
+            &metadata_dir,
+            &info_schema_dir,
+            &staging_dir,
+            injected_tables,
+        ) {
             Ok(_) => emit_warn_log_message(
                 ErrorCode::InfoSchemaIncomplete,
                 "--generate-info-schema: the information schema produced by `parse` is incomplete; column types, column-level lineage, and runtime results are only written by `compile`, `run`, or `build`.",

@@ -275,7 +275,7 @@ pub fn generate_queryable(metadata_dir: &Path) -> Result<Vec<String>, IndexError
 }
 
 /// `CREATE VIEW` for a table's declared columns with no rows.
-fn empty_view_sql(spec: &TableSpec) -> Result<String, IndexError> {
+pub(crate) fn empty_view_sql(spec: &TableSpec) -> Result<String, IndexError> {
     let out = out_schema(spec)?;
     let cols = spec
         .cols
@@ -305,7 +305,7 @@ fn empty_view_sql(spec: &TableSpec) -> Result<String, IndexError> {
 /// unhandled type is a hard error rather than a guess, so adding a column of a
 /// new type cannot silently produce a `VARCHAR` that then fails the differential
 /// test with a confusing message.
-fn duckdb_type(ty: &DataType) -> Result<String, IndexError> {
+pub(crate) fn duckdb_type(ty: &DataType) -> Result<String, IndexError> {
     Ok(match ty {
         DataType::Utf8 | DataType::LargeUtf8 => "VARCHAR".into(),
         DataType::Boolean => "BOOLEAN".into(),
@@ -315,6 +315,13 @@ fn duckdb_type(ty: &DataType) -> Result<String, IndexError> {
         DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => "TIMESTAMP WITH TIME ZONE".into(),
         DataType::Timestamp(TimeUnit::Microsecond, None) => "TIMESTAMP".into(),
         DataType::List(f) | DataType::LargeList(f) => format!("{}[]", duckdb_type(f.data_type())?),
+        DataType::Struct(fields) => {
+            let fields = fields
+                .iter()
+                .map(|f| Ok(format!("\"{}\" {}", f.name(), duckdb_type(f.data_type())?)))
+                .collect::<Result<Vec<_>, IndexError>>()?;
+            format!("STRUCT({})", fields.join(", "))
+        }
         other => {
             return Err(IndexError::Other(format!(
                 "epoch views: no DuckDB type for Arrow type {other:?}"

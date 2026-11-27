@@ -1,16 +1,19 @@
-//! The registry of what features add to a build: kinds of node, and the tasks of their nodes.
+//! The registry of what features add to a build: kinds of node, the tasks of their nodes, and
+//! tables of the information schema.
 //!
 //! A kind of node is a [`ResolvableNode`], as dbt's own kinds are. A feature in testing adds
 //! one behind its flag. A kind whose nodes are only definitions is added with
 //! [`Experimentals::with_kind`]. A kind whose nodes run is added with
 //! [`Experimentals::with_tasks`], with the [`InjectedTasks`] that give the task graph the
-//! tasks of its nodes.
+//! tasks of its nodes. The tables that the build adds to the information schema are declared
+//! with [`Experimentals::with_injected_tables`], each behind a flag.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use dbt_common::io_args::FsCommand;
 use dbt_flags::{FlagDef, Stage};
+use dbt_index_core::info_schema::injected::{self, InjectedTable};
 use dbt_telemetry::NodeType;
 
 pub use dbt_parser::experimental::{
@@ -20,6 +23,16 @@ pub use dbt_parser::resolve::resolvable_node::{
     Extension, ExtensionSet, Extensions, IndexCtx, IndexedName, LinkCtx, NoExtension, NoExtensions,
     ResolvableNode, ResolvableNodes, ResolveCtx,
 };
+
+/// What a feature defines a table that it injects into the information schema with, and
+/// writes the table's files with.
+pub mod info_schema {
+    pub use arrow_schema::SchemaRef;
+    pub use dbt_index_core::IndexError;
+    pub use dbt_index_core::epoch_layers::{append_epoch, merge_epochs, select_epochs};
+    pub use dbt_index_core::info_schema::injected::InjectedTable;
+    pub use dbt_index_core::info_schema::spec::Ns;
+}
 
 use crate::graph::command_phases;
 use crate::injected::InjectedTasks;
@@ -38,6 +51,8 @@ pub struct Experimentals {
     keys: BTreeSet<&'static str>,
     /// dbt's own kinds of node, which the kinds are added to.
     dbt: ResolvableNodes,
+    /// The tables that the build adds to the information schema, each behind a flag.
+    injected_tables: &'static [&'static dyn InjectedTable],
 }
 
 impl Experimentals {
@@ -135,6 +150,34 @@ impl Experimentals {
     pub fn with_extensions<E: Extensions>(mut self) -> Self {
         self.dbt = ResolvableNodes::dbt_with::<E>();
         self
+    }
+
+    /// Declares the tables that the build injects into the information schema, each while
+    /// its flag is on. They are all of them: a second call replaces the first.
+    ///
+    /// # Panics
+    ///
+    /// If a table cannot be published beside the catalog ([`injected::check`]), or if two
+    /// have the same name.
+    pub fn with_injected_tables(mut self, tables: &'static [&'static dyn InjectedTable]) -> Self {
+        let mut names = BTreeSet::new();
+        for table in tables {
+            if let Err(error) = injected::check(*table) {
+                panic!("{error}");
+            }
+            let name = table.qualified_name();
+            assert!(
+                names.insert(name.clone()),
+                "the injected table `{name}` is declared twice"
+            );
+        }
+        self.injected_tables = tables;
+        self
+    }
+
+    /// The tables that the build injects into the information schema.
+    pub fn injected_tables(&self) -> &'static [&'static dyn InjectedTable] {
+        self.injected_tables
     }
 
     /// What gives the task graph the tasks of injected nodes.
@@ -533,6 +576,67 @@ mod tests {
         );
         let with = with_tasks(&[WIDGET]);
         assert!(snapshot.warnings(&with.known_flags()).is_empty());
+    }
+
+    /// A table of one column, which a feature injects.
+    struct TestTable(&'static str);
+
+    impl InjectedTable for TestTable {
+        fn flag(&self) -> &'static FlagDef {
+            &TEST_FLAG
+        }
+        fn ns(&self) -> info_schema::Ns {
+            info_schema::Ns::DbtRt
+        }
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn schema(&self) -> arrow_schema::SchemaRef {
+            use arrow_schema::{DataType, Field, Schema};
+            Arc::new(Schema::new(vec![Field::new(
+                "widget",
+                DataType::Utf8,
+                true,
+            )]))
+        }
+        fn select(
+            &self,
+            _metadata_dir: &std::path::Path,
+        ) -> Result<Option<String>, info_schema::IndexError> {
+            Ok(None)
+        }
+    }
+
+    static WIDGET_RUNS: TestTable = TestTable("widget_runs");
+    static GADGET_RUNS: TestTable = TestTable("gadget_runs");
+    static RUN_RESULTS: TestTable = TestTable("run_results");
+    static INJECTED_TABLES: [&dyn InjectedTable; 2] = [&WIDGET_RUNS, &GADGET_RUNS];
+    static CLASHES_WITH_THE_CATALOG: [&dyn InjectedTable; 1] = [&RUN_RESULTS];
+    static SAME_NAME: [&dyn InjectedTable; 2] = [&WIDGET_RUNS, &WIDGET_RUNS];
+
+    /// A build injects no table into the information schema unless it declares one.
+    #[test]
+    fn the_injected_tables_are_the_declared_ones() {
+        assert!(Experimentals::default().injected_tables().is_empty());
+        let registry = Experimentals::default().with_injected_tables(&INJECTED_TABLES);
+        let names: Vec<String> = registry
+            .injected_tables()
+            .iter()
+            .map(|table| table.qualified_name())
+            .collect();
+        assert_eq!(names, ["dbt_rt.widget_runs", "dbt_rt.gadget_runs"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "the information schema has a table of that name")]
+    fn an_injected_table_is_not_a_table_of_the_catalog() {
+        Experimentals::default().with_injected_tables(&CLASHES_WITH_THE_CATALOG);
+    }
+
+    #[test]
+    #[should_panic(expected = "the injected table `dbt_rt.widget_runs` is declared twice")]
+    fn an_injected_table_is_declared_once() {
+        Experimentals::default().with_injected_tables(&SAME_NAME);
     }
 
     #[test]

@@ -133,8 +133,9 @@ pub async fn execute_deps_command(
 /// Parse `dbt_project.yml` without touching `profiles.yml`.
 ///
 /// This is the first half of `load_simplified_project_and_profiles`, stopping
-/// before the `load_profiles` call.
-fn load_simplified_project_only(arg: &LoadArgs) -> FsResult<DbtProjectSimplified> {
+/// before the `load_profiles` call. It is also how a command that loads no project gets
+/// what the root project sets, such as its `flags:`.
+pub fn load_simplified_project_only(arg: &LoadArgs) -> FsResult<DbtProjectSimplified> {
     let dbt_project_path = arg.io.in_dir.join(DBT_PROJECT_YML);
     let raw = value_from_file(&dbt_project_path, false, None)?;
 

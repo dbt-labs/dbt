@@ -5,7 +5,7 @@ use dbt_clap_core::Cli;
 use dbt_common::{
     FsResult,
     cancellation::CancellationToken,
-    io_args::{EvalArgs, FsCommand},
+    io_args::{EvalArgs, FsCommand, project_flag_lookup},
 };
 use dbt_compilation::schedule::DbtProjectCompilationCacheChanges;
 use dbt_compilation::traits::{CompilationCache, CompilationDriver, CompiledProject};
@@ -133,6 +133,7 @@ impl TaskExecutionDriver for DbtTaskExecutionDriver {
 
     async fn write_metadata(
         &self,
+        compiled: &dyn CompiledProject,
         arg: &EvalArgs,
         run_task_results: &dbt_tasks_core::RunTaskResults,
         compilation_cache_state: &dyn CompilationCache,
@@ -156,12 +157,17 @@ impl TaskExecutionDriver for DbtTaskExecutionDriver {
             run_task_results,
             None,
             self.feature_stack.index.hooks.as_ref(),
+            &crate::metadata::resolved_injected_tables(
+                &self.feature_stack,
+                &project_flag_lookup(compiled.root_project().flags.as_ref()),
+            ),
         )
         .await
     }
 
     async fn write_metadata_with_report(
         &self,
+        compiled: &dyn CompiledProject,
         arg: &EvalArgs,
         run_task_results: &dbt_tasks_core::RunTaskResults,
         compilation_cache_state: &dyn CompilationCache,
@@ -199,6 +205,10 @@ impl TaskExecutionDriver for DbtTaskExecutionDriver {
             run_task_results,
             None,
             self.feature_stack.index.hooks.as_ref(),
+            &crate::metadata::resolved_injected_tables(
+                &self.feature_stack,
+                &project_flag_lookup(compiled.root_project().flags.as_ref()),
+            ),
             &mut report,
         )
         .await?;

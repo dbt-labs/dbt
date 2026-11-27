@@ -8,7 +8,7 @@ mod upload_artifact_ingest;
 pub mod loader;
 pub mod loader_hooks;
 
-pub use deps::execute_deps_command;
+pub use deps::{execute_deps_command, load_simplified_project_only};
 pub use load_packages::{
     build_internal_dbt_project, construct_internal_packages, internal_macro_package_names,
     internal_macro_package_names_for, internal_package_names, internal_package_names_for,
