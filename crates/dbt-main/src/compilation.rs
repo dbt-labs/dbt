@@ -1519,7 +1519,7 @@ impl DbtProjectCompilation {
 
         // The root project's `flags:` is loaded: report what it sets that has no effect.
         for warning in dbt_flags::FlagSnapshot::project_warnings(
-            &feature_stack.experimentals.experimentals.known_flags(),
+            &feature_stack.injected_kinds.kinds.known_flags(),
             &project_flag_lookup(loaded_project.dbt_state().root_project().flags.as_ref()),
         ) {
             emit_warn_log_message(ErrorCode::InvalidConfig, warning);
@@ -1561,7 +1561,7 @@ impl DbtProjectCompilation {
                     token,
                     jinja_type_checking_event_listener_factory.clone(),
                     feature_stack.resolver.hooks.clone(),
-                    feature_stack.experimentals.experimentals.resolvable_nodes(),
+                    feature_stack.injected_kinds.kinds.resolvable_nodes(),
                 )
                 .await?
         };
@@ -2515,7 +2515,7 @@ impl DbtProjectCompilation {
         // Start the features that have selected nodes before the graph is built, so one that
         // can't run stops the invocation before any node runs.
         let injected_runs = InjectedRuns::start(
-            feature_stack.experimentals.experimentals.injected_tasks(),
+            feature_stack.injected_kinds.kinds.injected_tasks(),
             &run_task_args,
             &resolved_state.nodes,
             &schedule,

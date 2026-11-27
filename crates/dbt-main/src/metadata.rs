@@ -375,7 +375,7 @@ pub(crate) fn resolved_injected_tables(
     root_project: &dyn ProjectFlags,
 ) -> Vec<ResolvedInjectedTable<'static>> {
     injected::resolve(
-        feature_stack.experimentals.experimentals.injected_tables(),
+        feature_stack.injected_kinds.kinds.injected_tables(),
         root_project,
     )
 }
@@ -391,7 +391,7 @@ pub(crate) fn resolved_injected_tables_without_project(
     feature_stack: &FeatureStack,
     arg: &EvalArgs,
 ) -> Vec<ResolvedInjectedTable<'static>> {
-    let declared = feature_stack.experimentals.experimentals.injected_tables();
+    let declared = feature_stack.injected_kinds.kinds.injected_tables();
     if declared.is_empty() || !arg.io.in_dir.join(DBT_PROJECT_YML).exists() {
         return resolved_injected_tables(feature_stack, &NoProjectFlags);
     }

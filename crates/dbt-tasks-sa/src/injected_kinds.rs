@@ -3,10 +3,10 @@
 //!
 //! A kind of node is a [`ResolvableNode`], as dbt's own kinds are. A feature in testing adds
 //! one behind its flag. A kind whose nodes are only definitions is added with
-//! [`Experimentals::with_kind`]. A kind whose nodes run is added with
-//! [`Experimentals::with_tasks`], with the [`InjectedTasks`] that give the task graph the
+//! [`InjectedKinds::with_kind`]. A kind whose nodes run is added with
+//! [`InjectedKinds::with_tasks`], with the [`InjectedTasks`] that give the task graph the
 //! tasks of its nodes. The tables that the build adds to the information schema are declared
-//! with [`Experimentals::with_injected_tables`], each behind a flag.
+//! with [`InjectedKinds::with_injected_tables`], each behind a flag.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -20,8 +20,9 @@ pub use dbt_parser::experimental::{
     ExperimentalDiagnostics, ExperimentalError, InjectedNodeDef, KindEntries, KindEntry,
 };
 pub use dbt_parser::resolve::resolvable_node::{
-    Extension, ExtensionSet, Extensions, IndexCtx, IndexedName, LinkCtx, NoExtension, NoExtensions,
-    ResolvableNode, ResolvableNodes, ResolveCtx,
+    IndexCtx, IndexedName, InjectedProperties, InjectedPropertiesByKind, InjectedPropertiesSet,
+    LinkCtx, NoInjectedProperties, NoInjectedPropertiesByKind, ResolvableNode, ResolvableNodes,
+    ResolveCtx,
 };
 
 /// What a feature defines a table that it injects into the information schema with, and
@@ -39,7 +40,7 @@ use crate::injected::InjectedTasks;
 
 /// The kinds of node that features add to a build, and the tasks of their nodes.
 #[derive(Clone, Default)]
-pub struct Experimentals {
+pub struct InjectedKinds {
     /// The kinds, in the order they were added, which is the order they resolve in.
     kinds: Vec<Arc<dyn ResolvableNode>>,
     /// What gives the task graph the tasks of injected nodes: one source for each kind added
@@ -55,7 +56,7 @@ pub struct Experimentals {
     injected_tables: &'static [&'static dyn InjectedTable],
 }
 
-impl Experimentals {
+impl InjectedKinds {
     /// Adds `kind`, a kind of node that has nothing to run: its nodes are definitions, which
     /// other nodes read. `node_kinds` are the kinds of its nodes: the prefixes of their unique
     /// ids, and values `resource_type:` selects.
@@ -116,10 +117,10 @@ impl Experimentals {
     fn register(&mut self, name: &str, node_kinds: &[&'static str], kind: &dyn ResolvableNode) {
         let dbt_keys: BTreeSet<&str> = ResolvableNodes::dbt().properties_keys().collect();
         for node_kind in node_kinds {
-            check_name("experimental type", node_kind);
+            check_name("kind", node_kind);
             assert!(
                 self.types.insert(node_kind),
-                "experimental type `{node_kind}` is registered twice"
+                "kind `{node_kind}` is registered twice"
             );
         }
         check_flag(name, kind.flag());
@@ -136,19 +137,19 @@ impl Experimentals {
             }
             assert!(
                 !dbt_keys.contains(top_level) && !matches!(top_level, "version" | "anchors"),
-                "experimental `{name}` reads `{key}`, a key dbt reads"
+                "kind `{name}` reads `{key}`, a key dbt reads"
             );
             assert!(
                 self.keys.insert(*key),
-                "`{key}` is read by more than one experimental, or twice by `{name}`"
+                "`{key}` is read by more than one kind, or twice by `{name}`"
             );
         }
     }
 
-    /// The same registry, for a build whose own kinds of node read the extensions `E` beside
-    /// the properties of their entries.
-    pub fn with_extensions<E: Extensions>(mut self) -> Self {
-        self.dbt = ResolvableNodes::dbt_with::<E>();
+    /// The same registry, for a build that injects the properties `P` into the entries of
+    /// dbt's own kinds of node.
+    pub fn with_injected_properties<P: InjectedPropertiesByKind>(mut self) -> Self {
+        self.dbt = ResolvableNodes::dbt_with_injected_properties::<P>();
         self
     }
 
@@ -216,7 +217,7 @@ impl Experimentals {
     }
 }
 
-/// Checks that `name`, an experimental type or a key, is a lowercase identifier that dbt doesn't
+/// Checks that `name`, a kind of node or a key, is a lowercase identifier that dbt doesn't
 /// use.
 fn check_name(what: &str, name: &str) {
     assert!(
@@ -226,18 +227,18 @@ fn check_name(what: &str, name: &str) {
     assert!(!is_dbt_name(name), "{what} `{name}` is a name dbt uses");
 }
 
-fn check_flag(experimental_type: &str, flag: Option<&FlagDef>) {
+fn check_flag(kind: &str, flag: Option<&FlagDef>) {
     let Some(flag) = flag else {
-        panic!("experimental `{experimental_type}` must have a feature flag");
+        panic!("kind `{kind}` must have a feature flag");
     };
     assert!(
         matches!(flag.stage, Stage::Experimental | Stage::Beta),
-        "experimental `{experimental_type}`'s flag `{}` must be an experimental or beta flag",
+        "the flag `{}` of kind `{kind}` must be an experimental or beta flag",
         flag.name
     );
     assert!(
         !flag.default,
-        "experimental `{experimental_type}`'s flag `{}` must be off by default",
+        "the flag `{}` of kind `{kind}` must be off by default",
         flag.name
     );
 }
@@ -270,8 +271,8 @@ mod tests {
 
     const fn flag(default: bool, stage: Stage) -> FlagDef {
         FlagDef {
-            name: "test_experimentals",
-            description: "Experimentals for testing experimentals.",
+            name: "test_injected_kinds",
+            description: "Kinds for testing injected kinds.",
             stage,
             default,
             remote: Remote::Never,
@@ -317,13 +318,13 @@ mod tests {
     }
 
     /// A registry with one kind, of `widget` nodes, which reads `keys`.
-    fn reads(keys: &'static [&'static str]) -> Experimentals {
+    fn reads(keys: &'static [&'static str]) -> InjectedKinds {
         with_flag(keys, Some(&TEST_FLAG))
     }
 
     /// A registry with one kind, of `widget` nodes, which reads `keys` and has the flag `flag`.
-    fn with_flag(keys: &'static [&'static str], flag: Option<&'static FlagDef>) -> Experimentals {
-        Experimentals::default().with_kind(Arc::new(WithKeys { keys, flag }), &[WIDGET])
+    fn with_flag(keys: &'static [&'static str], flag: Option<&'static FlagDef>) -> InjectedKinds {
+        InjectedKinds::default().with_kind(Arc::new(WithKeys { keys, flag }), &[WIDGET])
     }
 
     /// A kind of node of the kind `kinds`, with tasks for its nodes, which reads the keys
@@ -371,10 +372,10 @@ mod tests {
     }
 
     /// A registry of kinds with tasks, one for each of `kinds`.
-    fn with_tasks(kinds: &[&'static str]) -> Experimentals {
+    fn with_tasks(kinds: &[&'static str]) -> InjectedKinds {
         kinds
             .iter()
-            .fold(Experimentals::default(), |registry, kind| {
+            .fold(InjectedKinds::default(), |registry, kind| {
                 registry.with_tasks(Arc::new(WithTasks::new(kind)))
             })
     }
@@ -420,7 +421,7 @@ mod tests {
     #[test]
     fn a_kind_with_tasks_resolves_and_gives_the_graph_its_tasks() {
         let dbt_keys = ResolvableNodes::dbt().properties_keys().count();
-        let registry = Experimentals::default()
+        let registry = InjectedKinds::default()
             .with_tasks(Arc::new(WithTasks {
                 command: Some("gadgets"),
                 ..WithTasks::new(GADGET)
@@ -450,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "experimental type `widget` is registered twice")]
+    #[should_panic(expected = "kind `widget` is registered twice")]
     fn a_kind_adds_nodes_of_kinds_that_nothing_else_adds() {
         with_tasks(&[WIDGET]).with_kind(
             Arc::new(WithKeys {
@@ -463,7 +464,7 @@ mod tests {
 
     /// A kind has one source of tasks.
     #[test]
-    #[should_panic(expected = "experimental type `widget` is registered twice")]
+    #[should_panic(expected = "kind `widget` is registered twice")]
     fn a_kind_has_one_source_of_tasks() {
         with_tasks(&[WIDGET]).with_tasks(Arc::new(WithTasks {
             keys: own_key(GIZMO),
@@ -474,7 +475,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "`widget` adds the command `lineage`, a command of dbt")]
     fn a_features_command_is_not_a_command_of_dbt() {
-        Experimentals::default().with_tasks(Arc::new(WithTasks {
+        InjectedKinds::default().with_tasks(Arc::new(WithTasks {
             command: Some("lineage"),
             ..WithTasks::new(WIDGET)
         }));
@@ -483,7 +484,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "the command `widgets` is added twice")]
     fn a_command_is_added_by_one_feature() {
-        Experimentals::default()
+        InjectedKinds::default()
             .with_tasks(Arc::new(WithTasks {
                 command: Some("widgets"),
                 ..WithTasks::new(WIDGET)
@@ -500,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "`gadget` is read by more than one experimental")]
+    #[should_panic(expected = "`gadget` is read by more than one kind")]
     fn a_key_is_read_by_one_kind() {
         with_tasks(&[GADGET]).with_kind(
             Arc::new(WithKeys {
@@ -512,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "experimental `widget` reads `models`, a key dbt reads")]
+    #[should_panic(expected = "kind `widget` reads `models`, a key dbt reads")]
     fn a_key_cannot_be_a_key_dbt_reads() {
         reads(&["models"]);
     }
@@ -527,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "experimental `widget` reads `models.parts`, a key dbt reads")]
+    #[should_panic(expected = "kind `widget` reads `models.parts`, a key dbt reads")]
     fn a_section_cannot_be_a_key_dbt_reads() {
         reads(&["models.parts"]);
     }
@@ -545,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "experimental `widget` must have a feature flag")]
+    #[should_panic(expected = "kind `widget` must have a feature flag")]
     fn a_kind_has_a_flag() {
         with_flag(&[WIDGET], None);
     }
@@ -567,12 +568,12 @@ mod tests {
     #[test]
     fn the_flags_of_kinds_are_known() {
         let snapshot = dbt_flags::FlagSnapshot::builder()
-            .cli(["test_experimentals"])
+            .cli(["test_injected_kinds"])
             .build();
-        let without = Experimentals::default();
+        let without = InjectedKinds::default();
         assert_eq!(
             snapshot.warnings(&without.known_flags()),
-            ["Unknown beta feature 'test_experimentals' in --beta-features; it has no effect"]
+            ["Unknown beta feature 'test_injected_kinds' in --beta-features; it has no effect"]
         );
         let with = with_tasks(&[WIDGET]);
         assert!(snapshot.warnings(&with.known_flags()).is_empty());
@@ -617,8 +618,8 @@ mod tests {
     /// A build injects no table into the information schema unless it declares one.
     #[test]
     fn the_injected_tables_are_the_declared_ones() {
-        assert!(Experimentals::default().injected_tables().is_empty());
-        let registry = Experimentals::default().with_injected_tables(&INJECTED_TABLES);
+        assert!(InjectedKinds::default().injected_tables().is_empty());
+        let registry = InjectedKinds::default().with_injected_tables(&INJECTED_TABLES);
         let names: Vec<String> = registry
             .injected_tables()
             .iter()
@@ -630,13 +631,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "the information schema has a table of that name")]
     fn an_injected_table_is_not_a_table_of_the_catalog() {
-        Experimentals::default().with_injected_tables(&CLASHES_WITH_THE_CATALOG);
+        InjectedKinds::default().with_injected_tables(&CLASHES_WITH_THE_CATALOG);
     }
 
     #[test]
     #[should_panic(expected = "the injected table `dbt_rt.widget_runs` is declared twice")]
     fn an_injected_table_is_declared_once() {
-        Experimentals::default().with_injected_tables(&SAME_NAME);
+        InjectedKinds::default().with_injected_tables(&SAME_NAME);
     }
 
     #[test]
@@ -651,7 +652,7 @@ mod tests {
             "Widget",
         ] {
             let result = std::panic::catch_unwind(|| {
-                Experimentals::default().with_kind(
+                InjectedKinds::default().with_kind(
                     Arc::new(WithKeys {
                         keys: &[],
                         flag: Some(&TEST_FLAG),

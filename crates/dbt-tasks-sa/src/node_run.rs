@@ -32,7 +32,7 @@ use minijinja::arg_utils::ArgParser;
 use minijinja::listener::RenderingEventListener;
 use minijinja::value::{Object, OverlayMap};
 
-use crate::experimental::ExperimentalError;
+use crate::injected_kinds::ExperimentalError;
 
 /// What the run of a node can reach.
 pub struct NodeRunCtx {

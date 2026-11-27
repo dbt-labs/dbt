@@ -700,7 +700,7 @@ pub async fn execute_setup_and_all_phases(
     emit_version_info(eval_arg, feature_stack.cli.command_name)?;
 
     check_options(cli);
-    let known_flags = feature_stack.experimentals.experimentals.known_flags();
+    let known_flags = feature_stack.injected_kinds.kinds.known_flags();
     if let Err(e) = validate_engine_env_vars(&known_flags) {
         emit_error_log_from_fs_error(*e);
         return Err(FsError::exit_with_status(1));
@@ -745,12 +745,12 @@ pub async fn execute_setup_and_all_phases(
 }
 
 /// Resolves this invocation's feature flags and makes them current. The flags that turn on the
-/// binary's experimentals are known flags too, though they aren't in `dbt_flags::ALL`.
+/// binary's injected kinds are known flags too, though they aren't in `dbt_flags::ALL`.
 fn install_feature_flags(cli_beta_features: &[String], feature_stack: &FeatureStack) {
     let snapshot = dbt_flags::FlagSnapshot::builder()
         .cli(cli_beta_features)
         .build();
-    let known = feature_stack.experimentals.experimentals.known_flags();
+    let known = feature_stack.injected_kinds.kinds.known_flags();
     for warning in snapshot.warnings(&known) {
         emit_warn_log_message(ErrorCode::InvalidConfig, warning);
     }

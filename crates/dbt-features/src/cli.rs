@@ -35,7 +35,7 @@ use dbt_schema_store::{CanonicalFqn, DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::{Nodes, StateArtifacts};
 use dbt_schemas::state::{DbtState, ResolverState};
 use dbt_tasks_core::{PreTaskRunData, RunTaskResults};
-use dbt_tasks_sa::experimental::Experimentals;
+use dbt_tasks_sa::injected_kinds::InjectedKinds;
 
 use crate::feature_stack::FeatureStack;
 use crate::metricflow::MetricflowClient;
@@ -265,7 +265,7 @@ pub struct DefaultCliParserFactory;
 impl CliParserFactory for DefaultCliParserFactory {
     fn create(&self, command_name: &'static str, version: &'static str) -> CliParser {
         CliParser::new(command_name, version, Box::new(OSSExtensionCommandParser))
-            .with_beta_features(Experimentals::default().beta_features())
+            .with_beta_features(InjectedKinds::default().beta_features())
     }
 }
 

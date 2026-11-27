@@ -27,9 +27,9 @@ use dbt_tasks_sa::task_runner_hooks::DefaultTaskRunnerHooksFactory;
 use crate::adapter::AdapterFeature;
 use crate::antlr_parser::AntlrParserFeature;
 use crate::cli::CliFeatureBuilder;
-use crate::experimental::ExperimentalFeature;
 use crate::feature_stack::{FeatureStack, InstrumentationFeature};
 use crate::index::{IndexFeature, NoOpIndexHooks};
+use crate::injected_kinds::InjectedKindsFeature;
 use crate::loader::LoaderFeature;
 use crate::login::LoginFeature;
 use crate::metricflow::MetricflowFeature;
@@ -185,7 +185,7 @@ impl FeatureStackBuilder {
             metricflow,
             task_runner,
             resolver,
-            experimentals: ExperimentalFeature::default(),
+            injected_kinds: InjectedKindsFeature::default(),
             loader,
             jinja,
             lake_compute,
