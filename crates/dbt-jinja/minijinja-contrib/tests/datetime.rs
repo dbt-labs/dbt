@@ -5,6 +5,66 @@ use similar_asserts::assert_eq;
 use time::format_description::well_known::Iso8601;
 
 #[test]
+fn test_datetime_ordering_in_filters() {
+    let mut env = minijinja::Environment::new();
+    minijinja_contrib::add_to_environment(&mut env);
+    let template = r#"
+        {%- set dt = modules.datetime.datetime -%}
+        {%- set times = [dt(2026, 11, 25, 0, 48, 58), dt(2026, 11, 25, 0, 48, 43), dt(2026, 11, 25, 0, 48, 55)] -%}
+        {{ (times|min).second }}|{{ (times|max).second }}|{{ times|sort|map(attribute="second")|join(",") }}
+    "#;
+    assert_eq!(
+        env.render_str(template, context!(), &[]).unwrap().trim(),
+        "43|58|43,55,58"
+    );
+}
+
+#[test]
+fn test_aware_datetime_filters_compare_instants() {
+    let mut env = minijinja::Environment::new();
+    minijinja_contrib::add_to_environment(&mut env);
+    let template = r#"
+        {%- set dt = modules.datetime.datetime -%}
+        {%- set utc = dt(2026, 11, 25, tzinfo=modules.pytz.utc) -%}
+        {%- set same = dt.fromisoformat("2026-11-25T01:00:00+01:00") -%}
+        {%- set earlier = dt.fromisoformat("2026-11-25T08:00:00+09:00") -%}
+        {{ ([utc, earlier]|min).hour }}|{{ ([earlier, utc]|max).hour }}|
+        {{- [utc, same]|sort|map(attribute="hour")|join(",") }}|
+        {{- [same, utc]|sort|map(attribute="hour")|join(",") }}
+    "#;
+    assert_eq!(
+        env.render_str(template, context!(), &[]).unwrap().trim(),
+        "8|0|0,1|1,0"
+    );
+}
+
+#[test]
+fn test_naive_and_aware_datetime_comparison() {
+    let mut env = minijinja::Environment::new();
+    minijinja_contrib::add_to_environment(&mut env);
+    let variables = r#"
+        {%- set dt = modules.datetime.datetime -%}
+        {%- set naive = dt(2026, 11, 25) -%}
+        {%- set aware = dt(2026, 11, 24, tzinfo=modules.pytz.utc) -%}
+    "#;
+    let template = [
+        variables,
+        "{{ [aware, naive]|sort|map(attribute='day')|join(',') }}",
+    ]
+    .concat();
+    assert_eq!(
+        env.render_str(&template, context!(), &[]).unwrap().trim(),
+        "25,24"
+    );
+    let comparison = [variables, "{{ naive < aware }}"].concat();
+    let err = env.render_str(&comparison, context!(), &[]).unwrap_err();
+    assert_eq!(
+        err.detail(),
+        Some("Can't compare offset-naive and offset-aware datetimes")
+    );
+}
+
+#[test]
 fn test_datetimeformat() {
     let mut env = minijinja::Environment::new();
     env.add_global("TIMEZONE", "Europe/Vienna");

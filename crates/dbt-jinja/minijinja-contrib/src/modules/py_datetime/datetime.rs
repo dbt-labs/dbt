@@ -9,7 +9,11 @@ use chrono::{
 };
 use chrono_tz::Tz;
 use minijinja::arg_utils::ArgsIter;
-use minijinja::{arg_utils::ArgParser, value::Object, value::ObjectRepr, Error, ErrorKind, Value};
+use minijinja::{
+    arg_utils::ArgParser,
+    value::{DynObject, Object, ObjectRepr},
+    Error, ErrorKind, Value,
+};
 
 use crate::modules::py_datetime::bound_method::BoundMethod;
 use crate::modules::py_datetime::date::PyDate;
@@ -906,6 +910,16 @@ impl PyDateTime {
         }
     }
 
+    // Collection filters need a total order. Group naive values separately
+    // and compare all timezone-aware values by their UTC instant.
+    fn sort_key(&self) -> (bool, NaiveDateTime) {
+        match &self.state {
+            DateTimeState::Naive(dt) => (false, *dt),
+            DateTimeState::Aware(dt) => (true, dt.naive_utc()),
+            DateTimeState::FixedOffset(dt) => (true, dt.naive_utc()),
+        }
+    }
+
     fn cmp_op(&self, args: &[Value], cmp: DateTimeCmp) -> Result<Value, Error> {
         let iter = ArgsIter::new(
             match cmp {
@@ -923,14 +937,10 @@ impl PyDateTime {
         iter.finish()?;
 
         let other_dt = rhs.downcast_object_ref::<PyDateTime>();
-        let result = other_dt.and_then(|other| match (&self.state, &other.state) {
-            (DateTimeState::Naive(l), DateTimeState::Naive(r)) => Some(l.cmp(r)),
-            (DateTimeState::Aware(l), DateTimeState::Aware(r)) => Some(l.cmp(r)),
-            (DateTimeState::FixedOffset(l), DateTimeState::FixedOffset(r)) => Some(l.cmp(r)),
-            // chrono compares datetimes with different timezone types by their UTC instant, so partial_cmp is safe here.
-            (DateTimeState::Aware(l), DateTimeState::FixedOffset(r)) => l.partial_cmp(r),
-            (DateTimeState::FixedOffset(l), DateTimeState::Aware(r)) => l.partial_cmp(r),
-            _ => None,
+        let result = other_dt.and_then(|other| {
+            let (aware, lhs) = self.sort_key();
+            let (other_aware, rhs) = other.sort_key();
+            (aware == other_aware).then(|| lhs.cmp(&rhs))
         });
 
         if let Some(o) = result {
@@ -1212,6 +1222,12 @@ impl Object for PyDateTime {
 
     fn is_true(self: &Arc<Self>) -> bool {
         true
+    }
+
+    fn custom_cmp(self: &Arc<Self>, other: &DynObject) -> Option<Ordering> {
+        other
+            .downcast_ref::<Self>()
+            .map(|other| self.sort_key().cmp(&other.sort_key()))
     }
 
     fn call_method(
