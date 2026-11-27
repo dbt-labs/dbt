@@ -200,6 +200,18 @@ class SourcePatcher:
                 )
             )
 
+        if parsed_source.freshness:
+            for threshold, count in fractional_freshness_counts(
+                source.config.get("freshness"), table.config.get("freshness"), table.freshness
+            ):
+                fire_or_defer_event(
+                    FreshnessConfigProblem(
+                        msg=f"The freshness {threshold} count for source '{source.name}.{table.name}' must be a whole number, got {count}. dbt will use {int(count)}. Use a smaller period instead, for example `count: 90, period: minute`."
+                    ),
+                    force_warn_or_error_handling=True,
+                    event_group_type=EventGroupType.PARSE,
+                )
+
         # relation name is added after instantiation because the adapter does
         # not provide the relation name for a UnpatchedSourceDefinition object
         parsed_source.relation_name = self._get_relation_name(parsed_source)
@@ -513,6 +525,35 @@ class SourcePatcher:
                 config_tags_valid.append(tag)
 
         return config_tags_valid
+
+
+def fractional_freshness_counts(
+    source_config_freshness: Optional[Dict],
+    table_config_freshness: Optional[Dict],
+    table_freshness: Optional[FreshnessThreshold],
+) -> List[Tuple[str, float]]:
+    """Return (threshold, count) for each applied warn_after/error_after count that is not a
+    whole number. Time.count is an int, so loading the config truncates these counts.
+
+    A source-level threshold is skipped when the table sets the same threshold, since the
+    table's value is the one dbt uses.
+    """
+    fractional = []
+    for threshold in ("warn_after", "error_after"):
+        table_sets_threshold = (
+            isinstance(table_config_freshness, dict) and threshold in table_config_freshness
+        ) or bool(table_freshness and getattr(table_freshness, threshold))
+        applied_config = (
+            table_config_freshness if table_sets_threshold else source_config_freshness
+        )
+        if not isinstance(applied_config, dict):
+            continue
+        threshold_config = applied_config.get(threshold)
+        if isinstance(threshold_config, dict):
+            count = threshold_config.get("count")
+            if isinstance(count, float) and not count.is_integer():
+                fractional.append((threshold, count))
+    return fractional
 
 
 def merge_freshness_time_thresholds(

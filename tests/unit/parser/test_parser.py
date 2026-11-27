@@ -523,6 +523,48 @@ sources:
                 error_after: {count: 1, period: day}
 """
 
+SOURCE_FRESHNESS_WITH_FRACTIONAL_COUNTS = """
+sources:
+  - name: my_source
+    tables:
+      - name: my_table
+        loaded_at_field: updated_at
+        config:
+            freshness:
+                warn_after: {count: 1.5, period: hour}
+                error_after: {count: 2.5, period: day}
+"""
+
+SOURCE_FRESHNESS_WITH_WHOLE_FLOAT_COUNTS = """
+sources:
+  - name: my_source
+    tables:
+      - name: my_table
+        loaded_at_field: updated_at
+        config:
+            freshness:
+                warn_after: {count: 2.0, period: hour}
+                error_after: {count: 1, period: day}
+"""
+
+SOURCE_FRESHNESS_WITH_FRACTIONAL_COUNT_OVERRIDDEN_BY_TABLE = """
+sources:
+  - name: my_source
+    loaded_at_field: updated_at
+    config:
+        freshness:
+            warn_after: {count: 1.5, period: hour}
+            error_after: {count: 2.5, period: day}
+    tables:
+      - name: my_table
+        config:
+            freshness:
+                warn_after: {count: 3, period: hour}
+      - name: my_other_table
+        config:
+            freshness: null
+"""
+
 
 class SchemaParserTest(BaseParserTest):
     def setUp(self):
@@ -793,6 +835,66 @@ class SchemaParserSourceTest(SchemaParserTest):
         self.source_patcher.parse_source(unpatched_src_default)
 
         assert len(catcher.caught_events) == 0
+
+    @mock.patch("dbt.parser.sources.get_adapter")
+    def test__fractional_freshness_count_fires_config_problem_event(self, _):
+        """A fractional freshness count is truncated when loaded, so warn about it."""
+        catcher = EventCatcher(FreshnessConfigProblem)
+        add_callback_to_manager(catcher.catch)
+
+        block = self.file_block_for(SOURCE_FRESHNESS_WITH_FRACTIONAL_COUNTS, "test_one.yml")
+        dct = yaml_from_file(block.file, validate=True)
+        self.parser.parse_file(block, dct)
+        unpatched_src_default = self.parser.manifest.sources["source.snowplow.my_source.my_table"]
+        src_default = self.source_patcher.parse_source(unpatched_src_default)
+
+        messages = [event.data.msg for event in catcher.caught_events]
+        assert len(messages) == 2
+        assert (
+            "warn_after count for source 'my_source.my_table' must be a whole number, got 1.5. dbt will use 1."
+            in messages[0]
+        )
+        assert (
+            "error_after count for source 'my_source.my_table' must be a whole number, got 2.5. dbt will use 2."
+            in messages[1]
+        )
+        assert src_default.freshness.warn_after.count == 1
+        assert src_default.freshness.error_after.count == 2
+
+    @mock.patch("dbt.parser.sources.get_adapter")
+    def test__whole_number_freshness_count_does_not_fire_config_problem_event(self, _):
+        """Whole-number counts, including floats like 2.0, load without loss, so don't warn."""
+        catcher = EventCatcher(FreshnessConfigProblem)
+        add_callback_to_manager(catcher.catch)
+
+        block = self.file_block_for(SOURCE_FRESHNESS_WITH_WHOLE_FLOAT_COUNTS, "test_one.yml")
+        dct = yaml_from_file(block.file, validate=True)
+        self.parser.parse_file(block, dct)
+        unpatched_src_default = self.parser.manifest.sources["source.snowplow.my_source.my_table"]
+        self.source_patcher.parse_source(unpatched_src_default)
+
+        assert len(catcher.caught_events) == 0
+
+    @mock.patch("dbt.parser.sources.get_adapter")
+    def test__fractional_source_freshness_count_overridden_by_table_only_warns_if_applied(self, _):
+        """Only warn about a source-level fractional count on tables that still use it."""
+        catcher = EventCatcher(FreshnessConfigProblem)
+        add_callback_to_manager(catcher.catch)
+
+        block = self.file_block_for(
+            SOURCE_FRESHNESS_WITH_FRACTIONAL_COUNT_OVERRIDDEN_BY_TABLE, "test_one.yml"
+        )
+        dct = yaml_from_file(block.file, validate=True)
+        self.parser.parse_file(block, dct)
+        for table_name in ("my_table", "my_other_table"):
+            unpatched_src_default = self.parser.manifest.sources[
+                f"source.snowplow.my_source.{table_name}"
+            ]
+            self.source_patcher.parse_source(unpatched_src_default)
+
+        messages = [event.data.msg for event in catcher.caught_events]
+        assert len(messages) == 1
+        assert "error_after count for source 'my_source.my_table'" in messages[0]
 
 
 class SchemaParserModelsTest(SchemaParserTest):
