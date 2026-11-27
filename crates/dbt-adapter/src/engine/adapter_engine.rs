@@ -451,31 +451,6 @@ pub(crate) fn adbc_execute_with_options(
             return Ok((schema, Vec::new(), rows_affected));
         }
 
-        // Other adapters need execute()'s schema metadata (query_id, BigQuery
-        // row counts) that this path drops. DuckDB reports the rows a
-        // statement wrote only as the driver's rows_affected, and its result
-        // carries no metadata.
-        if matches!(
-            adapter_type,
-            AdapterType::Redshift | AdapterType::ClickHouse | AdapterType::DuckDB
-        ) && !fetch
-        {
-            let rows_affected = stmt.execute_update()?;
-            token.check_cancellation()?;
-            return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));
-        }
-
-        let t_exec = std::time::Instant::now();
-        let reader = stmt.execute()?;
-        log_step_duration(
-            "stmt.execute() (submit+wait_for_completion, returns reader)",
-            t_exec.elapsed(),
-        );
-        let t_schema = std::time::Instant::now();
-        let schema = reader.schema();
-        log_step_duration("reader.schema()", t_schema.elapsed());
-        let mut batches = Vec::with_capacity(1);
-
         // Surface non-fatal backend warnings (e.g. an export-limit truncation
         // notice) the same way the `!fetch` lake compute branch above does: via schema
         // metadata, since this closure's return type has no other slot for
@@ -519,6 +494,33 @@ pub(crate) fn adbc_execute_with_options(
             metadata.extend(values);
             Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
         };
+
+        // Other adapters need execute()'s schema metadata (query_id, BigQuery
+        // row counts) that this path drops. DuckDB reports the rows a
+        // statement wrote only as the driver's rows_affected, and its result
+        // carries no metadata. ClickHouse's query id is a statement option,
+        // so it survives.
+        if matches!(
+            adapter_type,
+            AdapterType::Redshift | AdapterType::ClickHouse | AdapterType::DuckDB
+        ) && !fetch
+        {
+            let rows_affected = stmt.execute_update()?;
+            token.check_cancellation()?;
+            let schema = attach_statement_metadata(&stmt, Arc::new(Schema::empty()));
+            return Ok((schema, Vec::new(), rows_affected));
+        }
+
+        let t_exec = std::time::Instant::now();
+        let reader = stmt.execute()?;
+        log_step_duration(
+            "stmt.execute() (submit+wait_for_completion, returns reader)",
+            t_exec.elapsed(),
+        );
+        let t_schema = std::time::Instant::now();
+        let schema = reader.schema();
+        log_step_duration("reader.schema()", t_schema.elapsed());
+        let mut batches = Vec::with_capacity(1);
 
         // Snowflake DML (MERGE/INSERT/UPDATE/DELETE) returns a one-row metadata batch
         // with columns like "number of rows inserted". AdapterResponse needs that batch

@@ -870,6 +870,7 @@ mod execute_inner_txn {
     };
     use crate::engine::query_comment::QueryCommentConfig;
     use crate::engine::{AdapterEngine, AdbcEngine, execute_query_with_retry};
+    use crate::response::AdapterResponse;
     use crate::sql_types::DefaultTypeOps;
     use crate::stmt_splitter::DefaultStmtSplitter;
     use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
@@ -970,6 +971,16 @@ mod execute_inner_txn {
 
         fn set_option(&mut self, _key: OptionStatement, _value: OptionValue) -> Result<()> {
             Ok(())
+        }
+
+        fn get_option_string(&self, key: OptionStatement) -> Result<String> {
+            match key {
+                OptionStatement::Other(name) if name == dbt_adbc::clickhouse::QUERY_ID => {
+                    Ok(CLICKHOUSE_QUERY_ID.to_string())
+                }
+                // Only ClickHouse reads a statement option back.
+                _ => unimplemented!(),
+            }
         }
 
         fn cancel(&mut self) -> Result<()> {
@@ -1087,10 +1098,14 @@ mod execute_inner_txn {
     /// Runs `sql` through `execute_inner` on a fresh [`ScriptedConnection`] and returns the result
     /// together with the connection's final state.
     fn run(sql: &str) -> (AdapterResult<()>, Session) {
-        run_on(snowflake_engine(), sql)
+        let (result, session) = run_on(snowflake_engine(), sql);
+        (result.map(|_| ()), session)
     }
 
-    fn run_on(engine: Arc<dyn AdapterEngine>, sql: &str) -> (AdapterResult<()>, Session) {
+    fn run_on(
+        engine: Arc<dyn AdapterEngine>,
+        sql: &str,
+    ) -> (AdapterResult<AdapterResponse>, Session) {
         let adapter = AdapterImpl::new(Arc::clone(&engine), None);
         let session = Arc::new(Mutex::new(Session::default()));
         drop_thread_local_connection();
@@ -1110,7 +1125,7 @@ mod execute_inner_txn {
         drop(conn);
         let mut session = std::mem::take(&mut *session.lock().unwrap());
         session.discarded = !tlocal_slot_occupied();
-        (result.map(|_| ()), session)
+        (result.map(|(response, _)| response), session)
     }
 
     #[test]
@@ -1212,9 +1227,12 @@ mod execute_inner_txn {
         let engine = engine_with(AdapterType::ClickHouse, false, &[]);
         let (result, session) = run_on(engine, "select 1");
 
-        assert!(result.is_ok());
+        let response = result.expect("the statement should succeed");
         assert_eq!(session.execute_update_calls, 1);
+        assert_eq!(response.query_id().as_deref(), Some(CLICKHOUSE_QUERY_ID));
     }
+
+    const CLICKHOUSE_QUERY_ID: &str = "query_s3ijwxOjm13MoJeH";
 
     const USE_TRANSACTIONS: &str = "redshift_use_transactions";
     const SKIP_TRANSACTIONS: &str = "redshift_skip_autocommit_transaction_statements";
