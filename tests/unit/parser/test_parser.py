@@ -493,6 +493,18 @@ sources:
                 error_after: {count: 2, period: day}
 """
 
+SOURCE_FRACTIONAL_CONFIG_FRESHNESS = """
+sources:
+  - name: my_source
+    loaded_at_field: test
+    tables:
+      - name: my_table
+        config:
+            freshness:
+                warn_after: {count: 1.5, period: hour}
+                error_after: {count: 2.5, period: day}
+"""
+
 SOURCE_FIELD_AT_CUSTOM_FRESHNESS_BOTH_AT_TABLE = """
 sources:
   - name: my_source
@@ -630,6 +642,25 @@ class SchemaParserSourceTest(SchemaParserTest):
         assert src_default.freshness.warn_after.period == "hour"
         assert src_default.freshness.error_after.count == 2
         assert src_default.freshness.error_after.period == "day"
+
+    @mock.patch("dbt.parser.sources.get_adapter")
+    def test_parse_source_fractional_config_freshness_warns(self, _):
+        catcher = EventCatcher(FreshnessConfigProblem)
+        add_callback_to_manager(catcher.catch)
+
+        block = self.file_block_for(SOURCE_FRACTIONAL_CONFIG_FRESHNESS, "test_one.yml")
+        dct = yaml_from_file(block.file, validate=True)
+        self.parser.parse_file(block, dct)
+        unpatched_src_default = self.parser.manifest.sources["source.snowplow.my_source.my_table"]
+        src_default = self.source_patcher.parse_source(unpatched_src_default)
+        # the fraction is still truncated to a whole number, but now the user is warned
+        assert src_default.freshness.warn_after.count == 1
+        assert src_default.freshness.error_after.count == 2
+        assert len(catcher.caught_events) == 2
+        assert "warn_after.count" in catcher.caught_events[0].msg
+        assert "1.5" in catcher.caught_events[0].msg
+        assert "error_after.count" in catcher.caught_events[1].msg
+        assert "2.5" in catcher.caught_events[1].msg
 
     @mock.patch("dbt.parser.sources.get_adapter")
     def test_parse_source_field_at_custom_freshness_both_at_source_fails(self, _):
