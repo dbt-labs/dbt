@@ -3,10 +3,11 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc;
+use std::time::SystemTime;
 
 use dbt_common::FsResult;
-use dbt_common::stats::NodeStatus;
-use dbt_schemas::schemas::{DbtTest, InternalDbtNodeAttributes};
+use dbt_common::stats::{NodeStatus, Stat};
+use dbt_schemas::schemas::{DbtTest, InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::render_task_hooks::RenderTaskHooks;
 use dbt_tasks_core::span_manager::SpanTreeRequest;
@@ -67,6 +68,7 @@ impl Task for AggregatedTestRenderTask {
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
+            let start = SystemTime::now();
             let spans = self
                 .member_tests
                 .iter()
@@ -87,6 +89,18 @@ impl Task for AggregatedTestRenderTask {
                 .aggregated_task
                 .run_with_wait_parents(ctx, Some(wait_parents))
                 .await;
+            if let Err(e) = &result {
+                // The aggregated test failed to render, so every member errored.
+                // Record each one so it appears in run_results.json.
+                let error_message = e.to_string();
+                for test in &self.member_tests {
+                    let unique_id = test.common().unique_id.clone();
+                    ctx.inner.run_stats.upsert_sync(
+                        unique_id.clone(),
+                        Stat::errored(unique_id, start, error_message.clone(), ctx.thread_id),
+                    );
+                }
+            }
             for span in spans {
                 ctx.inner.span_manager().handle_task_finished(span, &result);
             }

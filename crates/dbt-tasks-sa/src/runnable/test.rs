@@ -561,22 +561,34 @@ impl Task for AggregatedTestRunRemoteTask {
                 })
                 .collect::<FsResult<_>>()?;
 
+            let start = SystemTime::now();
             let status = self.run_task_inner(ctx, &mut spans_by_id).await;
 
             if let Err(e) = &status {
                 // This task closes its members' spans itself. When `--fail-fast` cancelled the
                 // query, the visitor records the members as skipped, so close them the same way.
-                let skipped_by_fail_fast = e.code.is_cancellation()
+                // After Ctrl+C the visitor leaves them out, so record nothing for a cancel.
+                let cancelled = e.code.is_cancellation();
+                let skipped_by_fail_fast = cancelled
                     && ctx.is_cancelled(self.group.aggregated_test.as_ref())
                     && ctx.stopped_by_fail_fast();
-                for (_, span) in spans_by_id.into_values() {
+                // Any other failure of the aggregated query errors every member not reported
+                // yet. Record each one so it appears in run_results.json.
+                let error_message = e.to_string();
+                for (unique_id, (_, span)) in spans_by_id {
                     if skipped_by_fail_fast {
                         ctx.inner
                             .span_manager()
                             .handle_task_skipped(span, &SkipReason::FailFast);
-                    } else {
-                        ctx.inner.span_manager().handle_task_finished(span, &status);
+                        continue;
                     }
+                    if !cancelled {
+                        ctx.inner.run_stats.upsert_sync(
+                            unique_id.clone(),
+                            Stat::errored(unique_id, start, error_message.clone(), ctx.thread_id),
+                        );
+                    }
+                    ctx.inner.span_manager().handle_task_finished(span, &status);
                 }
             }
 

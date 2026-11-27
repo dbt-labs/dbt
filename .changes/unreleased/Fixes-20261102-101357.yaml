@@ -1,0 +1,7 @@
+kind: Fixes
+body: With --batch-tests, member tests of a batch that fails to render or whose query errors are now recorded as errored in run_results.json instead of being dropped
+time: 2026-11-02T10:13:57.790994+01:00
+custom:
+    author: i-zaykov
+    issue: "16993"
+    project: dbt
