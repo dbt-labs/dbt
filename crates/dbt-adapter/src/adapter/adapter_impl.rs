@@ -1113,7 +1113,7 @@ impl AdapterImpl {
                 Cow::Owned(ctx)
             }
         };
-        match self.inner_adapter() {
+        let result = match self.inner_adapter() {
             Replay(_, replay) => replay.replay_execute(
                 state,
                 conn.as_mut(),
@@ -1136,7 +1136,10 @@ impl AdapterImpl {
                 options,
                 token,
             ),
-        }
+        };
+        // Keep the statement with the error so callers can show users the SQL that failed,
+        // not just the message the warehouse returned for it.
+        result.map_err(|e| e.with_failed_sql(sql))
     }
 
     /// Execute a statement, expect no results.

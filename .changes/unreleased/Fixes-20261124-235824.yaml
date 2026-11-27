@@ -1,0 +1,7 @@
+kind: Fixes
+body: Database errors from a statement other than a node's main one (e.g. a snapshot check strategy's column probe) now cite a `.failed.sql` file in target/run holding the failing SQL, instead of the stale run artifact
+time: 2026-11-24T23:58:24.3874373+05:00
+custom:
+    author: mkirshad
+    issue: "13879"
+    project: dbt-core

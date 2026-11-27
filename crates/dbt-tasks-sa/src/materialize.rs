@@ -45,7 +45,9 @@ use dbt_common::{
     path::get_target_write_path, unexpected_fs_err,
 };
 use dbt_jinja_utils::{
-    jinja_environment::JinjaEnv, listener::JinjaTraceListener, phases::run::build_run_node_context,
+    jinja_environment::JinjaEnv,
+    listener::JinjaTraceListener,
+    phases::run::{WriteConfig, build_run_node_context},
 };
 use dbt_schemas::{
     materialization_resolver::MaterializationResolver,
@@ -84,6 +86,45 @@ pub struct CompareRecordBatchResult {
     pub has_differences: bool,
 }
 
+/// Extension that replaces a run artifact's own to name the file holding the statement a failed
+/// materialization was executing: `my_model.sql` -> `my_model.failed.sql`.
+const FAILED_SQL_EXTENSION: &str = "failed.sql";
+
+/// The absolute path `write()` saves this node's `main` statement to, i.e. its `target/run`
+/// artifact, when the node context has one.
+fn run_artifact_path(context: &OverlayMap) -> Option<PathBuf> {
+    let write = context.get("write")?;
+    let write = write.downcast_object_ref::<WriteConfig>()?;
+    Some(write.run_file_path.clone())
+}
+
+/// Saves the statement a failed materialization was executing next to the node's `target/run`
+/// artifact, and returns the path to cite for it, relative like `run_path`.
+///
+/// The artifact only ever holds the node's `main` statement, and only once the materialization
+/// reaches it. When an earlier statement fails (a strategy's column probe, a staging table, a
+/// hook), the artifact is missing or still holds the previous run's statement, so citing it
+/// sends the user to the wrong SQL.
+///
+/// Returns `None`, leaving the caller to cite `run_path` as before, when:
+/// - the artifact already holds `sql`: the `main` statement itself failed, which is the usual
+///   case, and the path we cite today is already the right one;
+/// - `run_path` does not name the artifact: a Python model is cited by its source file, and we
+///   have no sibling of the artifact to cite the same way;
+/// - the file cannot be written.
+fn write_failed_sql(run_path: &Path, run_artifact: &Path, sql: &str) -> Option<PathBuf> {
+    if run_path.file_name() != run_artifact.file_name() {
+        return None;
+    }
+    if std::fs::read_to_string(run_artifact).is_ok_and(|artifact| artifact == sql) {
+        return None;
+    }
+    let failed_path = run_artifact.with_extension(FAILED_SQL_EXTENSION);
+    std::fs::create_dir_all(failed_path.parent()?).ok()?;
+    std::fs::write(&failed_path, sql).ok()?;
+    Some(run_path.with_extension(FAILED_SQL_EXTENSION))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_materialization_macro(
     jinja_env: Arc<JinjaEnv>,
@@ -95,6 +136,7 @@ fn execute_materialization_macro(
     run_path: PathBuf,
 ) -> FsResult<Value> {
     let macro_string = format!("{macro_name}()");
+    let run_artifact = run_artifact_path(context);
     let expr = jinja_env.compile_expression(&macro_string)?;
     with_jinja_trace(&run_path, unique_id, |listeners| {
         expr.eval_with_file_only_stack_frame(context, listeners, run_path.as_path()).map_err(|e| {
@@ -107,9 +149,15 @@ fn execute_materialization_macro(
                     .map(|line| format!("  {line}"))
                     .collect::<Vec<_>>()
                     .join("\n");
+                // Cite the statement that failed when we have it; the run artifact may hold a
+                // different one. See `write_failed_sql`.
+                let failed_sql_path = e
+                    .failed_sql()
+                    .zip(run_artifact.as_deref())
+                    .and_then(|(sql, artifact)| write_failed_sql(&run_path, artifact, sql));
                 let message = format!(
                     "Database Error in {resource_type} {node_alias} ({})\n{indented_body}",
-                    run_path.display(),
+                    failed_sql_path.as_deref().unwrap_or(&run_path).display(),
                 );
                 Box::new(dbt_common::FsError::new(e.code, message))
             } else if e.code == ErrorCode::JinjaWarnUpgradedToError {
@@ -425,9 +473,117 @@ mod tests {
     };
     use dbt_adapter::stmt_splitter::DefaultStmtSplitter;
     use dbt_adapter_core::AdapterType;
+    use dbt_jinja_utils::phases::run::WriteConfig;
     use dbt_schemas::schemas::common::DbtMaterialization;
     use minijinja::Value;
     use minijinja::value::OverlayMap;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn run_artifact_path_is_where_write_saves_the_main_statement() {
+        let mut context = OverlayMap::new(Value::UNDEFINED);
+        assert_eq!(super::run_artifact_path(&context), None);
+
+        let run_file_path = PathBuf::from("project/target/run/pkg/models/my_model.sql");
+        context.insert(
+            "write",
+            Value::from_object(WriteConfig {
+                resource_type: "model".to_string(),
+                run_file_path: run_file_path.clone(),
+            }),
+        );
+        assert_eq!(super::run_artifact_path(&context), Some(run_file_path));
+    }
+
+    #[test]
+    fn write_failed_sql_saves_the_statement_next_to_the_run_artifact() {
+        let project = tempfile::TempDir::new().unwrap();
+        // The nested layout snapshots use; nothing has been written under target/ yet.
+        let run_path = Path::new("target/run/pkg/snapshots/snap.yml/my_snap.sql");
+        let run_artifact = project.path().join(run_path);
+
+        let cited = super::write_failed_sql(run_path, &run_artifact, "select fake_col");
+
+        let expected = Path::new("target/run/pkg/snapshots/snap.yml/my_snap.failed.sql");
+        assert_eq!(cited.as_deref(), Some(expected));
+        assert_eq!(
+            std::fs::read_to_string(project.path().join(expected)).unwrap(),
+            "select fake_col"
+        );
+        // The run artifact itself is not created or touched.
+        assert!(!run_artifact.exists());
+
+        // A later failure replaces the earlier statement.
+        super::write_failed_sql(run_path, &run_artifact, "select other_col");
+        assert_eq!(
+            std::fs::read_to_string(project.path().join(expected)).unwrap(),
+            "select other_col"
+        );
+    }
+
+    #[test]
+    fn write_failed_sql_cites_the_run_artifact_when_it_holds_the_statement() {
+        let project = tempfile::TempDir::new().unwrap();
+        let run_path = Path::new("target/run/pkg/models/my_model.sql");
+        let run_artifact = project.path().join(run_path);
+        std::fs::create_dir_all(run_artifact.parent().unwrap()).unwrap();
+        std::fs::write(&run_artifact, "create table t as select fake_col").unwrap();
+
+        // The `main` statement failed: the artifact is already the file to cite.
+        let cited =
+            super::write_failed_sql(run_path, &run_artifact, "create table t as select fake_col");
+        assert_eq!(cited, None);
+        assert!(!run_artifact.with_extension("failed.sql").exists());
+
+        // Another statement failed: the artifact is left alone and the statement is saved.
+        let cited = super::write_failed_sql(run_path, &run_artifact, "select fake_col");
+        assert_eq!(
+            cited.as_deref(),
+            Some(Path::new("target/run/pkg/models/my_model.failed.sql"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(&run_artifact).unwrap(),
+            "create table t as select fake_col"
+        );
+    }
+
+    #[test]
+    fn write_failed_sql_follows_a_target_directory_outside_the_project() {
+        let root = tempfile::TempDir::new().unwrap();
+        // With `--target-path` elsewhere, the artifact is cited by climbing out of the project.
+        let run_path = Path::new("../scratch/target/run/pkg/models/my_model.sql");
+        let run_artifact = root
+            .path()
+            .join("scratch/target/run/pkg/models/my_model.sql");
+
+        let cited = super::write_failed_sql(run_path, &run_artifact, "select fake_col");
+
+        assert_eq!(
+            cited.as_deref(),
+            Some(Path::new(
+                "../scratch/target/run/pkg/models/my_model.failed.sql"
+            ))
+        );
+        assert_eq!(
+            std::fs::read_to_string(run_artifact.with_extension("failed.sql")).unwrap(),
+            "select fake_col"
+        );
+    }
+
+    #[test]
+    fn write_failed_sql_leaves_a_node_cited_by_its_source_file_alone() {
+        let project = tempfile::TempDir::new().unwrap();
+        // A Python model is cited by its source file, not by its run artifact.
+        let run_path = project.path().join("models").join("my_model.py");
+        let run_artifact = project.path().join("target/run/pkg/models/my_model.sql");
+
+        assert_eq!(
+            super::write_failed_sql(&run_path, &run_artifact, "select 1"),
+            None
+        );
+        assert!(!project.path().join("models").exists());
+        assert!(!project.path().join("target").exists());
+    }
 
     /// Pins no `use warehouse` connection borrow on a non-Snowflake adapter. Without the gate the
     /// mock trips `use_warehouse`'s debug assert, so the test only fails in debug builds.
