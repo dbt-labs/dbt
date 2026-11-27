@@ -385,24 +385,30 @@ class SourcePatcher:
         target: UnpatchedSourceDefinition,
     ) -> Optional[FreshnessThreshold]:
         source: UnparsedSourceDefinition = target.source
+        table: UnparsedSourceTableDefinition = target.table
 
         source_freshness = source.freshness
 
         source_config_freshness_raw: Optional[Dict] = source.config.get(
             "freshness", {}
         )  # Will only be None if the user explicitly set it to null
+        warn_on_fractional_freshness_counts(
+            source_config_freshness_raw, source.name, table.name
+        )
         source_config_freshness: Optional[FreshnessThreshold] = (
             FreshnessThreshold.from_dict(source_config_freshness_raw)
             if source_config_freshness_raw is not None
             else None
         )
 
-        table: UnparsedSourceTableDefinition = target.table
         table_freshness = table.freshness
 
         table_config_freshness_raw: Optional[Dict] = table.config.get(
             "freshness", {}
         )  # Will only be None if the user explicitly set it to null
+        warn_on_fractional_freshness_counts(
+            table_config_freshness_raw, source.name, table.name
+        )
         table_config_freshness: Optional[FreshnessThreshold] = (
             FreshnessThreshold.from_dict(table_config_freshness_raw)
             if table_config_freshness_raw is not None
@@ -524,6 +530,36 @@ def merge_freshness_time_thresholds(
         return None
     else:
         return update or base
+
+
+def warn_on_fractional_freshness_counts(
+    freshness_raw: Optional[Dict],
+    source_name: str,
+    table_name: str,
+) -> None:
+    """Warn when a `config:` freshness count is fractional.
+
+    `Time.count` is an int, so `FreshnessThreshold.from_dict` silently
+    truncates e.g. 1.5 to 1. The same value under the top-level `freshness:`
+    key is a hard parse error, so at least warn here. See #17291.
+    """
+    if not freshness_raw:
+        return
+    for field in ("warn_after", "error_after"):
+        threshold = freshness_raw.get(field)
+        if not isinstance(threshold, dict):
+            continue
+        count = threshold.get("count")
+        if isinstance(count, float) and not count.is_integer():
+            fire_event(
+                FreshnessConfigProblem(
+                    msg=(
+                        f"Source {source_name}.{table_name}: freshness {field}.count "
+                        f"must be a whole number, got {count}; "
+                        f"dbt will use {int(count)}."
+                    )
+                )
+            )
 
 
 def merge_source_freshness(

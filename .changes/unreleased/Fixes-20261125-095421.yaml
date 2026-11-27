@@ -1,0 +1,6 @@
+kind: Fixes
+body: 'Warn when a fractional freshness count is given under config:, instead of silently truncating it (e.g. warn_after count 1.5 hours becomes 1 hour)'
+time: 2026-11-25T09:54:21.529333143Z
+custom:
+    author: Shahzeb-DataEngineer
+    issue: "17291"
