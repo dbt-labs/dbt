@@ -32,6 +32,17 @@ pub(crate) struct StagedPackage {
     _scratch: TempDir,
 }
 
+#[cfg(test)]
+impl StagedPackage {
+    pub(crate) fn for_test(name: &str, path: PathBuf, scratch: TempDir) -> Self {
+        Self {
+            name: name.to_string(),
+            path,
+            _scratch: scratch,
+        }
+    }
+}
+
 /// Discovered name/version, populated as install progresses so spans keep
 /// partial progress on error.
 #[derive(Default)]
