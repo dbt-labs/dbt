@@ -5,7 +5,7 @@ use dbt_sql_utils::{is_empty_or_comment_only, sql_split_statements};
 
 use crate::AdapterType;
 
-mod clickhouse;
+pub(crate) mod clickhouse;
 
 /// Trait for SQL statement splitting functionality
 pub trait StmtSplitter: Send + Sync + Debug {

@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[ClickHouse] SQL is no longer split into statements, as in dbt-clickhouse 1.x: `INSERT ... FORMAT` data containing `;` is sent whole, and a string with several `;`-separated statements now fails like on the server.'
+time: 2026-11-26T21:31:38.906939+01:00
+custom:
+    author: koletzilla
+    issue: ""
+    project: dbt-core

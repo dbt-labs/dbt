@@ -873,8 +873,11 @@ impl AdapterImpl {
             Bigquery | DuckDB | LakeCompute => vec![sql],
             // ClickHouse: the server rejects multi-statement requests and dbt-clickhouse 1.x
             // sends every SQL string as one statement, so it is not split here either. The
-            // trim drops the newlines and spaces that surround the rendered SQL.
-            ClickHouse => vec![sql.trim()],
+            // trim drops the newlines and spaces that surround the rendered SQL, the same
+            // one the splitter applied.
+            ClickHouse => {
+                vec![crate::stmt_splitter::clickhouse::trim_keeping_hash_comment_space(sql)]
+            }
             _ => splitter.split(sql, adapter_type),
         };
         // Filter out empty and comment-only statements.
