@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/unit_tests.yml
+   Parsing models/doubled.sql
+   Parsing models/src.sql
+ Rendering models/doubled.sql
+ Rendering models/unit_tests.yml:2:11 (test_doubled)
+   Running ../scratch/target/run/redshift_unit_test_transaction/models/test_doubled.sql
+    Passed unit_test redshift_unit_test_transaction_dbt_test__audit.test_doubled [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'test' successfully for target 'redshift' [duration]
+Processed: 1 unit test
+Summary: 1 total | 1 success

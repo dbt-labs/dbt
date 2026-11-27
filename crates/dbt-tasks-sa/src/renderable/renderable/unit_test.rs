@@ -1143,6 +1143,8 @@ fn infer_unit_test_expected_schema(
     {% do run_query(get_create_table_as_sql(True, temp_relation, get_empty_subquery_sql(sql, select_sql_header))) %}
     {%- set columns_in_relation = adapter.get_columns_in_relation(temp_relation) -%}
     {% do adapter.drop_relation(temp_relation) %}
+    {# DIVERGENCE: commit the drop before the render phase ends; end_node_transaction rolls back an open transaction (https://github.com/dbt-labs/dbt/issues/16499) #}
+    {% do adapter.commit() %}
     {{ return(columns_in_relation) }}
 {%- endmacro %}"#
     };

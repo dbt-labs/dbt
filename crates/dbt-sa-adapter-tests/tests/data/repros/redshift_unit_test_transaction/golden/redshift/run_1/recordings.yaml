@@ -1,0 +1,168 @@
+unit_test.redshift_unit_test_transaction.doubled.test_doubled:
+- sequence: 0
+  type: execute
+  sql: |-
+    create temporary table
+    "test_doubled__dbt_tmp"
+    
+    as (
+    select * from (
+    select id * 2 as doubled from "ci"."redshift_unit_test_transaction"."src"
+    ) as __dbt_sbq
+    where false
+    limit 0
+    
+    )
+- sequence: 1
+  type: execute
+  sql: begin
+- sequence: 2
+  type: execute
+  sql: |-
+    with bound_views as (
+    select
+    ordinal_position,
+    table_schema,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from information_schema."columns"
+    where table_name = 'test_doubled__dbt_tmp'
+    ),
+    
+    unbound_views as (
+    select
+    ordinal_position,
+    view_schema,
+    col_name,
+    case
+    when col_type ilike 'character varying%' then
+    'character varying'
+    when col_type ilike 'numeric%' then 'numeric'
+    else col_type
+    end as col_type,
+    case
+    when col_type like 'character%'
+    then nullif(REGEXP_SUBSTR(col_type, '[0-9]+'), '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when col_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(col_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    
+    from pg_get_late_binding_view_cols()
+    cols(view_schema name, view_name name, col_name name,
+    col_type varchar, ordinal_position int)
+    where view_name = 'test_doubled__dbt_tmp'
+    ),
+    
+    external_views as (
+    select
+    columnnum,
+    schemaname,
+    columnname,
+    case
+    when external_type ilike 'character varying%' or external_type ilike 'varchar%'
+    then 'character varying'
+    when external_type ilike 'numeric%' then 'numeric'
+    else external_type
+    end as external_type,
+    case
+    when external_type like 'character%' or external_type like 'varchar%'
+    then nullif(
+    REGEXP_SUBSTR(external_type, '[0-9]+'),
+    '')::int
+    else null
+    end as character_maximum_length,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 1),
+    '')::int
+    else null
+    end as numeric_precision,
+    case
+    when external_type like 'numeric%'
+    then nullif(
+    SPLIT_PART(REGEXP_SUBSTR(external_type, '[0-9,]+'), ',', 2),
+    '')::int
+    else null
+    end as numeric_scale
+    from
+    pg_catalog.svv_external_columns
+    where
+    schemaname = 'None'
+    and tablename = 'test_doubled__dbt_tmp'
+    
+    ),
+    
+    unioned as (
+    select * from bound_views
+    union all
+    select * from unbound_views
+    union all
+    select * from external_views
+    )
+    
+    select
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale
+    
+    from unioned
+    
+    order by ordinal_position
+- sequence: 3
+  type: execute
+  sql: drop table if exists "test_doubled__dbt_tmp" cascade
+- sequence: 4
+  type: execute
+  sql: commit
+- sequence: 5
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \tci_redshift_unit_test_transaction_src as (SELECT CAST(2 AS integer) AS id),
+    \tci_redshift_unit_test_transaction_doubled_expect as (SELECT CAST(4 AS integer) AS doubled),
+    \tci_redshift_unit_test_transaction_doubled_actual as (select id * 2 as doubled from ci_redshift_unit_test_transaction_src
+    )
+    SELECT * FROM (
+    (SELECT doubled, 'actual' AS actual_or_expected FROM ci_redshift_unit_test_transaction_doubled_actual)
+    UNION ALL
+    (SELECT doubled, 'expected' AS actual_or_expected FROM ci_redshift_unit_test_transaction_doubled_expect)
+    ) unit_test_diff
+    ORDER BY doubled
+unit_test.redshift_unit_test_transaction.doubled.test_doubled-6ada93b4:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    column_name,
+    data_type,
+    is_nullable,
+    remarks,
+    EXISTS(SELECT 1 FROM SVV_EXTERNAL_TABLES
+    WHERE redshift_database_name = 'ci'
+    AND schemaname = 'redshift_unit_test_transaction'
+    AND tablename = 'src') AS is_external
+    FROM SVV_ALL_COLUMNS
+    WHERE database_name = 'ci'
+    AND schema_name = 'redshift_unit_test_transaction'
+    AND table_name = 'src'

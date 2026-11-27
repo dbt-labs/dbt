@@ -1,0 +1,10 @@
+name: 'redshift_unit_test_transaction'
+version: '1.0.0'
+config-version: 2
+
+profile: 'fusion_tests'
+
+model-paths: ['models']
+
+flags:
+  redshift_use_transactions: true

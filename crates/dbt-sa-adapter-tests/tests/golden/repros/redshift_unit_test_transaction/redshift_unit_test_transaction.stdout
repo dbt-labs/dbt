@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/unit_tests.yml
+   Parsing models/doubled.sql
+   Parsing models/src.sql
+ Rendering models/src.sql
+   Running models/src.sql
+ Succeeded model redshift_unit_test_transaction.src (view) [1 of 2 in duration, 0 rows]
+ Rendering models/doubled.sql
+   Running models/doubled.sql
+ Succeeded model redshift_unit_test_transaction.doubled (view) [2 of 2 in duration, 0 rows]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success
