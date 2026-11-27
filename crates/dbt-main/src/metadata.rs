@@ -405,3 +405,21 @@ pub(crate) fn resolved_injected_tables_without_project(
         }
     }
 }
+
+/// Writes anew the tables that the build adds to the information schema, in an information
+/// schema that exists, after a command that did not write the information schema: one of its
+/// tasks may have added rows. Nothing is written where there is no information schema.
+///
+/// A failure warns, as a failed write of the information schema does.
+pub(crate) fn refresh_injected_tables(arg: &EvalArgs, tables: &[ResolvedInjectedTable<'_>]) {
+    if tables.is_empty() {
+        return;
+    }
+    let dir = dbt_index_core::info_schema::versioned_dir(&arg.info_schema_dir());
+    if let Err(error) = injected::publish(tables, &arg.metadata_dir(), &dir) {
+        emit_warn_log_message(
+            ErrorCode::InfoSchemaWriteFailed,
+            format!("dbt: generate-info-schema: {error}"),
+        );
+    }
+}

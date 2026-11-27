@@ -2142,6 +2142,10 @@ impl<'a> AllPhasesExecutor<'a> {
             None
         };
 
+        let injected_tables = crate::metadata::resolved_injected_tables(
+            &self.feature_stack,
+            &project_flag_lookup(compilation.root_project().flags.as_ref()),
+        );
         if self.arg.write_metadata && self.arg.command != FsCommand::Show {
             // `compile --write-catalog` fetched its catalog before compiling, for
             // `catalog.json`. Reuse it so the epochs get the warehouse types too (#16514).
@@ -2160,14 +2164,18 @@ impl<'a> AllPhasesExecutor<'a> {
                 &run_task_results,
                 catalog_data.as_ref(),
                 self.feature_stack.index.hooks.as_ref(),
-                &crate::metadata::resolved_injected_tables(
-                    &self.feature_stack,
-                    &project_flag_lookup(compilation.root_project().flags.as_ref()),
-                ),
+                &injected_tables,
             )
             .await?;
 
             self.captured_artifacts.catalog = catalog_data;
+        }
+        // A task of this command may have added rows to a table that the build adds to the
+        // information schema. When the command did not write the information schema, the
+        // one that exists still gets those tables anew.
+        let wrote_info_schema = self.arg.write_metadata && self.arg.generate_info_schema;
+        if !wrote_info_schema && self.arg.command != FsCommand::Show {
+            crate::metadata::refresh_injected_tables(self.arg.as_ref(), &injected_tables);
         }
 
         let map_compiled_sql = self
