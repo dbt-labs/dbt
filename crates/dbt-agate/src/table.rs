@@ -634,8 +634,22 @@ impl AgateTable {
     ///
     /// `row_names` is an optional array of strings with the same length as the number
     /// of rows in the `RecordBatch`.
+    pub fn try_new(
+        batch: Arc<RecordBatch>,
+        row_names: Option<Arc<StringViewArray>>,
+    ) -> Result<Self, ArrowError> {
+        Self::try_from_record_batch_impl(batch, None, row_names)
+    }
+
     pub fn new(batch: Arc<RecordBatch>, row_names: Option<Arc<StringViewArray>>) -> Self {
-        Self::from_record_batch_impl(Arc::clone(&batch), Some(batch), row_names)
+        Self::try_new(batch, row_names).unwrap()
+    }
+
+    /// Create an AgateTable from an Arrow RecordBatch.
+    ///
+    /// Returns an error when a column type cannot be converted, instead of panicking.
+    pub fn try_from_record_batch(batch: Arc<RecordBatch>) -> Result<Self, ArrowError> {
+        Self::try_new(batch, None)
     }
 
     /// Create an AgateTable from an Arrow RecordBatch.
@@ -650,9 +664,17 @@ impl AgateTable {
         original: Option<Arc<RecordBatch>>,
         row_names: Option<Arc<StringViewArray>>,
     ) -> Self {
-        let flat = FlatRecordBatch::try_new_impl(batch, original).unwrap();
+        Self::try_from_record_batch_impl(batch, original, row_names).unwrap()
+    }
+
+    fn try_from_record_batch_impl(
+        batch: Arc<RecordBatch>,
+        original: Option<Arc<RecordBatch>>,
+        row_names: Option<Arc<StringViewArray>>,
+    ) -> Result<Self, ArrowError> {
+        let flat = FlatRecordBatch::try_new_impl(batch, original)?;
         let repr = TableRepr::new(Arc::new(flat), None, row_names);
-        Self::from_repr(Arc::new(repr))
+        Ok(Self::from_repr(Arc::new(repr)))
     }
 
     /// Create an [AgateTable] from an Arrow [RecordBatch] using a single row name for all rows.
@@ -1784,6 +1806,79 @@ mod tests {
         assert_eq!(table.num_columns(), 1);
         assert_eq!(table.num_rows(), 2);
         assert_eq!(table.column_name(0).unwrap(), "embedding");
+    }
+
+    /// MotherDuck returns UUID as the `arrow.uuid` extension (`FixedSizeBinary(16)`).
+    /// Building the table must not panic, and the cells are standard UUID text.
+    #[test]
+    fn agate_table_reads_arrow_uuid_column() {
+        use arrow_array::FixedSizeBinaryArray;
+        use arrow_schema::extension::EXTENSION_TYPE_NAME_KEY;
+        use std::collections::HashMap;
+
+        let ids = FixedSizeBinaryArray::try_from_iter(
+            vec![vec![
+                0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44,
+                0x00, 0x00,
+            ]]
+            .into_iter(),
+        )
+        .unwrap();
+        let field =
+            Field::new("id", DataType::FixedSizeBinary(16), true).with_metadata(HashMap::from([(
+                EXTENSION_TYPE_NAME_KEY.to_string(),
+                "arrow.uuid".to_string(),
+            )]));
+        let batch = Arc::new(
+            RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![Arc::new(ids)]).unwrap(),
+        );
+
+        let table = AgateTable::from_record_batch(batch);
+        assert_eq!(table.column_types()[0].type_name(), "Text");
+        assert_eq!(
+            table.cell(0, 0).unwrap(),
+            Value::from("550e8400-e29b-41d4-a716-446655440000")
+        );
+    }
+
+    /// A type with no converter must come back as `Err` from the fallible constructor.
+    #[test]
+    fn unsupported_column_returns_err() {
+        use arrow_array::{FixedSizeBinaryArray, UnionArray};
+        use arrow_buffer::ScalarBuffer;
+        use arrow_schema::UnionFields;
+
+        let child = FixedSizeBinaryArray::try_from_iter(vec![vec![1u8, 2]].into_iter()).unwrap();
+        let fields = [(
+            0,
+            Arc::new(Field::new("a", DataType::FixedSizeBinary(2), true)),
+        )]
+        .into_iter()
+        .collect::<UnionFields>();
+        let payload = UnionArray::try_new(
+            fields,
+            [0_i8].into_iter().collect::<ScalarBuffer<i8>>(),
+            None,
+            vec![Arc::new(child)],
+        )
+        .unwrap();
+        let batch = Arc::new(
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new(
+                    "payload",
+                    payload.data_type().clone(),
+                    true,
+                )])),
+                vec![Arc::new(payload)],
+            )
+            .unwrap(),
+        );
+
+        let err = AgateTable::try_from_record_batch(batch).unwrap_err();
+        assert!(
+            err.to_string().contains("column 'payload'"),
+            "error must name the column, got: {err}"
+        );
     }
 
     #[test]

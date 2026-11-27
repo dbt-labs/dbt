@@ -1,0 +1,7 @@
+kind: Fixes
+body: Convert Arrow UUID values to text instead of panicking.
+time: 2026-11-05T13:50:39.385947-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core

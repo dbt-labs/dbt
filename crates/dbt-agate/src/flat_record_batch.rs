@@ -4,12 +4,13 @@
 
 use arrow::array::PrimitiveBuilder;
 use arrow::array::{
-    Array, DictionaryArray, GenericListArray, OffsetSizeTrait, RecordBatch, RecordBatchOptions,
-    StructArray,
+    Array, AsArray, DictionaryArray, GenericListArray, OffsetSizeTrait, RecordBatch,
+    RecordBatchOptions, StringBuilder, StructArray,
 };
 use arrow::compute::CastOptions;
 use arrow::datatypes::Int64Type;
 use arrow_data::ArrayData;
+use arrow_schema::extension::{EXTENSION_TYPE_METADATA_KEY, EXTENSION_TYPE_NAME_KEY};
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use core::fmt;
 use std::collections::HashSet;
@@ -17,6 +18,9 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::converters::{ArrayConverter, make_array_converter};
+
+/// Canonical Arrow extension name for a UUID stored as `FixedSizeBinary(16)`.
+const ARROW_UUID_EXTENSION: &str = "arrow.uuid";
 
 /// Metadata key used to store the Agate data type associated with an Arrow array.
 ///
@@ -102,6 +106,19 @@ impl FlattenRecordBatchState {
         self.new_columns.push(column);
     }
 
+    /// `arrow.uuid` becomes the standard 8-4-4-4-12 text form. Every other
+    /// `FixedSizeBinary` value becomes lowercase hex. Both are Utf8 text.
+    fn emit_fixed_size_binary(&mut self, field: Field, column: Arc<dyn Array>) {
+        let extension_name = field.extension_type_name().map(str::to_owned);
+        let utf8 = render_fixed_size_binary(extension_name.as_deref(), column.as_ref());
+        let mut field = field.with_data_type(DataType::Utf8);
+        let mut metadata = field.metadata().clone();
+        metadata.remove(EXTENSION_TYPE_NAME_KEY);
+        metadata.remove(EXTENSION_TYPE_METADATA_KEY);
+        field.set_metadata(metadata);
+        self.emit_flat_col(field, Some("Text"), utf8);
+    }
+
     fn flatten_list_column<O: OffsetSizeTrait + fmt::Display>(
         &mut self,
         field: &Field,
@@ -172,12 +189,13 @@ impl FlattenRecordBatchState {
             | DataType::Interval(_) => self.emit_flat_col(field, Some("TimeDelta"), column.clone()),
             // XXX: "Text" is used for binary and string types because agate doesn't have "Binary"
             DataType::Binary
-            | DataType::FixedSizeBinary(_)
             | DataType::LargeBinary
             | DataType::BinaryView
             | DataType::Utf8
             | DataType::LargeUtf8
             | DataType::Utf8View => self.emit_flat_col(field, Some("Text"), column.clone()),
+            // Arrow has no FixedSizeBinary -> Utf8 cast. Render the bytes ourselves.
+            DataType::FixedSizeBinary(_) => self.emit_fixed_size_binary(field, column),
             // List-typed columns are flattened into multiple columns (one for each element in the
             // list value). Since not all list values have the same number of elements, we pad the
             // shorter ones with NULLs.
@@ -264,12 +282,21 @@ impl FlattenRecordBatchState {
             | DataType::Interval(_) => self.emit_flat_col(field, Some("TimeDelta"), column.clone()),
             // XXX: "Text" is used for binary and string types because agate doesn't have "Binary"
             DataType::Binary
-            | DataType::FixedSizeBinary(_)
             | DataType::LargeBinary
             | DataType::BinaryView
             | DataType::Utf8
             | DataType::LargeUtf8
             | DataType::Utf8View => self.emit_flat_col(field, Some("Text"), column.clone()),
+            // Dictionary -> value type is supported. FixedSizeBinary -> Utf8 is not, so decode
+            // first and let the FixedSizeBinary arm render the bytes.
+            DataType::FixedSizeBinary(_) => match arrow::compute::cast(column.as_ref(), value_type)
+            {
+                Ok(decoded) => {
+                    let field = field.with_data_type(decoded.data_type().clone());
+                    self.stack.push((field, decoded));
+                }
+                Err(_) => self.emit_flat_col(field, Some("Text"), column.clone()),
+            },
             // Dictionary-encoded nested types are flattened and then re-encoded as
             // dictionary-encoded columns with the same indices as the original column.
             DataType::List(_)
@@ -708,10 +735,59 @@ pub(crate) fn single_column_batch(batch: &RecordBatch, idx: usize) -> RecordBatc
     RecordBatch::try_new(Arc::new(schema), columns).unwrap()
 }
 
+fn render_fixed_size_binary(extension_name: Option<&str>, column: &dyn Array) -> Arc<dyn Array> {
+    let array = column.as_fixed_size_binary();
+    let as_uuid = extension_name == Some(ARROW_UUID_EXTENSION) && array.value_length() == 16;
+    let width = if as_uuid {
+        36
+    } else {
+        (array.value_length().max(0) as usize).saturating_mul(2)
+    };
+    let mut builder = StringBuilder::with_capacity(array.len(), array.len().saturating_mul(width));
+    for i in 0..array.len() {
+        if array.is_null(i) {
+            builder.append_null();
+        } else if as_uuid {
+            builder.append_value(format_uuid(array.value(i)));
+        } else {
+            builder.append_value(hex_encode(array.value(i)));
+        }
+    }
+    Arc::new(builder.finish())
+}
+
+fn format_uuid(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(36);
+    for (i, &byte) in bytes.iter().enumerate() {
+        if i == 4 || i == 6 || i == 8 || i == 10 {
+            out.push('-');
+        }
+        push_hex(&mut out, byte);
+    }
+    out
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for &byte in bytes {
+        push_hex(&mut out, byte);
+    }
+    out
+}
+
+fn push_hex(out: &mut String, byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push(HEX[(byte >> 4) as usize] as char);
+    out.push(HEX[(byte & 0x0f) as usize] as char);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{FixedSizeBinaryArray, Int32Array, StringArray};
+    use arrow::array::{FixedSizeBinaryArray, Int32Array, StringArray, UnionArray};
+    use arrow_buffer::ScalarBuffer;
+    use arrow_schema::UnionFields;
+    use std::collections::HashMap;
 
     /// The error must name the *offending* column, not merely the Arrow type.
     ///
@@ -720,20 +796,35 @@ mod tests {
     /// plausible-looking message naming the wrong column.
     #[test]
     fn converter_error_names_the_offending_column() {
-        let embedding =
+        // A union of fixed-size binary cannot be cast to Utf8. Arrow can cast most
+        // primitives, including intervals, so those are not a useful fixture here.
+        let child =
             FixedSizeBinaryArray::try_from_iter(vec![vec![1u8, 2], vec![3u8, 4]].into_iter())
                 .unwrap();
+        let union_fields = [(
+            0,
+            Arc::new(Field::new("a", DataType::FixedSizeBinary(2), true)),
+        )]
+        .into_iter()
+        .collect::<UnionFields>();
+        let payload = UnionArray::try_new(
+            union_fields,
+            [0_i8, 0].into_iter().collect::<ScalarBuffer<i8>>(),
+            None,
+            vec![Arc::new(child)],
+        )
+        .unwrap();
         let schema = Schema::new(vec![
             Field::new("id", DataType::Int32, true),
             Field::new("name", DataType::Utf8, true),
-            Field::new("embedding", embedding.data_type().clone(), true),
+            Field::new("payload", payload.data_type().clone(), true),
         ]);
         let batch = RecordBatch::try_new(
             Arc::new(schema),
             vec![
                 Arc::new(Int32Array::from(vec![1, 2])),
                 Arc::new(StringArray::from(vec!["a", "b"])),
-                Arc::new(embedding),
+                Arc::new(payload),
             ],
         )
         .unwrap();
@@ -741,16 +832,56 @@ mod tests {
         let err = FlatRecordBatch::try_new(Arc::new(batch)).unwrap_err();
         let msg = err.to_string();
 
-        assert_eq!(
-            msg,
-            "Not yet implemented: no agate converter for column 'embedding' \
-             (Arrow type FixedSizeBinary(2)): Cast error: Casting from FixedSizeBinary(2) \
-             to Utf8 not supported"
+        assert!(
+            msg.contains("column 'payload'"),
+            "error must name the offending column, got: {msg}"
         );
         assert!(
             !msg.contains("'id'") && !msg.contains("'name'"),
             "error must not name the supported columns, got: {msg}"
         );
+    }
+
+    /// `arrow.uuid` is `FixedSizeBinary(16)`. It must become standard UUID text, and
+    /// other fixed-size binary values become lowercase hex. Neither path casts to Utf8.
+    #[test]
+    fn arrow_uuid_and_other_fixed_size_binary_become_text() {
+        let uuid = FixedSizeBinaryArray::try_from_iter(
+            vec![
+                vec![
+                    0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55,
+                    0x44, 0x00, 0x00,
+                ],
+                vec![0u8; 16],
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        let uuid_field =
+            Field::new("id", DataType::FixedSizeBinary(16), true).with_metadata(HashMap::from([(
+                EXTENSION_TYPE_NAME_KEY.to_string(),
+                ARROW_UUID_EXTENSION.to_string(),
+            )]));
+        let other = FixedSizeBinaryArray::try_from_iter(
+            vec![vec![0x0au8, 0x0b], vec![0x00, 0xff]].into_iter(),
+        )
+        .unwrap();
+        let schema = Schema::new(vec![
+            uuid_field,
+            Field::new("blob", other.data_type().clone(), true),
+        ]);
+        let batch =
+            RecordBatch::try_new(Arc::new(schema), vec![Arc::new(uuid), Arc::new(other)]).unwrap();
+
+        let flat = FlatRecordBatch::try_new(Arc::new(batch)).unwrap();
+        assert_eq!(flat.column(0).data_type(), &DataType::Utf8);
+        assert_eq!(flat.column(1).data_type(), &DataType::Utf8);
+        let ids = flat.column(0).as_string::<i32>();
+        let blobs = flat.column(1).as_string::<i32>();
+        assert_eq!(ids.value(0), "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(ids.value(1), "00000000-0000-0000-0000-000000000000");
+        assert_eq!(blobs.value(0), "0a0b");
+        assert_eq!(blobs.value(1), "00ff");
     }
 
     /// Columns that all have converters must still build cleanly.
