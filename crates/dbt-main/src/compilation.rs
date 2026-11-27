@@ -94,7 +94,7 @@ use dbt_schemas::{
     stats::Stats,
 };
 use dbt_tasks_core::task_runner_hooks::TaskRunnerHooksFactory;
-use dbt_tasks_sa::injected::InjectedRuns;
+use dbt_tasks_sa::injected::{InjectedRuns, injected_nodes_with_tasks};
 use dbt_tasks_sa::utils::{
     update_columns_from_schemas, update_resolved_states_manifest_with_schemas_and_compiled_sql,
 };
@@ -2539,11 +2539,8 @@ impl DbtProjectCompilation {
             if node_type == NodeType::Check && !count_checks {
                 return;
             }
-            // An injected node is graph work only while the feature of its kind runs.
-            if node
-                .injected_kind()
-                .is_some_and(|kind| !injected_runs.has_started(kind))
-            {
+            // An injected node is counted once the graph is built: when it has a task.
+            if node.injected_kind().is_some() {
                 return;
             }
             increment_metric(FusionMetricKey::NodeCounts(node_type), 1);
@@ -2598,6 +2595,15 @@ impl DbtProjectCompilation {
                     .entered();
                     graph_builder.build(&schedule, &task_runner.resolved_state)
                 }?;
+
+                // An injected node is graph work when the graph has a task for it.
+                let injected_nodes = injected_nodes_with_tasks(&graph);
+                if injected_nodes > 0 {
+                    increment_metric(
+                        FusionMetricKey::NodeCounts(NodeType::Experimental),
+                        injected_nodes as u64,
+                    );
+                }
 
                 if run_task_args.io.should_show(ShowOptions::TaskGraph) {
                     task_runner.show_taskgraph(&graph);

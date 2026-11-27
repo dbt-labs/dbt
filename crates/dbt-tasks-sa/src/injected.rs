@@ -6,7 +6,7 @@
 //! [`TasksForNodeFactory`](crate::task::TasksForNodeFactory) for the tasks of one of dbt's own.
 
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +18,7 @@ use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_dag::schedule::Schedule;
 use dbt_schemas::schemas::{InjectedNode, Nodes};
 use dbt_tasks_core::RunTasksArgs;
+use petgraph::Graph;
 
 // What a feature writes a task with, beside what this module defines.
 pub use dbt_tasks_core::context::TaskRunnerCtx;
@@ -141,6 +142,18 @@ impl TasksCtx<'_> {
     }
 }
 
+/// How many injected nodes `graph` has a task for. A node with tasks in two phases is one
+/// node.
+pub fn injected_nodes_with_tasks(graph: &Graph<Arc<dyn Task>, ()>) -> usize {
+    graph
+        .node_weights()
+        .flat_map(|task| task.dbt_nodes())
+        .filter(|node| node.injected_kind().is_some())
+        .map(|node| node.common().unique_id.clone())
+        .collect::<BTreeSet<String>>()
+        .len()
+}
+
 /// One invocation's runs of the features that have selected nodes, by kind of node.
 #[derive(Clone, Default)]
 pub struct InjectedRuns {
@@ -254,11 +267,6 @@ impl InjectedRuns {
         Ok(Self {
             started: Arc::new(started),
         })
-    }
-
-    /// Whether the feature that adds nodes of `kind` started.
-    pub fn has_started(&self, kind: &str) -> bool {
-        self.started.by_kind.contains_key(kind)
     }
 
     /// The tasks of an injected node: none if the feature of its kind did not start.
@@ -467,10 +475,23 @@ mod tests {
             .selected_nodes
             .retain(|id| selected.iter().any(|kind| id.starts_with(kind)));
         let runs = start(&features(), command, &nodes, &schedule).unwrap();
-        [WIDGET, GADGET, GIZMO]
+        [WIDGET, GADGET]
             .into_iter()
-            .filter(|kind| runs.has_started(kind))
+            .filter(|kind| gives_a_run_task(&runs, &nodes, kind))
             .collect()
+    }
+
+    /// Whether `runs` gives the node of `kind` a task in the run phase when it is selected:
+    /// whether the feature of its kind started.
+    fn gives_a_run_task(runs: &InjectedRuns, nodes: &Nodes, kind: &str) -> bool {
+        let cx = TasksCtx {
+            phases: &[TP::Run],
+            nodes,
+            selected: true,
+        };
+        runs.tasks_for_node(&nodes.injected[&format!("{kind}.p.n")], &cx)
+            .runnable
+            .is_some()
     }
 
     #[test]
@@ -497,7 +518,7 @@ mod tests {
             ..TestTasks::new(WIDGET)
         })];
         let runs = start(&injected, FsCommand::Compile, &nodes, &schedule).unwrap();
-        assert!(runs.has_started(WIDGET));
+        assert!(gives_a_run_task(&runs, &nodes, WIDGET));
     }
 
     #[test]
@@ -531,6 +552,21 @@ mod tests {
         assert!(tasks("widget.p.n", false).runnable.is_none());
         // Its feature did not start: none of its nodes is selected.
         assert!(tasks("gadget.p.n", true).runnable.is_none());
+    }
+
+    /// The graph's injected nodes are counted by node, whatever the number of their tasks.
+    #[test]
+    fn injected_nodes_are_counted_when_the_graph_has_a_task_for_them() {
+        let (nodes, _) = nodes_and_schedule();
+        let mut graph: Graph<Arc<dyn Task>, ()> = Graph::new();
+        assert_eq!(injected_nodes_with_tasks(&graph), 0);
+        // Two tasks of the widget, and none of the gadget.
+        for _ in 0..2 {
+            graph.add_node(Arc::new(TestTask(Arc::clone(
+                &nodes.injected["widget.p.n"],
+            ))));
+        }
+        assert_eq!(injected_nodes_with_tasks(&graph), 1);
     }
 
     /// Starts `widget` and then `gadget`, both with a selected node, and counts how often the
