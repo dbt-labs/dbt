@@ -1,0 +1,7 @@
+kind: Fixes
+body: Check only the schemas a run needs on Athena instead of listing every schema of the Glue catalog before creating the missing ones
+time: 2026-10-11T20:58:54.975614+02:00
+custom:
+    author: David-Banquet
+    issue: "12461"
+    project: dbt-core
