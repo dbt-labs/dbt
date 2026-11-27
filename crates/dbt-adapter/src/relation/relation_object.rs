@@ -686,7 +686,13 @@ pub fn create_relation_from_node(
         adapter_type,
         node.database().to_string(),
         node.schema().to_string(),
-        Some(node.base().alias.clone()), // all identifiers are consolidated to alias in InternalDbtNode
+        Some(
+            if node.materialized() == dbt_schemas::schemas::common::DbtMaterialization::Ephemeral {
+                dbt_common::string_utils::ephemeral_cte_identifier(node.unique_id())
+            } else {
+                node.base().alias.clone()
+            },
+        ),
         Some(RelationType::from(node.materialized())),
         node.quoting(),
     )?;

@@ -226,7 +226,7 @@ fn precompile_ephemeral_models(
         inject_and_persist_ephemeral_models(
             rendered,
             &mut macro_spans,
-            &model.__base_attr__.alias,
+            &dbt_common::string_utils::ephemeral_cte_identifier(model.unique_id()),
             /* is_current_model_ephemeral = */ true,
             &ephemeral_dir,
         )?;

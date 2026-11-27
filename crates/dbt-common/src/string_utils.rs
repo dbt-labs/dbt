@@ -206,3 +206,8 @@ mod tests {
         );
     }
 }
+
+pub fn ephemeral_cte_identifier(unique_id: &str) -> String {
+    let hash = blake3::hash(unique_id.as_bytes());
+    format!("m_{}", &hash.to_hex()[..32])
+}

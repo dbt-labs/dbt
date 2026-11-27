@@ -1,0 +1,7 @@
+kind: Fixes
+body: Prevent incorrect SQL inlining when ephemeral models in different schemas share the same alias.
+time: 2026-11-18T22:11:04.725939-06:00
+custom:
+  author: adiranjan25
+  issue: "17192"
+  project: dbt-core
