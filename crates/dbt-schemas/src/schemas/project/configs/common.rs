@@ -380,9 +380,9 @@ pub struct WarehouseSpecificNodeConfig {
 
     // ClickHouse
     // Table options, valid where the v1 macros render them: create_csv_table (seeds: engine,
-    // order_by), create_table_as (snapshots and store_failures tests: all of them), the Memory
-    // fixture tables of unit tests (settings only). v2's seed insert renders no query_settings
-    // yet, so the key is not valid on seeds until the v1 insert path is restored.
+    // order_by), load_csv_rows (seeds: query_settings), create_table_as (snapshots and
+    // store_failures tests: all of them), the Memory fixture tables of unit tests (settings
+    // only).
     #[warehouse(valid(Model, Seed, Snapshot, Test))]
     pub engine: Option<String>,
     #[warehouse(valid(Model, Seed, Snapshot, Test))]
@@ -391,7 +391,7 @@ pub struct WarehouseSpecificNodeConfig {
     pub ttl: Option<String>,
     #[warehouse(valid(Model, Snapshot, Test, UnitTest))]
     pub settings: Option<BTreeMap<String, YmlValue>>,
-    #[warehouse(valid(Model, Snapshot, Test))]
+    #[warehouse(valid(Model, Seed, Snapshot, Test))]
     pub query_settings: Option<BTreeMap<String, YmlValue>>,
     #[warehouse(valid(Model, Snapshot, Test))]
     pub projections: Option<Vec<YmlValue>>,

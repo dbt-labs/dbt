@@ -338,6 +338,8 @@ pub struct ProjectSeedConfig {
     pub engine: Option<String>,
     #[serde(rename = "+order_by")]
     pub order_by: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+query_settings")]
+    pub query_settings: Option<BTreeMap<String, YmlValue>>,
     #[serde(
         default,
         rename = "+disable_on_cluster",
@@ -658,7 +660,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 order_by: config.order_by,
                 ttl: None,
                 settings: None,
-                query_settings: None,
+                query_settings: config.query_settings,
                 projections: None,
                 sharding_key: None,
                 disable_on_cluster: config.disable_on_cluster,
@@ -795,6 +797,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
             // ClickHouse fields
             engine: warehouse_specific.engine,
             order_by: warehouse_specific.order_by,
+            query_settings: warehouse_specific.query_settings,
             disable_on_cluster: warehouse_specific.disable_on_cluster,
             __additional_properties__: BTreeMap::new(),
         }
@@ -921,6 +924,8 @@ __additional_properties__: {}
             r#"
 +engine: ReplacingMergeTree()
 +order_by: id
++query_settings:
+  max_insert_threads: 1
 +disable_on_cluster: "true"
 __additional_properties__: {}
 "#,
@@ -931,10 +936,12 @@ __additional_properties__: {}
         let wh = &resolved.__warehouse_specific_config__;
         assert_eq!(wh.engine.as_deref(), Some("ReplacingMergeTree()"));
         assert!(wh.order_by.is_some());
+        assert!(wh.query_settings.is_some());
         assert_eq!(wh.disable_on_cluster, Some(true));
 
         let round_trip: ProjectSeedConfig = resolved.into();
         assert_eq!(round_trip.engine.as_deref(), Some("ReplacingMergeTree()"));
+        assert!(round_trip.query_settings.is_some());
         assert_eq!(round_trip.disable_on_cluster, Some(true));
     }
 

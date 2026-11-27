@@ -390,3 +390,75 @@ mod persist_docs {
         );
     }
 }
+
+mod seed {
+    use super::*;
+
+    /// The SQL `clickhouse__load_csv_rows` hands to `add_query` (dbt-clickhouse seed.sql).
+    fn load_csv_rows(csv_data: &'static str, query_settings: &'static str) -> Vec<String> {
+        let harness = build_harness(None);
+        harness
+            .mock()
+            .on("get_csv_data", move |_| Ok(Value::from(csv_data)));
+        harness.mock().on("get_model_query_settings", move |_| {
+            Ok(Value::from(query_settings))
+        });
+        harness
+            .mock()
+            .on("quote_seed_column", |args| Ok(args[0].clone()));
+        harness.mock().on("add_query", |_| Ok(Value::UNDEFINED));
+        let ctx = BTreeMap::from([
+            (
+                "this".to_string(),
+                relation_value(&harness, "dev_schema", "my_seed"),
+            ),
+            (
+                "model".to_string(),
+                Value::from_serialize(BTreeMap::from([("config", config_value("seed", None))])),
+            ),
+            (
+                "agate_table".to_string(),
+                Value::from_serialize(BTreeMap::from([(
+                    "column_names",
+                    Value::from(vec!["id", "name"]),
+                )])),
+            ),
+        ]);
+        let this = harness
+            .render("{{ this }}", ctx.clone())
+            .expect("render should succeed");
+        harness
+            .render(
+                "{% do clickhouse__load_csv_rows(model, agate_table) %}",
+                ctx,
+            )
+            .expect("render should succeed");
+
+        let calls = harness.mock().observed_calls();
+        calls
+            .to("add_query")
+            .map(|call| normalize(&call.args[0].to_string()).replace(&this, "<this>"))
+            .collect()
+    }
+
+    #[test]
+    fn inserts_the_csv_data_in_one_statement() {
+        assert_eq!(
+            load_csv_rows("1,a; b\n2,it's\n", ""),
+            ["insert into <this> (id, name) format CSV 1,a; b 2,it's"]
+        );
+    }
+
+    #[test]
+    fn insert_carries_the_query_settings_before_the_format() {
+        assert_eq!(
+            load_csv_rows("1,a\n", "SETTINGS max_insert_threads=2"),
+            ["insert into <this> (id, name) SETTINGS max_insert_threads=2 format CSV 1,a"]
+        );
+    }
+
+    #[test]
+    fn an_empty_seed_issues_no_insert() {
+        assert!(load_csv_rows("", "").is_empty());
+    }
+}
