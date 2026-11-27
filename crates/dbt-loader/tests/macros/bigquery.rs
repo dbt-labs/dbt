@@ -297,3 +297,94 @@ fn load_csv_rows_forwards_seed_path_from_adapter() {
         Some(SEED_PATH)
     );
 }
+
+mod sync_column_schemas {
+    use minijinja::value::mutable_map::MutableMap;
+
+    use super::*;
+    use crate::macro_test_harness::{assert_executed_contains, executed_sql};
+
+    const SYNC_STRUCT_FIELD: &str = "\
+        {% set changes = {\
+            'schema_changed': true,\
+            'source_not_in_target': [],\
+            'target_not_in_source': [],\
+            'new_target_types': [{'column_name': 'filters', 'new_type': 'STRUCT<a INT64, b STRING, c BOOL>'}],\
+            'source_relation': source,\
+        } %}\
+        {% do bigquery__sync_column_schemas('sync_all_columns', target, changes) %}";
+
+    fn build_harness() -> MacroTestHarness {
+        MacroTestHarness::for_adapter(AdapterType::Bigquery)
+            .load_all_macros()
+            .with_stub_functions()
+            .with_macro(
+                "dbt_bigquery",
+                "bigquery__alter_column_type",
+                "{% macro bigquery__alter_column_type(relation, column_name, new_column_type) %}\
+                    {% do adapter.execute('alter_column_type ' ~ column_name ~ ' ' ~ new_column_type) %}\
+                {% endmacro %}",
+            )
+            .build()
+            .expect("harness should build")
+    }
+
+    fn render(harness: &MacroTestHarness) {
+        let relation = |identifier| {
+            RelationObject::new(harness.relation(
+                "test-db",
+                "test_schema",
+                identifier,
+                Some(RelationType::Table),
+            ))
+            .into_value()
+        };
+        let ctx = BTreeMap::from([
+            ("source".to_string(), relation("toy__dbt_tmp")),
+            ("target".to_string(), relation("toy")),
+        ]);
+        harness
+            .render(SYNC_STRUCT_FIELD, ctx)
+            .expect("sync_column_schemas should render");
+    }
+
+    #[test]
+    fn synced_struct_column_is_not_rebuilt() {
+        let harness = build_harness();
+        harness.mock().on("sync_struct_columns", |_| {
+            let synced = MutableMap::new();
+            synced.insert(Value::from("schema_changed"), Value::from(false));
+            for key in [
+                "source_not_in_target",
+                "target_not_in_source",
+                "new_target_types",
+            ] {
+                synced.insert(Value::from(key), Value::from(Vec::<Value>::new()));
+            }
+            Ok(Value::from_object(synced))
+        });
+
+        render(&harness);
+
+        harness
+            .mock()
+            .observed_calls()
+            .assert_called("sync_struct_columns");
+        assert_eq!(executed_sql(harness.mock()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn unsynced_struct_column_is_rebuilt() {
+        let harness = build_harness();
+        harness
+            .mock()
+            .on("sync_struct_columns", |_| Ok(Value::from(())));
+
+        render(&harness);
+
+        assert_executed_contains(
+            harness.mock(),
+            "alter_column_type filters STRUCT<a INT64, b STRING, c BOOL>",
+        );
+    }
+}
