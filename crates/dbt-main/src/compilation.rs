@@ -13,6 +13,7 @@ use dbt_common::{
     stats::NodeStatus,
     tracing::{
         dbt_metrics::{FusionMetricKey, return_exit_code_from_error_counter},
+        invocation::{InjectedNodeCounts, record_injected_node_counts},
         metrics::increment_metric,
     },
 };
@@ -2536,6 +2537,7 @@ impl DbtProjectCompilation {
         // or for neither.
         let count_checks = !arg.skip_checks
             && dbt_tasks_sa::check::metadata_unavailable_reason(&arg.metadata_dir()).is_none();
+        let only_injected_nodes_have_tasks = injected_runs.own_command().is_some();
         schedule.selected_nodes.iter().for_each(|unique_id| {
             let node = self
                 .resolved_state
@@ -2548,6 +2550,11 @@ impl DbtProjectCompilation {
             }
             // An injected node is counted once the graph is built: when it has a task.
             if node.injected_kind().is_some() {
+                return;
+            }
+            // The graph of a command that a feature adds has tasks only for that feature's
+            // nodes. It selects the nodes they depend on, and does not process them.
+            if only_injected_nodes_have_tasks {
                 return;
             }
             increment_metric(FusionMetricKey::NodeCounts(node_type), 1);
@@ -2603,13 +2610,16 @@ impl DbtProjectCompilation {
                     graph_builder.build(&schedule, &task_runner.resolved_state)
                 }?;
 
-                // An injected node is graph work when the graph has a task for it.
+                // An injected node is graph work when the graph has a task for it. The count
+                // by node type has one stand-in for every kind; the summary names the kinds.
                 let injected_nodes = injected_nodes_with_tasks(&graph);
-                if injected_nodes > 0 {
+                let injected_total: u64 = injected_nodes.values().sum();
+                if injected_total > 0 {
                     increment_metric(
                         FusionMetricKey::NodeCounts(NodeType::Experimental),
-                        injected_nodes as u64,
+                        injected_total,
                     );
+                    record_injected_node_counts(InjectedNodeCounts(injected_nodes));
                 }
 
                 if run_task_args.io.should_show(ShowOptions::TaskGraph) {

@@ -142,16 +142,22 @@ impl TasksCtx<'_> {
     }
 }
 
-/// How many injected nodes `graph` has a task for. A node with tasks in two phases is one
-/// node.
-pub fn injected_nodes_with_tasks(graph: &Graph<Arc<dyn Task>, ()>) -> usize {
-    graph
+/// How many injected nodes `graph` has a task for, by kind. A node with tasks in two phases
+/// is one node.
+pub fn injected_nodes_with_tasks(graph: &Graph<Arc<dyn Task>, ()>) -> BTreeMap<String, u64> {
+    let nodes: BTreeSet<(String, String)> = graph
         .node_weights()
         .flat_map(|task| task.dbt_nodes())
-        .filter(|node| node.injected_kind().is_some())
-        .map(|node| node.common().unique_id.clone())
-        .collect::<BTreeSet<String>>()
-        .len()
+        .filter_map(|node| {
+            let kind = node.injected_kind()?.to_string();
+            Some((kind, node.common().unique_id.clone()))
+        })
+        .collect();
+    let mut by_kind = BTreeMap::new();
+    for (kind, _) in nodes {
+        *by_kind.entry(kind).or_default() += 1;
+    }
+    by_kind
 }
 
 /// One invocation's runs of the features that have selected nodes, by kind of node.
@@ -554,19 +560,30 @@ mod tests {
         assert!(tasks("gadget.p.n", true).runnable.is_none());
     }
 
-    /// The graph's injected nodes are counted by node, whatever the number of their tasks.
+    /// The graph's injected nodes are counted by node and by kind, whatever the number of
+    /// their tasks.
     #[test]
     fn injected_nodes_are_counted_when_the_graph_has_a_task_for_them() {
         let (nodes, _) = nodes_and_schedule();
         let mut graph: Graph<Arc<dyn Task>, ()> = Graph::new();
-        assert_eq!(injected_nodes_with_tasks(&graph), 0);
+        assert!(injected_nodes_with_tasks(&graph).is_empty());
         // Two tasks of the widget, and none of the gadget.
         for _ in 0..2 {
             graph.add_node(Arc::new(TestTask(Arc::clone(
                 &nodes.injected["widget.p.n"],
             ))));
         }
-        assert_eq!(injected_nodes_with_tasks(&graph), 1);
+        assert_eq!(
+            injected_nodes_with_tasks(&graph),
+            BTreeMap::from([(WIDGET.to_string(), 1)])
+        );
+        graph.add_node(Arc::new(TestTask(Arc::clone(
+            &nodes.injected["gadget.p.n"],
+        ))));
+        assert_eq!(
+            injected_nodes_with_tasks(&graph),
+            BTreeMap::from([(GADGET.to_string(), 1), (WIDGET.to_string(), 1)])
+        );
     }
 
     /// Starts `widget` and then `gadget`, both with a selected node, and counts how often the
