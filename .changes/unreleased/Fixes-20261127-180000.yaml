@@ -1,0 +1,6 @@
+kind: Fixes
+body: Warn when a source's `config.freshness` count is not a whole number, since dbt truncates it
+time: 2026-11-27T18:00:00.000000+08:00
+custom:
+    Author: teslakoile
+    Issue: "17291"

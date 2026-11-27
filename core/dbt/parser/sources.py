@@ -200,10 +200,28 @@ class SourcePatcher:
                 )
             )
 
+        if parsed_source.freshness:
+            self._warn_on_fractional_freshness_counts(source, table)
+
         # relation name is added after instantiation because the adapter does
         # not provide the relation name for a UnpatchedSourceDefinition object
         parsed_source.relation_name = self._get_relation_name(parsed_source)
         return parsed_source
+
+    def _warn_on_fractional_freshness_counts(
+        self, source: UnparsedSourceDefinition, table: UnparsedSourceTableDefinition
+    ) -> None:
+        fractional = fractional_freshness_counts(
+            source.config.get("freshness"), table.config.get("freshness"), table.freshness
+        )
+        for threshold, count in fractional:
+            fire_or_defer_event(
+                FreshnessConfigProblem(
+                    msg=f"The freshness {threshold} count for source '{source.name}.{table.name}' must be a whole number, got {count}. dbt will use {int(count)}. Use a smaller period instead, for example `count: 90, period: minute`."
+                ),
+                force_warn_or_error_handling=True,
+                event_group_type=EventGroupType.PARSE,
+            )
 
     # Use the SchemaGenericTestParser to parse the source tests
     def get_generic_test_parser_for(self, package_name: str) -> "SchemaGenericTestParser":
@@ -513,6 +531,48 @@ class SourcePatcher:
                 config_tags_valid.append(tag)
 
         return config_tags_valid
+
+
+def _table_sets_freshness_threshold(
+    threshold: str,
+    table_config_freshness: Optional[Dict],
+    table_freshness: Optional[FreshnessThreshold],
+) -> bool:
+    if isinstance(table_config_freshness, dict) and threshold in table_config_freshness:
+        return True
+    return bool(table_freshness and getattr(table_freshness, threshold))
+
+
+def _fractional_count(freshness: Optional[Dict], threshold: str) -> Optional[float]:
+    threshold_config = freshness.get(threshold) if isinstance(freshness, dict) else None
+    count = threshold_config.get("count") if isinstance(threshold_config, dict) else None
+    if isinstance(count, float) and not count.is_integer():
+        return count
+    return None
+
+
+def fractional_freshness_counts(
+    source_config_freshness: Optional[Dict],
+    table_config_freshness: Optional[Dict],
+    table_freshness: Optional[FreshnessThreshold],
+) -> List[Tuple[str, float]]:
+    """Return (threshold, count) for each applied warn_after/error_after count that is not a
+    whole number. Time.count is an int, so loading the config truncates these counts.
+
+    A source-level threshold is skipped when the table sets the same threshold, since the
+    table's value is the one dbt uses.
+    """
+    fractional = []
+    for threshold in ("warn_after", "error_after"):
+        applied_config = (
+            table_config_freshness
+            if _table_sets_freshness_threshold(threshold, table_config_freshness, table_freshness)
+            else source_config_freshness
+        )
+        count = _fractional_count(applied_config, threshold)
+        if count is not None:
+            fractional.append((threshold, count))
+    return fractional
 
 
 def merge_freshness_time_thresholds(
