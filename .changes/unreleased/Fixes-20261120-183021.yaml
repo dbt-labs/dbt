@@ -1,0 +1,7 @@
+kind: Fixes
+body: Keep unit test fixture rows when building with --empty
+time: 2026-11-20T18:30:21.452941+05:00
+custom:
+    author: ViktorBystrov72
+    issue: "17200"
+    project: dbt-core
