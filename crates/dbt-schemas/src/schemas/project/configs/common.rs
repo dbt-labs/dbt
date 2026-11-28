@@ -28,7 +28,8 @@ use crate::schemas::serde::RefreshableConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::{
     IndexesConfig, OmissibleGrantConfig, PrimaryKeyConfig, StringOrInteger, bool_or_string_bool,
-    f64_or_string_f64, hours_to_expiration_or_string_omissible, u64_or_string_u64,
+    f64_or_string_f64, hours_to_expiration_or_string_omissible, string_or_number_to_string,
+    u64_or_string_u64,
 };
 
 #[track_caller]
@@ -169,9 +170,9 @@ pub struct WarehouseSpecificNodeConfig {
     pub batch_id: Option<String>,
     #[warehouse(valid(Model))]
     pub dataproc_cluster_name: Option<String>,
-    #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[serde(default, deserialize_with = "string_or_number_to_string")]
     #[warehouse(valid(Model))]
-    pub notebook_template_id: Option<u64>,
+    pub notebook_template_id: Option<String>,
     #[warehouse(valid(Model))]
     pub intermediate_format: Option<String>,
     #[warehouse(valid(Model))]

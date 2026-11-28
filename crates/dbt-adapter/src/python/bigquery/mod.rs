@@ -470,7 +470,7 @@ fn submit_bigframes_job(
         .config
         .get_attr("notebook_template_id")
         .ok()
-        .and_then(|v| v.as_i64().map(|u| u.to_string()));
+        .and_then(|v| v.as_str().map(|s| s.to_string()));
 
     let mut options: Options = vec![
         (

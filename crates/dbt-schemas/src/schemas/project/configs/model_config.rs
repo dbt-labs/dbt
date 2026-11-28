@@ -366,9 +366,9 @@ pub struct ProjectModelConfig {
     #[serde(
         default,
         rename = "+notebook_template_id",
-        deserialize_with = "u64_or_string_u64"
+        deserialize_with = "string_or_number_to_string"
     )]
-    pub notebook_template_id: Option<u64>,
+    pub notebook_template_id: Option<String>,
     #[serde(
         default,
         rename = "+enable_list_inference",
@@ -2195,6 +2195,51 @@ __additional_properties__: {}
                 "region".to_string(),
             ]))
         );
+    }
+
+    /// Colab Enterprise runtime template IDs can be user-chosen strings, not only
+    /// the numeric IDs Google generates.
+    const NOTEBOOK_TEMPLATE_IDS: [(&str, &str); 3] = [
+        ("my-runtime-template", "my-runtime-template"),
+        ("\"1234567890\"", "1234567890"),
+        ("1234567890", "1234567890"),
+    ];
+
+    #[test]
+    fn test_model_notebook_template_id_keeps_string_ids() {
+        for (yaml, expected) in NOTEBOOK_TEMPLATE_IDS {
+            let config: ModelConfig = dbt_yaml::from_str(&format!(
+                "__warehouse_specific_config__:\n  notebook_template_id: {yaml}\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                config
+                    .__warehouse_specific_config__
+                    .notebook_template_id
+                    .as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn test_project_model_notebook_template_id_keeps_string_ids() {
+        for (yaml, expected) in NOTEBOOK_TEMPLATE_IDS {
+            let config: ProjectModelConfig = dbt_yaml::from_str(&format!(
+                "+notebook_template_id: {yaml}\n__additional_properties__: {{}}\n"
+            ))
+            .unwrap();
+            assert_eq!(config.notebook_template_id.as_deref(), Some(expected));
+
+            let model_config: ModelConfig = config.into();
+            assert_eq!(
+                model_config
+                    .__warehouse_specific_config__
+                    .notebook_template_id
+                    .as_deref(),
+                Some(expected)
+            );
+        }
     }
 
     #[test]
