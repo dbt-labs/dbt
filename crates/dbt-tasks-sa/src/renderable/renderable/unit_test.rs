@@ -5894,6 +5894,39 @@ mod tests {
         );
     }
 
+    /// Snowflake TIMESTAMP_TZ is stored as a struct in Arrow. The fixture cast
+    /// must use TIMESTAMP_TZ, because Snowflake rejects `STRUCT<...>`.
+    #[test]
+    fn test_columns_to_formatted_types_snowflake_timestamp_tz() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(
+                &type_ops,
+                "ts_tz".to_string(),
+                "TIMESTAMP_TZ(9)",
+                None,
+                None,
+            )
+            .unwrap(),
+            make_arrow_field(
+                &type_ops,
+                "ts_tz_default".to_string(),
+                "TIMESTAMP_TZ",
+                None,
+                None,
+            )
+            .unwrap(),
+        ]));
+
+        let formatted: Vec<String> = columns_to_formatted_types(&schema, &type_ops)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, formatted)| formatted)
+            .collect();
+
+        assert_eq!(formatted, vec!["TIMESTAMP_TZ", "TIMESTAMP_TZ"]);
+    }
+
     #[test]
     fn test_create_values_bigquery_preserves_inferred_logical_types() {
         let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);

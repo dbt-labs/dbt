@@ -293,6 +293,26 @@ pub fn suitable_time_unit(precision: u8) -> TimeUnit {
     }
 }
 
+/// Field names of the timestamp-with-offsets struct that
+/// [SqlType::pick_best_arrow_type] picks for `TIMESTAMP WITH TIME ZONE`.
+const TIMESTAMP_WITH_OFFSETS_TIMESTAMP_FIELD: &str = "timestamp";
+const TIMESTAMP_WITH_OFFSETS_OFFSET_FIELD: &str = "offset_minutes";
+
+/// Whether `data_type` is the timestamp-with-offsets struct that
+/// [SqlType::pick_best_arrow_type] picks for `TIMESTAMP WITH TIME ZONE`.
+pub fn is_timestamp_with_offsets(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Struct(fields) => {
+            fields.len() == 2
+                && fields[0].name() == TIMESTAMP_WITH_OFFSETS_TIMESTAMP_FIELD
+                && matches!(fields[0].data_type(), DataType::Timestamp(_, Some(_)))
+                && fields[1].name() == TIMESTAMP_WITH_OFFSETS_OFFSET_FIELD
+                && fields[1].data_type() == &DataType::Int16
+        }
+        _ => false,
+    }
+}
+
 /// Additional attributes for string types.
 #[derive(Debug, Clone, Default)]
 pub struct StringAttrs {
@@ -1457,11 +1477,11 @@ impl SqlType {
                 .unwrap_or_else(|| default_time_unit(backend));
             let fields = Fields::from(vec![
                 Field::new(
-                    "timestamp",
+                    TIMESTAMP_WITH_OFFSETS_TIMESTAMP_FIELD,
                     DataType::Timestamp(time_unit, Some("UTC".into())),
                     false,
                 ),
-                Field::new("offset_minutes", DataType::Int16, false),
+                Field::new(TIMESTAMP_WITH_OFFSETS_OFFSET_FIELD, DataType::Int16, false),
             ]);
             DataType::Struct(fields)
         };

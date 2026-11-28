@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[Snowflake] Cast unit test fixture columns of type TIMESTAMP_TZ as TIMESTAMP_TZ, not as an invalid STRUCT type.'
+time: 2026-11-19T22:33:03.861312+03:00
+custom:
+    author: onurtashan
+    issue: ""
+    project: dbt-core
