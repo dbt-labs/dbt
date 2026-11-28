@@ -32,7 +32,7 @@ pub(crate) fn split_statements(sql: &str) -> Vec<&str> {
 
 /// `str::trim`, except that a trailing `# ` comment keeps its space: ClickHouse
 /// only treats `#` as a comment when a space (or `!`) follows it.
-fn trim_keeping_hash_comment_space(sql: &str) -> &str {
+pub(crate) fn trim_keeping_hash_comment_space(sql: &str) -> &str {
     let trimmed = sql.trim();
     let start = sql.len() - sql.trim_start().len();
     let end = start + trimmed.len();
