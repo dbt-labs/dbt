@@ -824,8 +824,9 @@ pub struct DbtContract {
     pub alias_types: bool,
     #[serde(default, deserialize_with = "yaml_11_bool_default")]
     pub enforced: bool,
+    // Boxed: set only on enforced contracts, and every manifest node carries a contract.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub checksum: Option<YmlValue>,
+    pub checksum: Option<Box<YmlValue>>,
 }
 
 fn default_alias_types() -> bool {

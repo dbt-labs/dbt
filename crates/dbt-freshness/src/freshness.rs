@@ -1443,7 +1443,7 @@ fn build_artifact(
     let generated_at: DateTime<Utc> = Utc::now();
     let metadata = FreshnessResultsMetadata {
         dbt_schema_version: dbt_schema_version.to_string(),
-        dbt_version: env!("CARGO_PKG_VERSION").to_string(),
+        dbt_version: dbt_common::version::dbt_version().to_string(),
         generated_at,
         invocation_id: invocation_id.to_string(),
         invocation_started_at: None,

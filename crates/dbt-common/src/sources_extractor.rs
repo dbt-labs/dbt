@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use dbt_adapter_core::AdapterType;
 use dbt_frontend_common::{
     FullyQualifiedName, error::FrontendResult, named_reference::NamedReference,
+    stage_ref::StageReference,
 };
 
 /// What an extraction found upstream of a statement.
@@ -16,6 +17,10 @@ pub struct ExtractedUpstreams {
     /// Names of table-valued functions in FROM, as written, other than pure
     /// row generators such as `range` (see `dbt_frontend_common::table_functions::is_pure_generator`).
     pub table_functions: BTreeSet<String>,
+    /// Snowflake stages in FROM, with the location and `PATTERN` that select
+    /// the files read. Each one is also in `tables`, as a table named by its
+    /// location. An extractor that does not report stages leaves this empty.
+    pub stages: BTreeSet<StageReference>,
 }
 
 impl From<Vec<NamedReference<FullyQualifiedName>>> for ExtractedUpstreams {

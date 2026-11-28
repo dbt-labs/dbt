@@ -24,6 +24,7 @@
 //! (`guard.persist = adapter_type != AdapterType::DuckDB`); and vanilla DuckDB reads parquet, which
 //! matters because the whole point of the extended driver is its extra extensions.
 
+use dbt_index_core::info_schema::injected::{self, ResolvedInjectedTable};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -208,15 +209,24 @@ pub fn open_metadata_adapter(
 /// Wider than [`open_metadata_adapter`] on purpose: `--info` reports what the last command
 /// wrote, including the runtime tables, while a check runs before any of that exists and would
 /// read an empty table as a pass.
+///
+/// `injected tables` are the tables that the build adds to the information schema: the ones whose
+/// flag is on get a view too.
 pub fn open_epoch_adapter(
     metadata_dir: &Path,
+    tables: &[ResolvedInjectedTable<'_>],
     token: CancellationToken,
 ) -> Result<Arc<Adapter>, String> {
     open_epoch_views(
         metadata_dir,
         token,
         "information schema views",
-        dbt_index_core::info_schema::epoch_views::generate_queryable,
+        |metadata_dir| {
+            let mut statements =
+                dbt_index_core::info_schema::epoch_views::generate_queryable(metadata_dir)?;
+            statements.extend(injected::views(tables, metadata_dir)?);
+            Ok(statements)
+        },
     )
 }
 

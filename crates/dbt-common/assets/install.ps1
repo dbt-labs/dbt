@@ -348,6 +348,15 @@ function Get-TargetVersion {
             Write-Log ('Stable version: ' + $version)
             return $version
         } else {
+            # Some tracks are aliases of another track: dev -> nightly, canary -> preview, latest -> stable.
+            # Without an entry for the target track, the alias keeps its own entry.
+            $trackAliases = @{ 'dev' = 'nightly'; 'canary' = 'preview'; 'latest' = 'stable' }
+            if ($trackAliases.ContainsKey($SpecificVersion) -and $VersionInfo.PSObject.Properties[$trackAliases[$SpecificVersion]]) {
+                $aliasTarget = $trackAliases[$SpecificVersion]
+                Write-GrayLog ("Resolving " + $SpecificVersion + " through " + $aliasTarget)
+                $SpecificVersion = $aliasTarget
+            }
+
             Write-GrayLog ("Checking for " + $SpecificVersion + " version")
 
             # Check if version is a known tag in versions.json

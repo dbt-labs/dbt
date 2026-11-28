@@ -209,18 +209,14 @@ fn snowflake_show_objects_sql(
     let from_clause = from_name
         .map(|name| format!(" FROM {}", snowflake_string_literal(name)))
         .unwrap_or_default();
-    let scope = match (
-        db_schema.resolved_catalog.is_empty(),
-        db_schema.resolved_schema.is_empty(),
-    ) {
-        (true, _) => Ident::from_unquoted(db_schema.resolved_schema.as_str()).to_string(),
-        (_, true) => Ident::from_unquoted(db_schema.resolved_catalog.as_str()).to_string(),
-        (false, false) => format!(
-            "{}.{}",
-            Ident::from_unquoted(db_schema.resolved_catalog.as_str()),
-            Ident::from_unquoted(db_schema.resolved_schema.as_str())
-        ),
+    let catalog = db_schema.resolved_catalog.as_str();
+    let schema = db_schema.resolved_schema.as_str();
+    let parts: &[&str] = match (catalog.is_empty(), schema.is_empty()) {
+        (true, _) => &[schema],
+        (_, true) => &[catalog],
+        (false, false) => &[catalog, schema],
     };
+    let scope = join_dotted(parts.iter().map(|part| Ident::from_unquoted(*part)));
     format!("SHOW OBJECTS IN SCHEMA {scope} LIMIT {limit}{from_clause}")
 }
 
@@ -251,7 +247,7 @@ fn snowflake_relation_sql_name(relation: &dyn BaseRelation) -> String {
         include.identifier,
         quoting.identifier,
     );
-    join_dotted(&parts)
+    join_dotted(parts.iter()).to_string()
 }
 
 fn snowflake_relation_patterns_sql(database: &str, patterns: &[&RelationPattern]) -> String {
@@ -2038,6 +2034,17 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
         // 42501: insufficient privileges
         // 02000: does not exist or not authorized error
         e.sqlstate() == "42501" || e.sqlstate() == "02000"
+    }
+
+    fn stage_last_modified_inner<'a>(
+        &'a self,
+        stages: &'a [StageListing],
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, Option<i64>>> {
+        if stages.is_empty() {
+            return Box::pin(async { Ok(BTreeMap::new()) });
+        }
+        stage_listing::list_stages(&self.adapter, stages.to_vec(), token)
     }
 
     fn fetch_view_definitions_inner<'a>(

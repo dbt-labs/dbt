@@ -2,8 +2,9 @@
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::RootProjectConfigs;
-pub use crate::resolve::properties_extensions::{
-    Extension, ExtensionSet, Extensions, NoExtension, NoExtensions,
+pub use crate::resolve::injected_properties::{
+    InjectedProperties, InjectedPropertiesByKind, InjectedPropertiesSet, NoInjectedProperties,
+    NoInjectedPropertiesByKind,
 };
 pub use crate::resolve::properties_index::{IndexCtx, IndexedName};
 use crate::resolve::properties_index::{PackageProperties, PropertiesEntry, section_of};
@@ -177,24 +178,24 @@ impl Default for ResolvableNodes {
 impl ResolvableNodes {
     /// dbt's own kinds of node.
     pub fn dbt() -> Self {
-        Self::dbt_with::<NoExtensions>()
+        Self::dbt_with_injected_properties::<NoInjectedPropertiesByKind>()
     }
 
-    /// dbt's own kinds of node, which read the extensions `E` beside the properties of their
-    /// entries.
+    /// dbt's own kinds of node, whose entries can have the injected properties `P` beside the
+    /// kind's own.
     ///
     /// # Panics
     ///
-    /// If two extensions of one kind read the same field.
-    pub fn dbt_with<E: Extensions>() -> Self {
-        crate::resolve::properties_extensions::check::<E>();
+    /// If two types of injected properties of one kind read the same key.
+    pub fn dbt_with_injected_properties<P: InjectedPropertiesByKind>() -> Self {
+        crate::resolve::injected_properties::check::<P>();
         ResolvableNodes {
             nodes: vec![
-                Arc::new(Sources::<E>::default()),
-                Arc::new(Seeds::<E>::default()),
-                Arc::new(Snapshots::<E>::default()),
+                Arc::new(Sources::<P>::default()),
+                Arc::new(Seeds::<P>::default()),
+                Arc::new(Snapshots::<P>::default()),
                 Arc::new(Groups),
-                Arc::new(Models::<E>::default()),
+                Arc::new(Models::<P>::default()),
                 Arc::new(Analyses),
                 Arc::new(Checks),
                 Arc::new(Functions),

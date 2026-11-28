@@ -13,6 +13,7 @@ use crate::tracing::{
         color::{BLUE, DIM, GREEN, MAGENTA, MaybeColored, RED, WHITE, YELLOW},
         layout::Delimiter,
     },
+    invocation::InjectedNodeCounts,
 };
 
 use super::counter::CountText;
@@ -217,6 +218,11 @@ pub struct InvocationSummary<'a> {
     hook_count: u64,
     /// Processed nodes per type, in display order, without zeros
     node_counts: Vec<(NodeType, u64)>,
+    /// Processed injected nodes per kind, without zeros: what the summary shows in place of
+    /// the count of their one node type
+    injected_counts: Vec<(String, u64)>,
+    /// Whether the summary shows the processed counts and the result breakdown
+    shows_breakdown: bool,
     colorize: bool,
     max_line_width: Option<usize>,
 }
@@ -240,6 +246,8 @@ impl<'a> InvocationSummary<'a> {
                 input: None,
                 hook_count: 0,
                 node_counts: Vec::new(),
+                injected_counts: Vec::new(),
+                shows_breakdown: false,
                 colorize,
                 max_line_width,
             };
@@ -258,7 +266,20 @@ impl<'a> InvocationSummary<'a> {
             metrics,
         };
 
-        let (hook_count, node_counts) = if is_summary_command(command) {
+        let mut injected_counts: Vec<(String, u64)> = Vec::new();
+        data_provider.with_root(|counts: &InjectedNodeCounts| {
+            injected_counts = counts
+                .0
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(kind, count)| (kind.clone(), *count))
+                .collect();
+        });
+        // A command that processed injected nodes, such as the command that a feature adds
+        // for its own nodes, reports them as the summary commands report theirs.
+        let shows_breakdown = is_summary_command(command) || !injected_counts.is_empty();
+
+        let (hook_count, node_counts) = if shows_breakdown {
             let node_counts = data_provider
                 .get_all_metrics()
                 .iter()
@@ -282,6 +303,8 @@ impl<'a> InvocationSummary<'a> {
             input: Some(input),
             hook_count,
             node_counts,
+            injected_counts,
+            shows_breakdown,
             colorize,
             max_line_width,
         }
@@ -317,7 +340,7 @@ impl fmt::Display for SummaryLines<'_> {
         let input = self.input;
         let colorize = self.summary.colorize;
         let max_line_width = self.summary.max_line_width;
-        let is_summary_command = is_summary_command(input.command);
+        let is_summary_command = self.summary.shows_breakdown;
 
         // Start with a blank line for spacing: every line below starts with a newline.
 
@@ -390,13 +413,25 @@ impl SummaryLines<'_> {
         }
 
         // Then add nodes by type
+        let injected = &self.summary.injected_counts;
         for &(node_type, count) in &self.summary.node_counts {
+            // Injected nodes are one node type, whatever their kind. Their kinds are named
+            // below.
+            if node_type == NodeType::Experimental && !injected.is_empty() {
+                continue;
+            }
             let word = if count > 1 {
                 node_type_plural(node_type)
             } else {
                 node_type.pretty()
             };
             write!(f, "{separator}{} {}", count, word)?;
+            separator = " | ";
+        }
+        // Then injected nodes by their kind: `1 widget`, `2 widgets`
+        for (kind, count) in injected {
+            let plural = if *count > 1 { "s" } else { "" };
+            write!(f, "{separator}{count} {kind}{plural}")?;
             separator = " | ";
         }
         Ok(())
@@ -602,6 +637,8 @@ mod tests {
             input: Some(input),
             hook_count: 0,
             node_counts: Vec::new(),
+            injected_counts: Vec::new(),
+            shows_breakdown: true,
             colorize: false,
             max_line_width: WIDTH,
         };
@@ -619,6 +656,116 @@ mod tests {
             .position(|line| line.contains(" Test Optimization "))?;
         let end = start + lines[start..].iter().position(String::is_empty)?;
         Some(lines[start..end].to_vec())
+    }
+
+    /// The lines of the summary of `command`, which processed `node_counts` by node type and
+    /// `injected` by kind, one of them with an error.
+    fn summary_of(
+        command: &'static str,
+        node_counts: Vec<(NodeType, u64)>,
+        injected: &[(&str, u64)],
+        shows_breakdown: bool,
+    ) -> Vec<String> {
+        let input = InvocationSummaryInput {
+            command,
+            target: None,
+            elapsed: Duration::ZERO,
+            metrics: InvocationMetricsSnapshot {
+                warnings: 0,
+                errors: 1,
+                autofix: 0,
+                outcomes: InvocationOutcomeTotals {
+                    total: 1,
+                    success: 0,
+                    warn: 0,
+                    error: 1,
+                    reused: 0,
+                    skipped: 0,
+                    canceled: 0,
+                    no_op: 0,
+                },
+                test_optimization: TestOptimizationTotals {
+                    statically_checked: 0,
+                    aggregated_tests: 0,
+                    aggregated_queries: 0,
+                },
+            },
+        };
+        let summary = InvocationSummary {
+            input: Some(input),
+            hook_count: 0,
+            node_counts,
+            injected_counts: injected
+                .iter()
+                .map(|(kind, count)| (kind.to_string(), *count))
+                .collect(),
+            shows_breakdown,
+            colorize: false,
+            max_line_width: WIDTH,
+        };
+        summary
+            .summary_lines()
+            .expect("the command shows a summary")
+            .to_string()
+            .split('\n')
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Injected nodes are named by their kind, after dbt's own nodes, in place of the count
+    /// of their one node type.
+    #[test]
+    fn injected_nodes_are_reported_by_their_kind() {
+        let lines = summary_of(
+            "build",
+            vec![(NodeType::Model, 2), (NodeType::Experimental, 3)],
+            &[("gadget", 1), ("widget", 2)],
+            true,
+        );
+        assert!(
+            lines.contains(&"Processed: 2 models | 1 gadget | 2 widgets".to_string()),
+            "{lines:?}"
+        );
+    }
+
+    /// Without the kinds, the count of the node type is what there is.
+    #[test]
+    fn injected_nodes_without_their_kinds_are_reported_by_their_node_type() {
+        let lines = summary_of("build", vec![(NodeType::Experimental, 3)], &[], true);
+        assert!(
+            lines.contains(&"Processed: 3 experimental nodes".to_string()),
+            "{lines:?}"
+        );
+    }
+
+    /// A command that is not a summary command shows the counts and the breakdown when it
+    /// processed injected nodes, and neither otherwise.
+    #[test]
+    fn a_command_that_processed_injected_nodes_shows_the_breakdown() {
+        let lines = summary_of(
+            "widgets",
+            vec![(NodeType::Experimental, 1)],
+            &[("widget", 1)],
+            true,
+        );
+        assert!(
+            lines.contains(&"Processed: 1 widget".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("Summary: 1 total")),
+            "{lines:?}"
+        );
+
+        let lines = summary_of("widgets", Vec::new(), &[], false);
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("Processed:") || line.starts_with("Summary:")),
+            "{lines:?}"
+        );
     }
 
     #[test]

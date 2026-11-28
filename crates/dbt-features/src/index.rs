@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use dbt_adapter::sql_types::TypeOps;
+use dbt_adapter::sql_types::TypeOpsFactory;
 use dbt_common::io_args::EvalArgs;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{ErrorCode, FsResult};
@@ -18,6 +18,7 @@ use dbt_schema_store::SchemaStoreTrait;
 use dbt_schemas::schemas::manifest::{DbtManifest, DbtNode, ManifestDataTest};
 use dbt_schemas::state::ResolverState;
 use dbt_tasks_core::RunTaskResults;
+use dbt_tasks_core::context::adapter_type_outside_compute_platform;
 
 #[async_trait]
 pub trait IndexHooks: Send + Sync {
@@ -150,7 +151,7 @@ pub fn write_metadata_parquet(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
-    type_ops: Option<&dyn TypeOps>,
+    type_ops_factory: Option<&dyn TypeOpsFactory>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
@@ -162,7 +163,7 @@ pub fn write_metadata_parquet(
         manifest,
         resolved_state,
         schema_store,
-        type_ops,
+        type_ops_factory,
         column_lineage,
         recomputed_column_lineage_targets,
         grain_infos,
@@ -179,7 +180,7 @@ pub fn write_metadata_parquet_with_errors(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
-    type_ops: Option<&dyn TypeOps>,
+    type_ops_factory: Option<&dyn TypeOpsFactory>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
@@ -191,7 +192,7 @@ pub fn write_metadata_parquet_with_errors(
         manifest,
         resolved_state,
         schema_store,
-        type_ops,
+        type_ops_factory,
         column_lineage,
         recomputed_column_lineage_targets,
         grain_infos,
@@ -241,7 +242,7 @@ fn write_metadata_parquet_impl(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
-    type_ops: Option<&dyn TypeOps>,
+    type_ops_factory: Option<&dyn TypeOpsFactory>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
@@ -415,6 +416,17 @@ fn write_metadata_parquet_impl(
             if write_compile_nodes {
                 if let Some(store) = schema_store {
                     if let Some(entry) = store.get_schema_by_unique_id(uid) {
+                        // Typed with the node's own adapter; a LakeCompute node keeps the default's.
+                        let type_ops = type_ops_factory.zip(resolved_state).map(|(f, rs)| {
+                            let node_adapter = rs
+                                .nodes
+                                .get_node(uid)
+                                .map_or(rs.adapter_type, |n| n.node_adapter());
+                            f.create(adapter_type_outside_compute_platform(
+                                node_adapter,
+                                rs.adapter_type,
+                            ))
+                        });
                         for (idx, field) in entry.inner().fields().iter().enumerate() {
                             let name_lower = field.name().to_ascii_lowercase();
                             let declared = declared_cols
@@ -429,6 +441,7 @@ fn write_metadata_parquet_impl(
                                     column_index: idx as i32,
                                     // The adapter's SQL type, not the Arrow type.
                                     column_type: type_ops
+                                        .as_ref()
                                         .and_then(|t| {
                                             t.get_original_sql_type_from_field(field).ok()
                                         })

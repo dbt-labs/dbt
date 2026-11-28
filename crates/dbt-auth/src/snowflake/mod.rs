@@ -730,6 +730,9 @@ fn apply_connection_args(
         UNCAPPED_MAX_RETRY_COUNT.to_string(),
     )?;
 
+    // Keep every fractional digit of TIME and TIMESTAMP_* values, as dbt v1 does.
+    builder.with_named_option(snowflake::LOSSLESS_TIME_UNIT, "true")?;
+
     if let Ok(client_timeout) = std::env::var("DBT_SNOWFLAKE_CLIENT_TIMEOUT") {
         builder.with_named_option(snowflake::CLIENT_TIMEOUT, client_timeout)?;
     }
@@ -845,9 +848,11 @@ mod tests {
                 OptionDatabase::Other(name) => name.to_owned(),
                 _ => continue,
             };
+            // Set the same way whatever the config; checked by their own tests.
             if key == snowflake::CLIENT_TIMEOUT
                 || key == snowflake::LOGIN_TIMEOUT
                 || key == snowflake::MAX_RETRY_COUNT
+                || key == snowflake::LOSSLESS_TIME_UNIT
             {
                 continue;
             }
@@ -870,6 +875,30 @@ mod tests {
             "Unexpected extra keys:
     left: {results:?}
     right: {expected:?}",
+        );
+    }
+
+    /// Returns the value `configure` sets for the driver option `key`, if any.
+    fn configured_option(config: Mapping, key: &str) -> Option<String> {
+        let auth = SnowflakeAuth {
+            warning_printer: Box::new(NoopAuthWarningPrinter),
+        };
+        let auth_result = auth
+            .configure(&AdapterConfig::new(config))
+            .expect("configure");
+        auth_result.into_iter().find_map(|(k, v)| match k {
+            OptionDatabase::Other(name) if name == key => Some(option_str_value(&v).to_owned()),
+            _ => None,
+        })
+    }
+
+    /// TIME and TIMESTAMP_* values keep every fractional digit of their scale,
+    /// as in dbt v1 (https://github.com/dbt-labs/dbt/issues/17282).
+    #[test]
+    fn test_lossless_time_unit() {
+        assert_eq!(
+            configured_option(base_config(), snowflake::LOSSLESS_TIME_UNIT).as_deref(),
+            Some("true")
         );
     }
 

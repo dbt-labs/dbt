@@ -129,3 +129,16 @@ where
         }
     });
 }
+
+/// The injected nodes that the invocation processed, by the kind of node that a feature
+/// adds. Kept on the invocation's root span for the summary. The count by node type has one
+/// stand-in for every kind (`NodeType::Experimental`), which stays what telemetry gets.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct InjectedNodeCounts(pub std::collections::BTreeMap<String, u64>);
+
+/// Records the injected nodes that the invocation processed, by kind, on the Invocation span.
+pub fn record_injected_node_counts(counts: InjectedNodeCounts) {
+    with_root_span(|root_span| {
+        root_span.extensions_mut().replace(counts.clone());
+    });
+}

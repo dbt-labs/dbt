@@ -89,7 +89,7 @@ pub fn build_catalog(
     DbtCatalog {
         metadata: CatalogMetadata {
             dbt_schema_version: get_dbt_schema_version("catalog", 1),
-            dbt_version: env!("CARGO_PKG_VERSION").to_string(),
+            dbt_version: dbt_common::version::dbt_version().to_string(),
             generated_at: Utc::now(),
             invocation_id: Some(invocation_id.to_string()),
             env: dbt_common::constants::collect_dbt_custom_envs(),

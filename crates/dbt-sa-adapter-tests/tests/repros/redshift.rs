@@ -73,6 +73,21 @@ async fn redshift_temp_table_skip_dist_sort() -> FsResult<()> {
     .await
 }
 
+/// From https://github.com/dbt-labs/dbt/issues/16499
+///
+/// With `redshift_use_transactions: true`, unit-test schema inference (`get_expected_columns`)
+/// drops its temp relation inside the transaction that `get_columns_in_relation` opens. It must
+/// commit before the render phase ends, or the rollback undoes the drop and the temp table remains.
+#[dbt_runtime::test]
+async fn redshift_unit_test_transaction() -> FsResult<()> {
+    run_fs_record_replay_redshift(
+        current_function_name!(),
+        "tests/data/repros/redshift_unit_test_transaction",
+        &["run", "test"],
+    )
+    .await
+}
+
 /// From https://github.com/dbt-labs/dbt-fusion/issues/1095
 #[dbt_runtime::test]
 async fn redshift_mv_hyphen_in_fqn() -> FsResult<()> {

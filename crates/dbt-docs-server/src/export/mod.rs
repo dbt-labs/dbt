@@ -34,6 +34,9 @@ mod bootstrap;
 
 use std::path::{Path, PathBuf};
 
+use dbt_index_core::info_schema::schema::INFO_SCHEMA;
+use dbt_index_core::info_schema::views;
+
 use crate::providers::Providers;
 
 pub use bootstrap::{SiteBootstrap, SiteTelemetry};
@@ -198,10 +201,14 @@ fn has_column_lineage(backend: &dyn dbt_index_core::Backend) -> bool {
 /// copied without it has artifacts and no way to name them.
 const COPIED_SIDECARS: &[&str] = &["views.sql"];
 
-/// Copy the information schema into the site, byte for byte.
+/// Copy the information schema into the site: the tables of the catalog byte for byte, and
+/// `views.sql` with the views of those tables.
 ///
 /// Deliberately a copy and not a projection: the files keep their names, columns, and
 /// contents, so a self-contained site and an in-place one read the same contract.
+///
+/// A table that is not in the catalog stays behind, with its view: a build adds such a table
+/// for its own records, which a site published elsewhere does not carry.
 fn copy_info_schema(info_schema_dir: &Path, dest_dir: &Path) -> Result<usize, ExportError> {
     create_dir_all(dest_dir)?;
     let entries = std::fs::read_dir(info_schema_dir).map_err(|source| ExportError::Io {
@@ -210,21 +217,53 @@ fn copy_info_schema(info_schema_dir: &Path, dest_dir: &Path) -> Result<usize, Ex
     })?;
 
     let mut copied = 0;
+    let mut sidecars = Vec::new();
+    let mut left_behind = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let wanted = path.extension().and_then(|e| e.to_str()) == Some("parquet")
-            || COPIED_SIDECARS.contains(&name);
-        if !wanted {
+        if COPIED_SIDECARS.contains(&name) {
+            sidecars.push(path);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("parquet") {
+            continue;
+        }
+        if let Some(view) = injected_table_view(name) {
+            left_behind.push(format!("{view};"));
             continue;
         }
         let dest = dest_dir.join(name);
         std::fs::copy(&path, &dest).map_err(|source| ExportError::Io { path: dest, source })?;
         copied += 1;
     }
+    // A sidecar loses the views of the tables left behind, or the site couldn't load it.
+    for path in sidecars {
+        let text = std::fs::read_to_string(&path).map_err(|source| ExportError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let kept: String = text
+            .split_inclusive('\n')
+            .filter(|line| !left_behind.iter().any(|view| line.trim_end() == view))
+            .collect();
+        let dest = dest_dir.join(path.file_name().unwrap_or_default());
+        std::fs::write(&dest, kept).map_err(|source| ExportError::Io { path: dest, source })?;
+        copied += 1;
+    }
     Ok(copied)
+}
+
+/// The view that `views.sql` has for `file`, if `file` is a table that a build added to the
+/// information schema: one named as a table is, and not in the catalog.
+fn injected_table_view(file: &str) -> Option<String> {
+    let in_catalog = INFO_SCHEMA.iter().any(|table| table.file_name() == file);
+    if in_catalog {
+        return None;
+    }
+    views::statement_for_file(file)
 }
 
 /// Copy the embedded SPA out, injecting the bootstrap into `index.html`.

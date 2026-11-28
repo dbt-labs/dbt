@@ -366,6 +366,11 @@ pub enum MetadataCallArgs {
         /// List of relation FQNs being queried
         relations: Vec<String>,
     },
+    /// Arguments for stage_last_modified
+    StageLastModified {
+        /// The `LIST` statement of each stage
+        list_statements: Vec<String>,
+    },
 }
 
 /// A (catalog, schema) pair for serialization.

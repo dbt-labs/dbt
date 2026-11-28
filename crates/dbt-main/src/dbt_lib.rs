@@ -27,7 +27,10 @@ use dbt_common::{
         INSTALLING, VALIDATING, default_index_dir, default_metadata_dir,
     },
     create_info_span, create_root_info_span, force_close_span, fs_err,
-    io_args::{DisplayFormat, EvalArgs, ListOutputFormat, Phases, ShowOptions, SystemArgs},
+    io_args::{
+        DisplayFormat, EvalArgs, ListOutputFormat, Phases, ShowOptions, SystemArgs,
+        project_flag_lookup,
+    },
     node_selector::IndirectSelection,
     path::get_target_write_path,
     pretty_string::{ColoredQuotes, GREEN, RED},
@@ -54,9 +57,10 @@ use dbt_dist::command::execute_get_distribution_info;
 use dbt_docs_server::providers::Backend;
 use dbt_features::feature_stack::FeatureStack;
 use dbt_index_core::backend::DuckDbInfoSchemaBackend;
+use dbt_index_core::info_schema::injected::ResolvedInjectedTable;
 use dbt_index_core::ingest::ingest_state::IngestState;
 use dbt_index_core::ingest::metadata_to_parquet::{apply_delta_direct, has_persisted_state};
-use dbt_index_core::write_info_schema;
+use dbt_index_core::write_info_schema_with_injected;
 use dbt_init::init;
 use dbt_jinja_utils::{
     jinja_environment::JinjaEnv, listener::JinjaTypeCheckingEventListenerFactory,
@@ -518,7 +522,7 @@ async fn do_execute_fs(
                 run_docs_serve(
                     serve_args.clone(),
                     &feature_stack,
-                    &eval_arg.io.in_dir,
+                    eval_arg,
                     &cli.common_args(),
                 )
                 .await
@@ -696,7 +700,7 @@ pub async fn execute_setup_and_all_phases(
     emit_version_info(eval_arg, feature_stack.cli.command_name)?;
 
     check_options(cli);
-    let known_flags = feature_stack.experimentals.experimentals.known_flags();
+    let known_flags = feature_stack.injected_kinds.kinds.known_flags();
     if let Err(e) = validate_engine_env_vars(&known_flags) {
         emit_error_log_from_fs_error(*e);
         return Err(FsError::exit_with_status(1));
@@ -741,12 +745,12 @@ pub async fn execute_setup_and_all_phases(
 }
 
 /// Resolves this invocation's feature flags and makes them current. The flags that turn on the
-/// binary's experimentals are known flags too, though they aren't in `dbt_flags::ALL`.
+/// binary's injected kinds are known flags too, though they aren't in `dbt_flags::ALL`.
 fn install_feature_flags(cli_beta_features: &[String], feature_stack: &FeatureStack) {
     let snapshot = dbt_flags::FlagSnapshot::builder()
         .cli(cli_beta_features)
         .build();
-    let known = feature_stack.experimentals.experimentals.known_flags();
+    let known = feature_stack.injected_kinds.kinds.known_flags();
     for warning in snapshot.warnings(&known) {
         emit_warn_log_message(ErrorCode::InvalidConfig, warning);
     }
@@ -1324,6 +1328,10 @@ impl<'a> AllPhasesExecutor<'a> {
             let info = show_args.info.clone();
             let inline = show_args.inline.clone();
             let metadata_dir = self.arg.metadata_dir();
+            let tables = crate::metadata::resolved_injected_tables_without_project(
+                &self.feature_stack,
+                self.arg.as_ref(),
+            );
             let format = self.arg.format;
             let limit = self.arg.limit;
             let token = token.clone();
@@ -1335,6 +1343,7 @@ impl<'a> AllPhasesExecutor<'a> {
                     info.as_deref(),
                     inline.as_deref(),
                     &metadata_dir,
+                    &tables,
                     format,
                     limit,
                     token,
@@ -2133,6 +2142,10 @@ impl<'a> AllPhasesExecutor<'a> {
             None
         };
 
+        let injected_tables = crate::metadata::resolved_injected_tables(
+            &self.feature_stack,
+            &project_flag_lookup(compilation.root_project().flags.as_ref()),
+        );
         if self.arg.write_metadata && self.arg.command != FsCommand::Show {
             // `compile --write-catalog` fetched its catalog before compiling, for
             // `catalog.json`. Reuse it so the epochs get the warehouse types too (#16514).
@@ -2151,10 +2164,18 @@ impl<'a> AllPhasesExecutor<'a> {
                 &run_task_results,
                 catalog_data.as_ref(),
                 self.feature_stack.index.hooks.as_ref(),
+                &injected_tables,
             )
             .await?;
 
             self.captured_artifacts.catalog = catalog_data;
+        }
+        // A task of this command may have added rows to a table that the build adds to the
+        // information schema. When the command did not write the information schema, the
+        // one that exists still gets those tables anew.
+        let wrote_info_schema = self.arg.write_metadata && self.arg.generate_info_schema;
+        if !wrote_info_schema && self.arg.command != FsCommand::Show {
+            crate::metadata::refresh_injected_tables(self.arg.as_ref(), &injected_tables);
         }
 
         let map_compiled_sql = self
@@ -2375,7 +2396,12 @@ async fn run_docs_generate(
     // so an artifact set built during the compile would miss it and the site's
     // timings and status surfaces would come up empty — the same reason the ingest
     // above runs twice. Under `--no-compile` this is the only thing that advances it.
-    build_info_schema_for_docs(&metadata_dir, &index_dir, &info_schema_root);
+    build_info_schema_for_docs(
+        &metadata_dir,
+        &index_dir,
+        &info_schema_root,
+        &crate::metadata::resolved_injected_tables_without_project(&feature_stack, eval_arg),
+    );
 
     // Nothing to export. Under `--no-compile` that is the expected way to get here;
     // otherwise the compile above ran but wrote nothing. Checked before opening the
@@ -2490,6 +2516,7 @@ fn build_info_schema_for_docs(
     metadata_dir: &std::path::Path,
     index_dir: &std::path::Path,
     info_schema_root: &std::path::Path,
+    tables: &[ResolvedInjectedTable<'_>],
 ) {
     if !metadata_dir.exists() {
         return;
@@ -2499,7 +2526,9 @@ fn build_info_schema_for_docs(
     } else {
         info_schema_root.with_file_name(dbt_common::constants::DBT_INFO_SCHEMA_STAGING_DIR_NAME)
     };
-    if let Err(err) = write_info_schema(metadata_dir, info_schema_root, &staging) {
+    if let Err(err) =
+        write_info_schema_with_injected(metadata_dir, info_schema_root, &staging, tables)
+    {
         emit_warn_log_message(
             ErrorCode::InfoSchemaWriteFailed,
             format!("dbt docs: could not build the information schema: {err}"),
@@ -2627,10 +2656,10 @@ async fn build_index_for_docs(
 async fn run_docs_serve(
     serve_args: ClapDocsServeArgs,
     feature_stack: &Arc<FeatureStack>,
-    project_dir: &std::path::Path,
+    eval_arg: &EvalArgs,
     common_args: &dbt_clap_core::CommonArgs,
 ) -> FsResult<()> {
-    let has_dbt_state = common_args.get_manage_state(project_dir, false);
+    let has_dbt_state = common_args.get_manage_state(&eval_arg.io.in_dir, false);
     let send_anonymous_usage_stats = common_args.get_send_anonymous_usage_stats();
     let args = dbt_docs_server::DocsServeArgs {
         target_path: serve_args.target_path,
@@ -2670,7 +2699,12 @@ async fn run_docs_serve(
     // metadata epochs into the index and rebuild the information schema from them,
     // so a run since the last `docs generate` is picked up without one.
     ingest_metadata_into_index(&metadata_dir, &index_dir, "dbt docs serve");
-    build_info_schema_for_docs(&metadata_dir, &index_dir, &info_schema_root);
+    build_info_schema_for_docs(
+        &metadata_dir,
+        &index_dir,
+        &info_schema_root,
+        &crate::metadata::resolved_injected_tables_without_project(feature_stack, eval_arg),
+    );
 
     let backend: Arc<dyn Backend> =
         Arc::new(match DuckDbInfoSchemaBackend::open(&info_schema_dir) {

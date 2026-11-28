@@ -201,6 +201,7 @@ impl ModelFreshness {
 pub enum StatePreClone {
     Never,
     IfMissing,
+    IfChanged,
     Always,
 }
 

@@ -30,7 +30,7 @@ dbt-fusion-workspace-hack = { version = "0.1" }
 flate2 = { workspace = true }
 hex = { workspace = true }
 md5 = { workspace = true }
-python-pkginfo = "0.6"
+python-pkginfo = "0.7"
 reqwest = { workspace = true, features = ["multipart"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -969,7 +969,7 @@ pub enum ClapResourceType {
     SavedQuery,
     Check,
     Exposure,
-    /// Nodes added by experimentals.
+    /// Nodes of the kinds that features add.
     Experimental,
     All,
     /// Selects the resource types a command uses when no filter is given.

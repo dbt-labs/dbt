@@ -2,7 +2,7 @@ use core::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::table::TableRepr;
+use crate::table_repr::TableRepr;
 use crate::{MappedSequence, Tuple, TupleRepr};
 use arrow_array::{Array, StringViewArray};
 use minijinja::listener::RenderingEventListener;

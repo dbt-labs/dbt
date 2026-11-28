@@ -1,0 +1,104 @@
+4157f343:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(0) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(0) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(0) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(0), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(0)) as ntz_epoch_ns
+41e1a9a0:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(9) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(9) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(9) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(9), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(9)) as ntz_epoch_ns
+'6623e225':
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(3) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(3) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(3) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(3), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(3)) as ntz_epoch_ns
+6eed82b9:
+- sequence: 0
+  type: execute
+  sql: select max(ntz_7) from development.snowflake_timestamp_scales.ts_scales
+'72318049':
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(1) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(1) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(1) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(1), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(1)) as ntz_epoch_ns
+7f7d037d:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(5) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(5) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(5) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(5), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(5)) as ntz_epoch_ns
+b66a1889:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(2) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(2) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(2) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(2), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(2)) as ntz_epoch_ns
+c9ddc5ec:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(7) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(7) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(7) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(7), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(7)) as ntz_epoch_ns
+d7e6c3c3:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(8) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(8) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(8) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(8), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(8)) as ntz_epoch_ns
+e6981f39:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(4) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(4) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(4) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(4), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(4)) as ntz_epoch_ns
+e8fa29ce:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(6) as ntz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ltz(6) as ltz,
+    '2026-11-16 10:49:35.861123456 +05:30'::timestamp_tz(6) as tz,
+    to_varchar('2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(6), 'YYYY-MM-DD HH24:MI:SS.FF9') as ntz_varchar,
+    date_part(epoch_nanosecond, '2026-11-16 10:49:35.861123456 +05:30'::timestamp_ntz(6)) as ntz_epoch_ns

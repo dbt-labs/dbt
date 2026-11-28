@@ -140,12 +140,14 @@ pub(crate) mod redshift;
 pub(crate) mod salesforce;
 pub mod snowflake; // XXX: temporarily pub before the refactor is complete
 pub(crate) mod spark;
+pub(crate) mod stage_listing;
 pub(crate) mod view_definition;
 
 // Re-export `metadata_adapter` symbols
 // NOTE: this is temporary until all the metadata-releated code
 // is verticalized and moved to the metadata module.
 pub use metadata_adapter::*;
+pub use stage_listing::StageListing;
 pub use view_definition::{ViewDefinition, ViewDefinitionFetchResult};
 
 /// The canonical list of BigQuery pseudocolumns (queryable columns absent from
@@ -213,14 +215,20 @@ impl From<&dyn BaseRelation> for CatalogAndSchema {
         let rendered_catalog = if resolved_catalog.is_empty() {
             "".to_string()
         } else {
-            relation.quoted(&resolved_catalog)
+            relation
+                .quoted(&resolved_catalog)
+                .display(relation.adapter_type())
+                .to_string()
         };
 
         let resolved_schema = relation.schema_as_resolved_str().unwrap_or_default();
         let rendered_schema = if resolved_schema.is_empty() {
             "".to_string()
         } else {
-            relation.quoted(&resolved_schema)
+            relation
+                .quoted(&resolved_schema)
+                .display(relation.adapter_type())
+                .to_string()
         };
 
         Self {

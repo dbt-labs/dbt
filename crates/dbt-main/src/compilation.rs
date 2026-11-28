@@ -13,6 +13,7 @@ use dbt_common::{
     stats::NodeStatus,
     tracing::{
         dbt_metrics::{FusionMetricKey, return_exit_code_from_error_counter},
+        invocation::{InjectedNodeCounts, record_injected_node_counts},
         metrics::increment_metric,
     },
 };
@@ -24,11 +25,12 @@ use dbt_dag::{deps_mgmt::reverse, schedule::Schedule};
 use dbt_defer::DeferState;
 use dbt_features::feature_stack::FeatureStack;
 use dbt_features::index::write_metadata_parquet;
+use dbt_index_core::info_schema::injected::ResolvedInjectedTable;
 use dbt_index_core::ingest::ingest_state::IngestState;
 use dbt_index_core::ingest::metadata_to_parquet::{
     has_persisted_state, ingest_from_metadata_direct,
 };
-use dbt_index_core::{WriteSource, save_artifact_meta, write_info_schema};
+use dbt_index_core::{WriteSource, save_artifact_meta, write_info_schema_with_injected};
 use dbt_jinja_utils::{
     JinjaFactory,
     invocation_args::InvocationArgs,
@@ -93,10 +95,8 @@ use dbt_schemas::{
     state::{CacheState, DbtPackage, DbtState, Macros, ModelStatus, ResolverState},
     stats::Stats,
 };
-use dbt_tasks_core::task::TP;
 use dbt_tasks_core::task_runner_hooks::TaskRunnerHooksFactory;
-use dbt_tasks_sa::experimental::ExperimentalRuns;
-use dbt_tasks_sa::graph::command_phases;
+use dbt_tasks_sa::injected::{InjectedRuns, injected_nodes_with_tasks};
 use dbt_tasks_sa::utils::{
     update_columns_from_schemas, update_resolved_states_manifest_with_schemas_and_compiled_sql,
 };
@@ -575,7 +575,13 @@ impl<'a> CompilationPhasesExecutor<'a> {
                 crate::metadata::write_catalog_epochs(catalog, self.arg.as_ref()).await;
             }
 
-            write_parse_artifacts(&self.arg);
+            write_parse_artifacts(
+                &self.arg,
+                &crate::metadata::resolved_injected_tables(
+                    feature_stack,
+                    &project_flag_lookup(loaded_project.dbt_state().root_project().flags.as_ref()),
+                ),
+            );
         }
 
         if self.arg.io.should_show(ShowOptions::Manifest) {
@@ -1513,7 +1519,7 @@ impl DbtProjectCompilation {
 
         // The root project's `flags:` is loaded: report what it sets that has no effect.
         for warning in dbt_flags::FlagSnapshot::project_warnings(
-            &feature_stack.experimentals.experimentals.known_flags(),
+            &feature_stack.injected_kinds.kinds.known_flags(),
             &project_flag_lookup(loaded_project.dbt_state().root_project().flags.as_ref()),
         ) {
             emit_warn_log_message(ErrorCode::InvalidConfig, warning);
@@ -1555,7 +1561,7 @@ impl DbtProjectCompilation {
                     token,
                     jinja_type_checking_event_listener_factory.clone(),
                     feature_stack.resolver.hooks.clone(),
-                    feature_stack.experimentals.experimentals.resolvable_nodes(),
+                    feature_stack.injected_kinds.kinds.resolvable_nodes(),
                 )
                 .await?
         };
@@ -2506,17 +2512,13 @@ impl DbtProjectCompilation {
         let tasks_for_node_factory = Arc::clone(&feature_stack.task_runner.tasks_for_node_factory);
         let compare_task_graph_builder =
             feature_stack.task_runner.compare_task_graph_builder.clone();
-        // Start the experimentals with selected nodes before the graph is built, so one that can't
-        // run stops the invocation before any node runs.
-        let experimentals = feature_stack.experimentals.experimentals.clone();
-        let runs_nodes = command_phases(run_task_args.command, &experimentals)
-            .is_some_and(|phases| phases.contains(&TP::Run));
-        let experimental_runs = ExperimentalRuns::start(
-            &experimentals,
+        // Start the features that have selected nodes before the graph is built, so one that
+        // can't run stops the invocation before any node runs.
+        let injected_runs = InjectedRuns::start(
+            feature_stack.injected_kinds.kinds.injected_tasks(),
             &run_task_args,
             &resolved_state.nodes,
             &schedule,
-            runs_nodes,
         )
         .await?;
         let graph_builder = GraphBuilder::new(
@@ -2524,8 +2526,7 @@ impl DbtProjectCompilation {
             Arc::clone(&static_analysis_buckets),
             tasks_for_node_factory,
             compare_task_graph_builder,
-            experimentals,
-            experimental_runs.clone(),
+            injected_runs.clone(),
         );
 
         // Increment counters used in final run reporting.
@@ -2536,6 +2537,7 @@ impl DbtProjectCompilation {
         // or for neither.
         let count_checks = !arg.skip_checks
             && dbt_tasks_sa::check::metadata_unavailable_reason(&arg.metadata_dir()).is_none();
+        let only_injected_nodes_have_tasks = injected_runs.own_command().is_some();
         schedule.selected_nodes.iter().for_each(|unique_id| {
             let node = self
                 .resolved_state
@@ -2546,11 +2548,13 @@ impl DbtProjectCompilation {
             if node_type == NodeType::Check && !count_checks {
                 return;
             }
-            // An experimental node is graph work only while its experimental runs.
-            if node
-                .injected_kind()
-                .is_some_and(|experimental_type| !experimental_runs.is_running(experimental_type))
-            {
+            // An injected node is counted once the graph is built: when it has a task.
+            if node.injected_kind().is_some() {
+                return;
+            }
+            // The graph of a command that a feature adds has tasks only for that feature's
+            // nodes. It selects the nodes they depend on, and does not process them.
+            if only_injected_nodes_have_tasks {
                 return;
             }
             increment_metric(FusionMetricKey::NodeCounts(node_type), 1);
@@ -2606,6 +2610,18 @@ impl DbtProjectCompilation {
                     graph_builder.build(&schedule, &task_runner.resolved_state)
                 }?;
 
+                // An injected node is graph work when the graph has a task for it. The count
+                // by node type has one stand-in for every kind; the summary names the kinds.
+                let injected_nodes = injected_nodes_with_tasks(&graph);
+                let injected_total: u64 = injected_nodes.values().sum();
+                if injected_total > 0 {
+                    increment_metric(
+                        FusionMetricKey::NodeCounts(NodeType::Experimental),
+                        injected_total,
+                    );
+                    record_injected_node_counts(InjectedNodeCounts(injected_nodes));
+                }
+
                 if run_task_args.io.should_show(ShowOptions::TaskGraph) {
                     task_runner.show_taskgraph(&graph);
                 }
@@ -2643,9 +2659,9 @@ impl DbtProjectCompilation {
                         token.clone(),
                     )
                     .await;
-                // Experimental runs finish whatever the graph's outcome. A run that fails to finish
-                // is reported without discarding the results.
-                experimental_runs.finish();
+                // The runs of features finish whatever the graph's outcome. A run that fails to
+                // finish is reported without discarding the results.
+                injected_runs.finish();
                 if run_result.is_err() {
                     run_cache_service_after_run_failed(
                         &run_cache_ctx_on_error,
@@ -3291,7 +3307,7 @@ async fn create_run_cache_state_selector_args(
 ///
 /// What `parse` can produce is limited: nodes and node-level lineage, but no
 /// column types and no column-level lineage, both of which need a compile.
-fn write_parse_artifacts(arg: &EvalArgs) {
+fn write_parse_artifacts(arg: &EvalArgs, injected_tables: &[ResolvedInjectedTable<'_>]) {
     let metadata_dir = arg.metadata_dir();
 
     if arg.write_index {
@@ -3337,7 +3353,12 @@ fn write_parse_artifacts(arg: &EvalArgs) {
         } else {
             arg.info_schema_staging_dir()
         };
-        match write_info_schema(&metadata_dir, &info_schema_dir, &staging_dir) {
+        match write_info_schema_with_injected(
+            &metadata_dir,
+            &info_schema_dir,
+            &staging_dir,
+            injected_tables,
+        ) {
             Ok(_) => emit_warn_log_message(
                 ErrorCode::InfoSchemaIncomplete,
                 "--generate-info-schema: the information schema produced by `parse` is incomplete; column types, column-level lineage, and runtime results are only written by `compile`, `run`, or `build`.",

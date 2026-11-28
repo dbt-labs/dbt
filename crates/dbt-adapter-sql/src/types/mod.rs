@@ -252,7 +252,7 @@ pub fn default_time_unit(backend: AdapterType) -> TimeUnit {
     match backend {
         Snowflake | Databricks | Spark => Nanosecond,
         Bigquery | Redshift => Microsecond,
-        Postgres | Salesforce | DuckDB | MotherDuck => Microsecond,
+        Postgres | Salesforce | DuckDB | LakeCompute | MotherDuck => Microsecond,
         Fabric => Microsecond,
         ClickHouse => Second,
         // Athena (Presto/Trino-based) uses millisecond precision for timestamps.
@@ -694,7 +694,10 @@ impl SqlType {
             (Postgres | Redshift, Float(_)) => write!(out, "REAL"),
             (Postgres | Redshift, Clob) => write!(out, "TEXT"),
             // https://duckdb.org/docs/stable/sql/data_types/list
-            (Postgres | Redshift | Salesforce | DuckDB | MotherDuck, Array(Some(inner))) => {
+            (
+                Postgres | Redshift | Salesforce | DuckDB | LakeCompute | MotherDuck,
+                Array(Some(inner)),
+            ) => {
                 inner.write(backend, out)?;
                 write!(out, "[]")
             }
@@ -943,7 +946,7 @@ impl SqlType {
             (_, DateTime) => write!(out, "DATETIME"),
             // DuckDB's TIMESTAMPTZ takes no precision.
             (
-                DuckDB | MotherDuck,
+                DuckDB | LakeCompute | MotherDuck,
                 Timestamp {
                     time_zone_spec: TimeZoneSpec::With,
                     ..
@@ -952,7 +955,7 @@ impl SqlType {
             // DuckDB spells the second, millisecond and nanosecond precisions as their own
             // types; `TIMESTAMP(p)` also parses, but only as an alias for these.
             (
-                DuckDB | MotherDuck,
+                DuckDB | LakeCompute | MotherDuck,
                 Timestamp {
                     precision,
                     time_zone_spec: TimeZoneSpec::Without | TimeZoneSpec::Unspecified,
@@ -1030,7 +1033,7 @@ impl SqlType {
                 match backend {
                     Snowflake => write!(out, "OBJECT(")?,
                     // https://duckdb.org/docs/stable/sql/data_types/struct
-                    DuckDB | MotherDuck => write!(out, "STRUCT(")?,
+                    DuckDB | LakeCompute | MotherDuck => write!(out, "STRUCT(")?,
                     Bigquery | Databricks | Spark | Athena => write!(out, "STRUCT<")?,
                     Postgres | Salesforce | ClickHouse | Exasol => write!(out, "(")?,
                     // Redshift doesn't support object/struct types
@@ -1064,7 +1067,7 @@ impl SqlType {
                     match (backend, nullable) {
                         // DuckDB struct fields take no constraints.
                         // https://duckdb.org/docs/stable/sql/data_types/struct
-                        (DuckDB | MotherDuck, _) | (_, true) => {}
+                        (DuckDB | LakeCompute | MotherDuck, _) | (_, true) => {}
                         _ => write!(out, " NOT NULL")?,
                     }
                     if let Some(tok) = comment_tok {
@@ -1076,7 +1079,8 @@ impl SqlType {
                     Bigquery | Databricks | Spark | Athena => {
                         write!(out, ">")
                     }
-                    Postgres | Salesforce | DuckDB | ClickHouse | Exasol | MotherDuck => {
+                    Postgres | Salesforce | DuckDB | ClickHouse | Exasol | LakeCompute
+                    | MotherDuck => {
                         write!(out, ")")
                     }
                     Redshift => write!(out, ")"),
@@ -1138,11 +1142,11 @@ impl SqlType {
             (_, DataType::Null) => SqlType::Varchar(None, Default::default()),
             (_, DataType::Boolean) => SqlType::Boolean,
             // https://duckdb.org/docs/stable/sql/data_types/numeric
-            (DuckDB | MotherDuck, DataType::Int8) => SqlType::TinyInt,
-            (DuckDB | MotherDuck, DataType::UInt8) => SqlType::UTinyInt,
-            (DuckDB | MotherDuck, DataType::UInt16) => SqlType::USmallInt,
-            (DuckDB | MotherDuck, DataType::UInt32) => SqlType::UInteger,
-            (DuckDB | MotherDuck, DataType::UInt64) => SqlType::UBigInt,
+            (DuckDB | LakeCompute | MotherDuck, DataType::Int8) => SqlType::TinyInt,
+            (DuckDB | LakeCompute | MotherDuck, DataType::UInt8) => SqlType::UTinyInt,
+            (DuckDB | LakeCompute | MotherDuck, DataType::UInt16) => SqlType::USmallInt,
+            (DuckDB | LakeCompute | MotherDuck, DataType::UInt32) => SqlType::UInteger,
+            (DuckDB | LakeCompute | MotherDuck, DataType::UInt64) => SqlType::UBigInt,
             (_, DataType::Int8 | DataType::UInt8 | DataType::Int16) => SqlType::SmallInt,
             (_, DataType::UInt16 | DataType::Int32) => SqlType::Integer,
             (_, DataType::UInt32 | DataType::Int64 | DataType::UInt64) => SqlType::BigInt,
@@ -1196,7 +1200,7 @@ impl SqlType {
                 // `None` is the backend's default precision, microseconds on DuckDB, so
                 // seconds are spelled `Some(0)` there.
                 precision: match backend {
-                    DuckDB | MotherDuck => Some(0),
+                    DuckDB | LakeCompute | MotherDuck => Some(0),
                     _ => None,
                 },
                 time_zone_spec: if tz.is_some() {
@@ -1286,7 +1290,7 @@ impl SqlType {
             // DuckDB keeps the element type: an untyped `ARRAY` is not a DuckDB type.
             // Other backends keep the untyped array until each one is checked.
             (
-                DuckDB | MotherDuck,
+                DuckDB | LakeCompute | MotherDuck,
                 DataType::List(item)
                 | DataType::LargeList(item)
                 | DataType::ListView(item)
@@ -1549,7 +1553,7 @@ impl SqlType {
             // }}}
 
             // DuckDB {{{
-            (DuckDB | MotherDuck, Numeric(None) | BigNumeric(None)) => {
+            (DuckDB | LakeCompute | MotherDuck, Numeric(None) | BigNumeric(None)) => {
                 // DuckDB's DECIMAL type without precision/scale defaults to DECIMAL(18, 3)
                 // https://duckdb.org/docs/sql/data_types/numeric
                 DataType::Decimal128(18, 3)
@@ -1675,7 +1679,9 @@ impl SqlType {
                     (Redshift, None) => TimeUnit::Microsecond,
                     // TIME's default precision on PostgreSQL is 6 (microseconds)
                     // https://www.postgresql.org/docs/current/datatype-datetime.html
-                    (Postgres | Salesforce | DuckDB | MotherDuck, None) => TimeUnit::Microsecond,
+                    (Postgres | Salesforce | DuckDB | LakeCompute | MotherDuck, None) => {
+                        TimeUnit::Microsecond
+                    }
                     (Fabric, None) => {
                         // In SQL Server, the number enclosed in parenthesis is the fractional second scale, rather than precision.
                         //
@@ -1843,7 +1849,7 @@ impl SqlType {
                                 MonthDayNano,
                             )
                     }
-                    Bigquery | Postgres | DuckDB | MotherDuck => MonthDayNano, // MonthDayNano is exactly what BQ and PG use internally
+                    Bigquery | Postgres | DuckDB | LakeCompute | MotherDuck => MonthDayNano, // MonthDayNano is exactly what BQ and PG use internally
                     // FIXME: ClickHouse doesn't actually seem to support Arrow's Interval
                     ClickHouse => MonthDayNano,
                     Exasol => MonthDayNano,

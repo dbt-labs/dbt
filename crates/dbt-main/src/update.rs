@@ -1353,9 +1353,24 @@ mod tests {
         dbt_tarball: Vec<u8>,
         runner_tarball: Vec<u8>,
     ) -> MockHttpClient {
+        native_update_client_with_manifest(
+            &test_versions_json(),
+            version,
+            dbt_tarball,
+            runner_tarball,
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn native_update_client_with_manifest(
+        versions: &serde_json::Value,
+        version: &str,
+        dbt_tarball: Vec<u8>,
+        runner_tarball: Vec<u8>,
+    ) -> MockHttpClient {
         let target = current_target_triple().unwrap();
         let base = cdn_base_url();
-        let manifest = serde_json::to_string(&test_versions_json()).unwrap();
+        let manifest = serde_json::to_string(versions).unwrap();
 
         MockHttpClient::new()
             .with_text(format!("{base}/versions.json"), &manifest)
@@ -1376,6 +1391,17 @@ mod tests {
             "dev":     { "tag": "v2.0.0-preview.157", "date": "2026-03-18" },
             "canary":  { "tag": "v2.0.0-preview.157", "date": "2026-03-18" }
         })
+    }
+
+    /// `test_versions_json()` plus the `nightly` and `preview` tracks, each ahead of the
+    /// alias that follows it (`dev` and `canary`). `stable` is already behind `latest`.
+    fn test_versions_json_with_alias_targets() -> serde_json::Value {
+        let mut versions = test_versions_json();
+        versions["nightly"] =
+            serde_json::json!({ "tag": "v2.0.0-preview.160", "date": "2026-03-20" });
+        versions["preview"] =
+            serde_json::json!({ "tag": "v2.0.0-preview.159", "date": "2026-03-19" });
+        versions
     }
 
     #[test]
@@ -1420,6 +1446,149 @@ mod tests {
         let version = Some("canary");
         let version = resolve_target_version(version, &client).await.unwrap();
         assert_eq!(version, "2.0.0-preview.157");
+    }
+
+    #[dbt_runtime::test]
+    async fn test_resolve_target_version_nightly_alias() {
+        let manifest = serde_json::to_string(&test_versions_json_with_alias_targets()).unwrap();
+        let client =
+            MockHttpClient::new().with_text(format!("{}/versions.json", cdn_base_url()), &manifest);
+
+        let version = resolve_target_version(Some("nightly"), &client)
+            .await
+            .unwrap();
+        assert_eq!(version, "2.0.0-preview.160");
+    }
+
+    #[dbt_runtime::test]
+    async fn test_resolve_target_version_dev_follows_nightly() {
+        let manifest = serde_json::to_string(&test_versions_json_with_alias_targets()).unwrap();
+        let client =
+            MockHttpClient::new().with_text(format!("{}/versions.json", cdn_base_url()), &manifest);
+
+        // The manifest's own `dev` entry is preview.157; `dev` must follow `nightly` instead.
+        let version = resolve_target_version(Some("dev"), &client).await.unwrap();
+        assert_eq!(version, "2.0.0-preview.160");
+    }
+
+    #[dbt_runtime::test]
+    async fn test_resolve_target_version_dev_without_nightly_uses_dev_entry() {
+        let manifest = serde_json::to_string(&test_versions_json()).unwrap();
+        let client =
+            MockHttpClient::new().with_text(format!("{}/versions.json", cdn_base_url()), &manifest);
+
+        let version = resolve_target_version(Some("dev"), &client).await.unwrap();
+        assert_eq!(version, "2.0.0-preview.157");
+    }
+
+    #[dbt_runtime::test]
+    async fn test_resolve_target_version_preview_alias() {
+        let manifest = serde_json::to_string(&test_versions_json_with_alias_targets()).unwrap();
+        let client =
+            MockHttpClient::new().with_text(format!("{}/versions.json", cdn_base_url()), &manifest);
+
+        let version = resolve_target_version(Some("preview"), &client)
+            .await
+            .unwrap();
+        assert_eq!(version, "2.0.0-preview.159");
+    }
+
+    #[dbt_runtime::test]
+    async fn test_resolve_target_version_canary_follows_preview() {
+        let manifest = serde_json::to_string(&test_versions_json_with_alias_targets()).unwrap();
+        let client =
+            MockHttpClient::new().with_text(format!("{}/versions.json", cdn_base_url()), &manifest);
+
+        // The manifest's own `canary` entry is preview.157; `canary` must follow `preview`.
+        let version = resolve_target_version(Some("canary"), &client)
+            .await
+            .unwrap();
+        assert_eq!(version, "2.0.0-preview.159");
+    }
+
+    #[dbt_runtime::test]
+    async fn test_resolve_target_version_latest_follows_stable() {
+        let manifest = serde_json::to_string(&test_versions_json()).unwrap();
+        let client =
+            MockHttpClient::new().with_text(format!("{}/versions.json", cdn_base_url()), &manifest);
+
+        // The manifest's own `latest` entry is preview.154; `latest` must follow `stable`.
+        let version = resolve_target_version(Some("latest"), &client)
+            .await
+            .unwrap();
+        assert_eq!(version, "2.0.0-preview.150");
+    }
+
+    #[dbt_runtime::test]
+    async fn test_resolve_target_version_latest_without_stable_uses_latest_entry() {
+        let manifest = r#"{"latest":{"tag":"v2.0.0-preview.154"}}"#;
+        let client =
+            MockHttpClient::new().with_text(format!("{}/versions.json", cdn_base_url()), manifest);
+
+        let version = resolve_target_version(Some("latest"), &client)
+            .await
+            .unwrap();
+        assert_eq!(version, "2.0.0-preview.154");
+    }
+
+    /// Runs a native update for `requested` and checks it installs `expected_version`.
+    /// Only the `expected_version` tarballs are served, so resolving `requested` to
+    /// `unexpected_version` (its own manifest entry) would fail the download.
+    #[cfg(not(target_os = "windows"))]
+    async fn assert_native_update_resolves_to(
+        requested: &str,
+        expected_version: &str,
+        unexpected_version: &str,
+    ) {
+        let client = native_update_client_with_manifest(
+            &test_versions_json_with_alias_targets(),
+            expected_version,
+            build_fake_tarball("dbt", b"expected-dbt"),
+            build_fake_tarball("dbt-db-runner", b"expected-runner"),
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        exec_update_native(Some(requested), Some("dbt"), tmp.path(), None, &client)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(tmp.path().join("dbt")).unwrap(),
+            b"expected-dbt"
+        );
+        let target = current_target_triple().unwrap();
+        let requested_urls = client.requested_urls();
+        assert!(
+            requested_urls.contains(&format!(
+                "{}/cli/fs-v{expected_version}-{target}.tar.gz",
+                cdn_base_url()
+            )),
+            "{expected_version} tarball should be requested: {requested_urls:?}"
+        );
+        assert!(
+            !requested_urls
+                .iter()
+                .any(|url| url.contains(unexpected_version)),
+            "{unexpected_version} should not be requested: {requested_urls:?}"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[dbt_runtime::test]
+    async fn test_native_update_dev_installs_nightly_version() {
+        assert_native_update_resolves_to("dev", "2.0.0-preview.160", "2.0.0-preview.157").await;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[dbt_runtime::test]
+    async fn test_native_update_canary_installs_preview_version() {
+        assert_native_update_resolves_to("canary", "2.0.0-preview.159", "2.0.0-preview.157").await;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[dbt_runtime::test]
+    async fn test_native_update_latest_installs_stable_version() {
+        assert_native_update_resolves_to("latest", "2.0.0-preview.150", "2.0.0-preview.154").await;
     }
 
     #[cfg(not(target_os = "windows"))]

@@ -30,7 +30,7 @@ use dbt_tasks_core::test_aggregation::{
 use crate::barrier::BarrierTask;
 use crate::cloneable::RunCloneTask;
 use crate::cloneable::cloneable_task;
-use crate::experimental::{ExperimentalRuns, Experimentals};
+use crate::injected::{InjectedRuns, InjectedTasks, TasksCtx};
 use crate::renderable::unit_test::build_unit_test_overrides_map;
 use crate::task::TasksForNodeFactory;
 
@@ -53,16 +53,18 @@ fn task_graph_phases_for_command(command: FsCommand) -> Option<&'static [TP]> {
     }
 }
 
-/// An experimental's own command runs only its nodes, which only run.
-const PHASES_EXPERIMENTAL_COMMAND: &[TP] = &[TP::Run];
-
-/// The phases of `command`'s task graph, including a command an experimental adds; `None` if it
-/// builds none.
-pub fn command_phases(command: FsCommand, experimentals: &Experimentals) -> Option<&'static [TP]> {
+/// The phases of `command`'s task graph, including a command that one of `injected` adds;
+/// `None` if it builds none.
+pub fn command_phases(
+    command: FsCommand,
+    injected: &[Arc<dyn InjectedTasks>],
+) -> Option<&'static [TP]> {
     task_graph_phases_for_command(command).or_else(|| {
-        experimentals
-            .command_owner(command)
-            .map(|_| PHASES_EXPERIMENTAL_COMMAND)
+        injected
+            .iter()
+            .filter_map(|tasks| tasks.command())
+            .find(|injected| command == FsCommand::Extension(injected.name))
+            .map(|injected| injected.phases)
     })
 }
 
@@ -87,8 +89,7 @@ pub struct GraphBuilder {
     static_analysis_buckets: Arc<dyn StaticAnalysisBuckets>,
     tasks_for_node_factory: Arc<dyn TasksForNodeFactory>,
     compare_task_graph_builder: Option<Arc<dyn CompareTaskGraphBuilder>>,
-    experimentals: Experimentals,
-    experimental_runs: ExperimentalRuns,
+    injected_runs: InjectedRuns,
 }
 
 impl GraphBuilder {
@@ -97,8 +98,7 @@ impl GraphBuilder {
         static_analysis_buckets: Arc<dyn StaticAnalysisBuckets>,
         tasks_for_node_factory: Arc<dyn TasksForNodeFactory>,
         compare_task_graph_builder: Option<Arc<dyn CompareTaskGraphBuilder>>,
-        experimentals: Experimentals,
-        experimental_runs: ExperimentalRuns,
+        injected_runs: InjectedRuns,
     ) -> Self {
         let execute = Execute::from_compute_flag(arg.local_execution_backend);
         Self {
@@ -107,8 +107,7 @@ impl GraphBuilder {
             static_analysis_buckets,
             tasks_for_node_factory,
             compare_task_graph_builder,
-            experimentals,
-            experimental_runs,
+            injected_runs,
         }
     }
 
@@ -192,28 +191,29 @@ impl GraphBuilder {
                             self.static_analysis_buckets.as_ref(),
                             self.arg.infer_schemas_and_typeless,
                             aggregation,
-                            &self.experimental_runs,
+                            &self.injected_runs,
                         )
-                    } else if let Some(owner) = self.experimentals.command_owner(cmd) {
-                        let experimental_type = owner.experimental_type();
-                        // An experimental's own command runs only that experimental's nodes.
+                    } else if let Some((phases, kinds)) = self.injected_runs.own_command() {
+                        // A command that a feature adds has tasks only for the nodes of that
+                        // feature's kinds.
                         let mut task_schedule = schedule.clone();
                         task_schedule.selected_nodes.retain(|unique_id| {
                             nodes
                                 .injected
                                 .get(unique_id)
-                                .is_some_and(|node| node.injected_kind() == Some(experimental_type))
+                                .and_then(|node| node.injected_kind())
+                                .is_some_and(|kind| kinds.contains(&kind))
                         });
                         Self::build_phased_task_graph(
                             &task_schedule,
                             self.tasks_for_node_factory.as_ref(),
                             nodes,
                             self.execute,
-                            PHASES_EXPERIMENTAL_COMMAND,
+                            phases,
                             self.static_analysis_buckets.as_ref(),
                             self.arg.infer_schemas_and_typeless,
                             None,
-                            &self.experimental_runs,
+                            &self.injected_runs,
                         )
                     } else {
                         // Freshness and `jinja-check` legitimately produce an
@@ -253,7 +253,7 @@ impl GraphBuilder {
         buckets: &dyn StaticAnalysisBuckets,
         infer_schemas: bool,
         generic_test_aggregation: Option<&GenericTestAggregation>,
-        experimental_runs: &ExperimentalRuns,
+        injected_runs: &InjectedRuns,
     ) -> (DiGraph<Arc<dyn Task>, ()>, BTreeSet<String>) {
         // Build reverse dependencies map once for efficient propagation
         let reverse_deps = build_reverse_deps(&schedule.deps);
@@ -281,7 +281,7 @@ impl GraphBuilder {
             &unit_test_overrides_map,
             generic_test_aggregation,
             &reverse_deps,
-            experimental_runs,
+            injected_runs,
         );
 
         // Add phase transitions (e.g. render -> analyze -> run) for each node
@@ -691,7 +691,7 @@ fn initialize_graph(
     unit_test_overrides_map: &BTreeMap<String, UnitTestOverrides>,
     generic_test_aggregation: Option<&GenericTestAggregation>,
     reverse_deps: &HashMap<String, HashSet<String>>,
-    experimental_runs: &ExperimentalRuns,
+    injected_runs: &InjectedRuns,
 ) -> (
     DiGraph<Arc<dyn Task>, ()>,
     BTreeMap<TP, BTreeMap<String, Arc<dyn Task>>>,
@@ -804,17 +804,15 @@ fn initialize_graph(
             runnable,
             showable,
         } = match nodes.injected.get(unique_id) {
-            // An experimental node has nothing to render or analyze. It runs when it is selected
-            // and its experimental is running.
-            Some(node) => TasksForNode {
-                renderable: None,
-                analyzeable: None,
-                runnable: (phases.contains(&TP::Run)
-                    && schedule.selected_nodes.contains(unique_id))
-                .then(|| experimental_runs.task(node, nodes))
-                .flatten(),
-                showable: None,
-            },
+            // The tasks of an injected node come from the run of its kind.
+            Some(node) => injected_runs.tasks_for_node(
+                node,
+                &TasksCtx {
+                    phases,
+                    nodes,
+                    selected: schedule.selected_nodes.contains(unique_id),
+                },
+            ),
             None => tasks_for_node_factory.tasks_for_node(
                 unique_id,
                 nodes,

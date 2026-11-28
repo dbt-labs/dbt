@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/ts_scales.sql
+scale 0 | time=10_49_35 | time_varchar=10_49_35.000000000
+scale 1 | time=10_49_35.800000 | time_varchar=10_49_35.800000000
+scale 2 | time=10_49_35.860000 | time_varchar=10_49_35.860000000
+scale 3 | time=10_49_35.861000 | time_varchar=10_49_35.861000000
+scale 4 | time=10_49_35.861100 | time_varchar=10_49_35.861100000
+scale 5 | time=10_49_35.861120 | time_varchar=10_49_35.861120000
+scale 6 | time=10_49_35.861123 | time_varchar=10_49_35.861123000
+scale 7 | time=10_49_35.861123 | time_varchar=10_49_35.861123400
+scale 8 | time=10_49_35.861123 | time_varchar=10_49_35.861123450
+scale 9 | time=10_49_35.861123 | time_varchar=10_49_35.861123456
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'snowflake' [duration]

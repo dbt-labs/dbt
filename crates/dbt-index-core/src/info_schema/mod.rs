@@ -45,6 +45,7 @@ pub mod bench;
 mod copy;
 pub mod epoch;
 pub mod epoch_views;
+pub mod injected;
 pub mod parse_safe;
 pub mod project;
 pub mod schema;
@@ -155,6 +156,22 @@ pub fn write_info_schema(
         info_schema_dir,
         staging_dir,
     )
+}
+
+/// [`write_info_schema`], then the tables that the build adds to the information schema
+/// ([`injected::publish`]): the ones whose flag is on are written beside the catalog's, and
+/// get a view in `views.sql`.
+///
+/// Returns the number of tables written.
+pub fn write_info_schema_with_injected(
+    metadata_dir: &Path,
+    info_schema_dir: &Path,
+    staging_dir: &Path,
+    tables: &[injected::ResolvedInjectedTable<'_>],
+) -> Result<usize, IndexError> {
+    let written = write_info_schema(metadata_dir, info_schema_dir, staging_dir)?;
+    let added = injected::publish(tables, metadata_dir, &versioned_dir(info_schema_dir))?;
+    Ok(written + added)
 }
 
 /// [`write_info_schema`] with an explicit materializer. The bench pins Arrow

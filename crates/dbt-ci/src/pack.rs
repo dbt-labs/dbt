@@ -411,7 +411,7 @@ mod tests {
         let file = File::open(&out).unwrap();
         let mut zip = ZipArchive::new(file).unwrap();
         let mut paths: Vec<String> = (0..zip.len())
-            .map(|i| zip.by_index(i).unwrap().name().to_string())
+            .map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
         paths.sort();
         assert_eq!(
@@ -494,7 +494,14 @@ mod tests {
         );
         let file = File::open(&out).unwrap();
         let zip = ZipArchive::new(file).unwrap();
-        let paths: Vec<&str> = zip.file_names().collect();
-        assert!(paths.contains(&"dbt_sa_cli-2.0.0.data/scripts/dbt-sa-cli.exe"));
+        let paths: Vec<String> = zip
+            .file_names()
+            .map(|name| name.unwrap().into_owned())
+            .collect();
+        assert!(
+            paths
+                .iter()
+                .any(|p| p == "dbt_sa_cli-2.0.0.data/scripts/dbt-sa-cli.exe")
+        );
     }
 }
