@@ -6,8 +6,9 @@ use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::strip_warehouse_keys_in_config_block;
-use crate::resolve::properties_extensions::{
-    self, ExtensionReader, Extensions, NoExtensions, ReadExtensions,
+use crate::resolve::injected_properties::{
+    self, InjectedPropertiesByKind, InjectedPropertiesReader, NoInjectedPropertiesByKind,
+    ReadInjectedProperties,
 };
 use crate::resolve::properties_index::{IndexCtx, IndexedName};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
@@ -214,17 +215,18 @@ fn build_source_unrendered_config(
     Ok(unrendered)
 }
 
-/// How a package's sources resolve. `E` names the extensions read beside a table's properties.
-pub(crate) struct Sources<E = NoExtensions>(PhantomData<E>);
+/// How a package's sources resolve. `P` names the properties that are injected into the
+/// entries of the tables of its sources.
+pub(crate) struct Sources<P = NoInjectedPropertiesByKind>(PhantomData<P>);
 
-impl<E> Default for Sources<E> {
+impl<P> Default for Sources<P> {
     fn default() -> Self {
         Sources(PhantomData)
     }
 }
 
 #[async_trait]
-impl<E: Extensions> ResolvableNode for Sources<E> {
+impl<P: InjectedPropertiesByKind> ResolvableNode for Sources<P> {
     fn properties_keys(&self) -> &'static [&'static str] {
         &["sources"]
     }
@@ -240,9 +242,9 @@ impl<E: Extensions> ResolvableNode for Sources<E> {
     }
 
     async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
-        let extensions = ExtensionReader::of::<E::SourceTable>(ctx);
+        let injected = InjectedPropertiesReader::of::<P::SourceTable>(ctx);
         // Resolve sources based on the dbt_state, database, schema, and project name
-        let (sources, disabled_sources, extensions) = resolve_sources(
+        let (sources, disabled_sources, injected) = resolve_sources(
             ctx.arg,
             ctx.package,
             ctx.root_package_name,
@@ -261,12 +263,12 @@ impl<E: Extensions> ResolvableNode for Sources<E> {
             ctx.test_name_truncations,
             ctx.seen_generic_test_paths,
             &mut ctx.node_resolver,
-            &extensions,
+            &injected,
         )
         .await?;
         ctx.nodes.sources.extend(sources);
         ctx.disabled_nodes.sources.extend(disabled_sources);
-        properties_extensions::give_back(ctx, extensions, |ctx, unique_id| {
+        injected_properties::give_back(ctx, injected, |ctx, unique_id| {
             ctx.nodes.sources.get(unique_id).cloned()
         })
     }
@@ -288,14 +290,14 @@ pub async fn resolve_sources(
     test_name_truncations: &mut HashMap<String, String>,
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     node_resolver: &mut NodeResolver,
-    extensions: &ExtensionReader,
+    injected: &InjectedPropertiesReader,
 ) -> FsResult<(
     HashMap<String, Arc<DbtSource>>,
     HashMap<String, Arc<DbtSource>>,
-    Vec<(String, ReadExtensions)>,
+    Vec<(String, ReadInjectedProperties)>,
 )> {
-    // The extensions of each table whose entry has some, by the unique id of the table's node.
-    let mut read_extensions: Vec<(String, ReadExtensions)> = Vec::new();
+    // The injected properties of each table whose entry has some, by the unique id of the table's node.
+    let mut read_injected: Vec<(String, ReadInjectedProperties)> = Vec::new();
     let io_args = &arg.io;
     let mut sources: HashMap<String, Arc<DbtSource>> = HashMap::new();
     let mut disabled_sources: HashMap<String, Arc<DbtSource>> = HashMap::new();
@@ -446,7 +448,7 @@ pub async fn resolve_sources(
         strip_one_trailing_newline_at_keys(&mut table_value, &["name", "identifier"]);
 
         // Read before the entry is typed as a table's.
-        let read = extensions.read(
+        let read = injected.read(
             &mut table_value,
             jinja_env,
             base_ctx,
@@ -475,7 +477,7 @@ pub async fn resolve_sources(
             &package_name, source_name, &normalized_table_name
         );
         if let Some(read) = read {
-            read_extensions.push((unique_id.clone(), read));
+            read_injected.push((unique_id.clone(), read));
         }
 
         let table_config = table.config.clone().unwrap_or_default();
@@ -759,7 +761,7 @@ pub async fn resolve_sources(
             ModelStatus::ParsingFailed => {}
         }
     }
-    Ok((sources, disabled_sources, read_extensions))
+    Ok((sources, disabled_sources, read_injected))
 }
 
 /// Merge source-level and table-level schema.yml configs into a single `SourceConfig`.

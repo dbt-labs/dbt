@@ -90,6 +90,7 @@ members = [
   "crates/dbt-tui-progress",
   "crates/dbt-metricflow",
   "crates/dbt-sql-keywords",
+  "crates/dbt-sqlparser-compat",
 
   "crates/dbt-sql/dbt-lexer-bigquery",
   "crates/dbt-sql/dbt-lexer-databricks",
@@ -334,6 +335,7 @@ dbt-lexer-trino = { path = "crates/dbt-sql/dbt-lexer-trino" }
 dbt-sql-base = { path = "crates/dbt-sql-base" }
 dbt-sql-keywords = { path = "crates/dbt-sql-keywords" }
 dbt-sql-utils = { path = "crates/dbt-sql/dbt-sql-utils" }
+dbt-sqlparser-compat = { path = "crates/dbt-sqlparser-compat" }
 
 # jinja dependencies
 minijinja-typecheck-builtins = { path = "crates/minijinja-typecheck-builtins" }
@@ -565,7 +567,7 @@ tempfile = "3.2.0"
 walkdir = "2.4.0"
 windows-sys = "0.61"
 xshell = "0.2.7"
-zip = "8.3.0"
+zip = "9.8.2"
 zstd = "0.13"
 
 # async + threading

@@ -13,8 +13,9 @@ use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
-use crate::resolve::properties_extensions::{
-    self, ExtensionReader, Extensions, NoExtensions, ReadExtensions,
+use crate::resolve::injected_properties::{
+    self, InjectedPropertiesByKind, InjectedPropertiesReader, NoInjectedPropertiesByKind,
+    ReadInjectedProperties,
 };
 use crate::resolve::properties_index::{IndexCtx, IndexedName};
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
@@ -167,17 +168,18 @@ fn parse_source_from_constraint(to: &str) -> Option<(String, String)> {
     Some((src.to_string(), tbl.to_string()))
 }
 
-/// How a package's models resolve. `E` names the extensions read beside a model's properties.
-pub(crate) struct Models<E = NoExtensions>(PhantomData<E>);
+/// How a package's models resolve. `P` names the properties that are injected into the
+/// entries of models.
+pub(crate) struct Models<P = NoInjectedPropertiesByKind>(PhantomData<P>);
 
-impl<E> Default for Models<E> {
+impl<P> Default for Models<P> {
     fn default() -> Self {
         Models(PhantomData)
     }
 }
 
 #[async_trait]
-impl<E: Extensions> ResolvableNode for Models<E> {
+impl<P: InjectedPropertiesByKind> ResolvableNode for Models<P> {
     fn properties_keys(&self) -> &'static [&'static str] {
         &["models"]
     }
@@ -193,9 +195,9 @@ impl<E: Extensions> ResolvableNode for Models<E> {
     }
 
     async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
-        let extensions = ExtensionReader::of::<E::Model>(ctx);
+        let injected = InjectedPropertiesReader::of::<P::Model>(ctx);
         // Resolve SQLs and get nodes except refs and sources
-        let (models, disabled_models, extensions) = resolve_models(
+        let (models, disabled_models, injected) = resolve_models(
             ctx.arg,
             ctx.package,
             ctx.package_quoting,
@@ -219,12 +221,12 @@ impl<E: Extensions> ResolvableNode for Models<E> {
             &mut ctx.node_resolver,
             ctx.token,
             ctx.jinja_type_checking_event_listener_factory.clone(),
-            &extensions,
+            &injected,
         )
         .await?;
         ctx.nodes.models.extend(models);
         ctx.disabled_nodes.models.extend(disabled_models);
-        properties_extensions::give_back(ctx, extensions, |ctx, unique_id| {
+        injected_properties::give_back(ctx, injected, |ctx, unique_id| {
             ctx.nodes.models.get(unique_id).cloned()
         })
     }
@@ -262,11 +264,11 @@ pub async fn resolve_models(
     node_resolver: &mut NodeResolver,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    extensions: &ExtensionReader,
+    injected: &InjectedPropertiesReader,
 ) -> FsResult<(
     HashMap<String, Arc<DbtModel>>,
     HashMap<String, Arc<DbtModel>>,
-    Vec<(String, ReadExtensions)>,
+    Vec<(String, ReadInjectedProperties)>,
 )> {
     let mut models: HashMap<String, Arc<DbtModel>> = HashMap::new();
     let mut models_with_execute: HashMap<String, DbtModel> = HashMap::new();
@@ -379,17 +381,17 @@ pub async fn resolve_models(
         dependency_package_name,
     );
 
-    // The extensions of each entry that has some, by the name the entry is found under, which is
+    // The injected properties of each entry that has some, by the name the entry is found under, which is
     // the name of its model's file. They are read before the entry is typed as a model's.
-    let mut extensions_by_name: Vec<(String, ReadExtensions)> = Vec::new();
+    let mut injected_by_name: Vec<(String, ReadInjectedProperties)> = Vec::new();
     for (name, mpe) in models_properties_sans_semantics.iter_mut() {
-        if let Some(read) = extensions.read(
+        if let Some(read) = injected.read(
             &mut mpe.schema_value,
             &env,
             base_ctx,
             dependency_package_name,
         )? {
-            extensions_by_name.push((name.clone(), read));
+            injected_by_name.push((name.clone(), read));
         }
     }
 
@@ -548,7 +550,7 @@ pub async fn resolve_models(
             .into_iter()
             .map(|(v, _)| (v.__common_attr__.unique_id.to_string(), Arc::new(v))),
     );
-    // Extensions are their model's: the enabled model whose file has the entry's name.
+    // Injected properties are their model's: the enabled model whose file has the entry's name.
     let unique_ids: HashMap<&str, &String> = models
         .iter()
         .filter_map(|(unique_id, model)| {
@@ -558,14 +560,14 @@ pub async fn resolve_models(
             ))
         })
         .collect();
-    let extensions = extensions_by_name
+    let injected = injected_by_name
         .into_iter()
         .filter_map(|(name, read)| {
             let unique_id = unique_ids.get(name.as_str())?;
             Some(((*unique_id).clone(), read))
         })
         .collect();
-    Ok((models, disabled_models, extensions))
+    Ok((models, disabled_models, injected))
 }
 
 /// Builds a `DbtModel` node for each rendered model file, routing it into `models`,

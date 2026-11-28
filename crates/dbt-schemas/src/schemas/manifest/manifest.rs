@@ -137,7 +137,7 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
         metadata: ManifestMetadata {
             __base__: BaseMetadata {
                 dbt_schema_version: get_dbt_schema_version("manifest", 12),
-                dbt_version: env!("CARGO_PKG_VERSION").to_string(),
+                dbt_version: dbt_common::version::dbt_version().to_string(),
                 generated_at: Utc::now(),
                 invocation_id: Some(invocation_id.to_string()),
                 invocation_started_at: Some(resolver_state.run_started_at.with_timezone(&Utc)),
@@ -2177,8 +2177,8 @@ pub fn manifest_model_to_dbt_model(
             group: model.config.group.clone(),
             contract: model.config.contract.clone(),
             incremental_strategy: model.config.incremental_strategy.clone(),
-            freshness: model.config.freshness.clone(),
-            state: model.config.state.clone(),
+            freshness: model.config.__rare_freshness__.freshness.clone(),
+            state: model.config.__rare_freshness__.state.clone(),
             introspection: IntrospectionKind::None,
             version: model.version,
             latest_version: model.latest_version,
@@ -2189,7 +2189,7 @@ pub fn manifest_model_to_dbt_model(
             event_time: model.config.event_time.clone(),
             catalog_name: model.config.catalog_name.clone(),
             table_format: model.config.table_format.clone(),
-            sync: model.config.sync.clone(),
+            sync: model.config.__rare_python__.sync.clone(),
             compiled_code: None,
         },
         __adapter_attr__: AdapterAttr::from_lazy_config_and_dialect(

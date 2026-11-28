@@ -1,5 +1,5 @@
 use crate::Tuple;
-use crate::table::TableRepr;
+use crate::table_repr::TableRepr;
 use crate::{MappedSequence, TupleRepr};
 use arrow::compute::SortOptions;
 use arrow_schema::ArrowError;

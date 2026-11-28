@@ -1,24 +1,25 @@
-//! Fields that a build of dbt reads beside a node's own properties.
+//! Injected properties: properties that a feature injects into the entries of dbt's own kinds
+//! of node.
 //!
-//! A properties entry is a kind's own fields. A build can read more fields in the same entry: it
-//! names a type for them, an [`Extension`], for each kind whose entries have them
-//! ([`Extensions`]). A kind can have several, each with its own fields and its own flag
-//! ([`ExtensionSet`]).
+//! A properties entry is its kind's own properties. A build can inject more properties into
+//! the same entry: it names a type for them, an [`InjectedProperties`], for each kind whose
+//! entries can have them ([`InjectedPropertiesByKind`]). A kind can have several types, each
+//! with its own keys and its own flag ([`InjectedPropertiesSet`]).
 //!
-//! The kind that owns the entry reads the extensions before it reads its own properties
-//! ([`ExtensionReader`]): it types and renders an extension's fields as it does its own, and then
-//! never sees them, so they are not its unused keys. Once it has built the node, it gives each
-//! extension back, with the node ([`Extension::resolved`]).
+//! The kind that owns the entry reads the injected properties before it reads its own
+//! ([`InjectedPropertiesReader`]): it types and renders them as it does its own, and then never
+//! sees their keys, so they are not its unused keys. Once it has built the node, it gives each
+//! type back, with the node ([`InjectedProperties::resolved`]).
 //!
 //! ```yaml
 //! models:
 //!   - name: orders
 //!     description: Three orders.   # the model's
-//!     widget_size: 3               # an extension's
+//!     widget_size: 3               # injected
 //! ```
 //!
-//! An extension reads fields of the entry, and, if it says so, fields of the entry's `columns`.
-//! A field with the same name anywhere else in the entry is not the extension's.
+//! A type of injected properties reads keys of the entry, and, if it says so, keys of the
+//! entry's `columns`. A key of the same name anywhere else in the entry is not its own.
 
 use dbt_common::FsResult;
 use dbt_common::io_args::project_flag_lookup;
@@ -36,27 +37,27 @@ use std::sync::Arc;
 
 use crate::resolve::resolvable_node::ResolveCtx;
 
-/// Fields that are read beside the properties of one kind of node.
-pub trait Extension: DeserializeOwned + Debug + Send + Sync + 'static {
-    /// The fields of an entry that the extension reads: the keys of its type. A key of an entry
-    /// that is not one of these is the kind's, or another extension's.
-    const FIELDS: &'static [&'static str];
+/// Properties that a feature injects into the entries of one kind of node.
+pub trait InjectedProperties: DeserializeOwned + Debug + Send + Sync + 'static {
+    /// The keys of an entry that are these properties: the keys of the type. A key of an entry
+    /// that is not one of these is the kind's, or another type's.
+    const KEYS: &'static [&'static str];
 
-    /// The fields of each of an entry's `columns` that the extension reads. The extension gets
-    /// them under `columns`: one mapping for each column that has one of them, with the column's
+    /// The keys of each of an entry's `columns` that are these properties. The type gets them
+    /// under `columns`: one mapping for each column that has one of them, with the column's
     /// `name`.
-    const COLUMN_FIELDS: &'static [&'static str] = &[];
+    const COLUMN_KEYS: &'static [&'static str] = &[];
 
-    /// The feature flag that turns the extension on. One without a flag is always on.
+    /// The feature flag that turns the properties on. A type without a flag is always on.
     ///
-    /// While it is off, its fields are not read: they are keys that nothing reads.
+    /// While it is off, its keys are not read: they are keys that nothing reads.
     fn flag() -> Option<&'static FlagDef> {
         None
     }
 
     /// Called by the kind that owns the entry, once it has added `node`, which it built from the
     /// same entry, to `ctx`'s nodes. It is called for an entry that has at least one of
-    /// [`Self::FIELDS`], or a column with one of [`Self::COLUMN_FIELDS`], and not for a node that
+    /// [`Self::KEYS`], or a column with one of [`Self::COLUMN_KEYS`], and not for a node that
     /// is disabled.
     ///
     /// The properties file is `node`'s `patch_path`.
@@ -69,38 +70,38 @@ pub trait Extension: DeserializeOwned + Debug + Send + Sync + 'static {
     }
 }
 
-/// The extension that reads no field.
+/// The injected properties that have no key.
 #[derive(Debug, Default, Deserialize)]
-pub struct NoExtension {}
+pub struct NoInjectedProperties {}
 
-impl Extension for NoExtension {
-    const FIELDS: &'static [&'static str] = &[];
+impl InjectedProperties for NoInjectedProperties {
+    const KEYS: &'static [&'static str] = &[];
 }
 
-/// The extensions that are read beside the properties of one kind of node: one [`Extension`], or
-/// a tuple of them. Each has its own fields, its own flag and its own
-/// [`resolved`](Extension::resolved).
-pub trait ExtensionSet: Send + Sync + 'static {
-    /// Adds the extensions of the set to `members`.
+/// The properties that are injected into the entries of one kind of node: one
+/// [`InjectedProperties`], or a tuple of them. Each has its own keys, its own flag and its own
+/// [`resolved`](InjectedProperties::resolved).
+pub trait InjectedPropertiesSet: Send + Sync + 'static {
+    /// Adds the types of the set to `members`.
     #[doc(hidden)]
     fn members(members: &mut Members);
 }
 
-impl<X: Extension> ExtensionSet for X {
+impl<X: InjectedProperties> InjectedPropertiesSet for X {
     fn members(members: &mut Members) {
         members.0.push(Member {
             name: std::any::type_name::<X>(),
-            fields: X::FIELDS,
-            column_fields: X::COLUMN_FIELDS,
+            keys: X::KEYS,
+            column_keys: X::COLUMN_KEYS,
             flag: X::flag(),
             read: read::<X>,
         });
     }
 }
 
-macro_rules! extension_set_for_tuple {
+macro_rules! set_for_tuple {
     ($($set:ident),+) => {
-        impl<$($set: ExtensionSet),+> ExtensionSet for ($($set,)+) {
+        impl<$($set: InjectedPropertiesSet),+> InjectedPropertiesSet for ($($set,)+) {
             fn members(members: &mut Members) {
                 $($set::members(members);)+
             }
@@ -108,89 +109,90 @@ macro_rules! extension_set_for_tuple {
     };
 }
 
-extension_set_for_tuple!(A, B);
-extension_set_for_tuple!(A, B, C);
-extension_set_for_tuple!(A, B, C, D);
+set_for_tuple!(A, B);
+set_for_tuple!(A, B, C);
+set_for_tuple!(A, B, C, D);
 
-/// The extensions of an [`ExtensionSet`].
+/// The types of an [`InjectedPropertiesSet`].
 #[derive(Default)]
 pub struct Members(Vec<Member>);
 
-/// One extension of a set, without its type.
+/// One [`InjectedProperties`] of a set, without its type.
 #[derive(Clone, Copy)]
 struct Member {
-    /// The name of the extension's type, for the error of [`check`].
+    /// The name of the type, for the error of [`check`].
     name: &'static str,
-    fields: &'static [&'static str],
-    column_fields: &'static [&'static str],
+    keys: &'static [&'static str],
+    column_keys: &'static [&'static str],
     flag: Option<&'static FlagDef>,
-    /// Types the extension from its fields: [`read`].
+    /// Types the properties from their keys: [`read`].
     read: ReadFn,
 }
 
-/// Types an extension from its fields, the Jinja environment and context of the entry's
+/// Types injected properties from their keys, the Jinja environment and context of the entry's
 /// properties, and the entry's package, unless it is the root package: [`read`].
 type ReadFn = fn(
     Value,
     &JinjaEnv,
     &BTreeMap<String, MinijinjaValue>,
     Option<&str>,
-) -> FsResult<Box<dyn ReadExtension>>;
+) -> FsResult<Box<dyn ReadMember>>;
 
-/// The [`ExtensionSet`] of each kind of node whose entries can have one.
-pub trait Extensions: Send + Sync + 'static {
-    /// Read in the entries under `models:`. A model with versions has an entry for each version.
-    type Model: ExtensionSet;
-    /// Read in the entries under `seeds:`.
-    type Seed: ExtensionSet;
-    /// Read in the entries under `snapshots:`.
-    type Snapshot: ExtensionSet;
-    /// Read in the tables of the entries under `sources:`.
-    type SourceTable: ExtensionSet;
+/// The [`InjectedPropertiesSet`] of each kind of node whose entries can have one.
+pub trait InjectedPropertiesByKind: Send + Sync + 'static {
+    /// Injected into the entries under `models:`. A model with versions has an entry for each
+    /// version.
+    type Model: InjectedPropertiesSet;
+    /// Injected into the entries under `seeds:`.
+    type Seed: InjectedPropertiesSet;
+    /// Injected into the entries under `snapshots:`.
+    type Snapshot: InjectedPropertiesSet;
+    /// Injected into the tables of the entries under `sources:`.
+    type SourceTable: InjectedPropertiesSet;
 }
 
-/// No extensions: every entry is only its kind's own fields.
+/// No injected properties: every entry is only its kind's own properties.
 #[derive(Debug, Default)]
-pub struct NoExtensions;
+pub struct NoInjectedPropertiesByKind;
 
-impl Extensions for NoExtensions {
-    type Model = NoExtension;
-    type Seed = NoExtension;
-    type Snapshot = NoExtension;
-    type SourceTable = NoExtension;
+impl InjectedPropertiesByKind for NoInjectedPropertiesByKind {
+    type Model = NoInjectedProperties;
+    type Seed = NoInjectedProperties;
+    type Snapshot = NoInjectedProperties;
+    type SourceTable = NoInjectedProperties;
 }
 
-/// Checks the extension sets of `E`.
+/// Checks the sets of `P`.
 ///
 /// # Panics
 ///
-/// If two extensions of one kind read the same field.
-pub(crate) fn check<E: Extensions>() {
-    check_set::<E::Model>("models");
-    check_set::<E::Seed>("seeds");
-    check_set::<E::Snapshot>("snapshots");
-    check_set::<E::SourceTable>("sources");
+/// If two types of injected properties of one kind read the same key.
+pub(crate) fn check<P: InjectedPropertiesByKind>() {
+    check_set::<P::Model>("models");
+    check_set::<P::Seed>("seeds");
+    check_set::<P::Snapshot>("snapshots");
+    check_set::<P::SourceTable>("sources");
 }
 
-fn check_set<S: ExtensionSet>(kind: &str) {
+fn check_set<S: InjectedPropertiesSet>(kind: &str) {
     let mut members = Members::default();
     S::members(&mut members);
     let mut readers: BTreeMap<&str, &str> = BTreeMap::new();
     let mut column_readers: BTreeMap<&str, &str> = BTreeMap::new();
     for member in &members.0 {
-        for field in member.fields {
-            if let Some(other) = readers.insert(field, member.name) {
+        for key in member.keys {
+            if let Some(other) = readers.insert(key, member.name) {
                 panic!(
-                    "`{field}` in the entries of `{kind}` is read by two extensions: `{other}` \
+                    "`{key}` in the entries of `{kind}` is injected by two types: `{other}` \
                      and `{}`",
                     member.name
                 );
             }
         }
-        for field in member.column_fields {
-            if let Some(other) = column_readers.insert(field, member.name) {
+        for key in member.column_keys {
+            if let Some(other) = column_readers.insert(key, member.name) {
                 panic!(
-                    "`{field}` in the columns of `{kind}` is read by two extensions: `{other}` \
+                    "`{key}` in the columns of `{kind}` is injected by two types: `{other}` \
                      and `{}`",
                     member.name
                 );
@@ -199,9 +201,10 @@ fn check_set<S: ExtensionSet>(kind: &str) {
     }
 }
 
-/// An extension that was read in an entry, to give back with the entry's node.
-trait ReadExtension: Send {
-    /// [`Extension::resolved`].
+/// Injected properties of one type that were read in an entry, to give back with the entry's
+/// node.
+trait ReadMember: Send {
+    /// [`InjectedProperties::resolved`].
     fn resolved(
         self: Box<Self>,
         node: &dyn InternalDbtNodeAttributes,
@@ -209,96 +212,96 @@ trait ReadExtension: Send {
     ) -> FsResult<()>;
 }
 
-impl<X: Extension> ReadExtension for X {
+impl<X: InjectedProperties> ReadMember for X {
     fn resolved(
         self: Box<Self>,
         node: &dyn InternalDbtNodeAttributes,
         ctx: &mut ResolveCtx<'_>,
     ) -> FsResult<()> {
-        Extension::resolved(*self, node, ctx)
+        InjectedProperties::resolved(*self, node, ctx)
     }
 }
 
-/// The extensions that were read in one entry. There is at least one.
-pub struct ReadExtensions(Vec<Box<dyn ReadExtension>>);
+/// The injected properties that were read in one entry, by type. There is at least one.
+pub struct ReadInjectedProperties(Vec<Box<dyn ReadMember>>);
 
-/// Reads the extensions of one kind of node in its entries: the ones of the kind's set that are
-/// on.
-pub struct ExtensionReader {
+/// Reads the injected properties of one kind of node in its entries: the types of the kind's
+/// set that are on.
+pub struct InjectedPropertiesReader {
     members: Vec<Member>,
 }
 
-impl ExtensionReader {
-    /// The extensions of the set `S` that are on, reading the root project's `flags:`.
-    pub(crate) fn of<S: ExtensionSet>(ctx: &ResolveCtx<'_>) -> Self {
+impl InjectedPropertiesReader {
+    /// The types of the set `S` that are on, reading the root project's `flags:`.
+    pub(crate) fn of<S: InjectedPropertiesSet>(ctx: &ResolveCtx<'_>) -> Self {
         let project_flags = project_flag_lookup(ctx.dbt_state.root_project().flags.as_ref());
         Self::new::<S>(|flag| flag.resolve_with_project(&project_flags).value)
     }
 
-    /// The extensions of the set `S` whose flag `is_on`, or that have none.
-    fn new<S: ExtensionSet>(is_on: impl Fn(&'static FlagDef) -> bool) -> Self {
+    /// The types of the set `S` whose flag `is_on`, or that have none.
+    fn new<S: InjectedPropertiesSet>(is_on: impl Fn(&'static FlagDef) -> bool) -> Self {
         let mut members = Members::default();
         S::members(&mut members);
         members.0.retain(|member| {
-            !(member.fields.is_empty() && member.column_fields.is_empty())
+            !(member.keys.is_empty() && member.column_keys.is_empty())
                 && member.flag.is_none_or(&is_on)
         });
-        ExtensionReader { members: members.0 }
+        InjectedPropertiesReader { members: members.0 }
     }
 
-    /// Reads the extensions in `entry`: takes the fields of each out of the entry, and types
-    /// them, with Jinja rendered as for the entry's own properties. None if the entry has none
-    /// of their fields.
+    /// Reads the injected properties in `entry`: takes the keys of each type out of the entry,
+    /// and types them, with Jinja rendered as for the entry's own properties. None if the entry
+    /// has none of their keys.
     ///
-    /// The kind then types what is left as its own properties, exactly as it does without an
-    /// extension.
+    /// The kind then types what is left as its own properties, exactly as it does when nothing
+    /// is injected.
     pub(crate) fn read(
         &self,
         entry: &mut Value,
         jinja_env: &JinjaEnv,
         base_ctx: &BTreeMap<String, MinijinjaValue>,
         dependency_package_name: Option<&str>,
-    ) -> FsResult<Option<ReadExtensions>> {
+    ) -> FsResult<Option<ReadInjectedProperties>> {
         let mut read = Vec::new();
         for member in &self.members {
-            if let Some(fields) = take_fields(entry, member.fields, member.column_fields) {
+            if let Some(taken) = take_injected(entry, member.keys, member.column_keys) {
                 read.push((member.read)(
-                    fields,
+                    taken,
                     jinja_env,
                     base_ctx,
                     dependency_package_name,
                 )?);
             }
         }
-        Ok((!read.is_empty()).then_some(ReadExtensions(read)))
+        Ok((!read.is_empty()).then_some(ReadInjectedProperties(read)))
     }
 }
 
-/// The extension `X`, from `fields`, the fields of its own that an entry has: typed, with Jinja
-/// rendered as for the entry's own properties.
+/// The injected properties `X`, from `taken`, the keys of its own that an entry has: typed,
+/// with Jinja rendered as for the entry's own properties.
 ///
-/// A kind's properties and an extension are not typed in one pass, as one struct that flattens
-/// both: `dbt_yaml` then gives a key that the kind does not read to the extension wherever it is
-/// written, so `policy` on a column would be read as the entry's.
-fn read<X: Extension>(
-    fields: Value,
+/// A kind's properties and injected properties are not typed in one pass, as one struct that
+/// flattens both: `dbt_yaml` then gives a key that the kind does not read to the injected type
+/// wherever it is written, so `policy` on a column would be read as the entry's.
+fn read<X: InjectedProperties>(
+    taken: Value,
     jinja_env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
     dependency_package_name: Option<&str>,
-) -> FsResult<Box<dyn ReadExtension>> {
-    let extension: X = typed(fields, jinja_env, base_ctx, dependency_package_name)?;
-    Ok(Box::new(extension))
+) -> FsResult<Box<dyn ReadMember>> {
+    let properties: X = typed(taken, jinja_env, base_ctx, dependency_package_name)?;
+    Ok(Box::new(properties))
 }
 
-/// `fields` as the extension `X`.
-fn typed<X: Extension>(
-    fields: Value,
+/// `taken` as the injected properties `X`.
+fn typed<X: InjectedProperties>(
+    taken: Value,
     jinja_env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
     dependency_package_name: Option<&str>,
 ) -> FsResult<X> {
     into_typed_with_jinja(
-        fields,
+        taken,
         false,
         jinja_env,
         base_ctx,
@@ -308,15 +311,15 @@ fn typed<X: Extension>(
     )
 }
 
-/// Takes `fields` out of the mapping `entry`, with their keys, as a mapping that is written
+/// Takes `keys` out of the mapping `entry`, with their values, as a mapping that is written
 /// where `entry` is. The other keys keep their order. None if `entry` has none of them.
 ///
-/// `column_fields` are taken out of each mapping under the entry's `columns`, if they are a
+/// `column_keys` are taken out of each mapping under the entry's `columns`, if they are a
 /// list. The columns that have one are given under `columns`, each with its `name`.
-fn take_fields(entry: &mut Value, fields: &[&str], column_fields: &[&str]) -> Option<Value> {
+fn take_injected(entry: &mut Value, keys: &[&str], column_keys: &[&str]) -> Option<Value> {
     let span = entry.span().clone();
     let entry = entry.as_mapping_mut()?;
-    let mut taken = take_keys(entry, fields);
+    let mut taken = take_keys(entry, keys);
     let columns: Vec<Value> = entry
         .get_mut(COLUMNS)
         .and_then(Value::as_sequence_mut)
@@ -325,15 +328,15 @@ fn take_fields(entry: &mut Value, fields: &[&str], column_fields: &[&str]) -> Op
         .filter_map(|column| {
             let span = column.span().clone();
             let column = column.as_mapping_mut()?;
-            let fields = take_keys(column, column_fields);
-            if fields.is_empty() {
+            let of_column = take_keys(column, column_keys);
+            if of_column.is_empty() {
                 return None;
             }
             let mut named = Mapping::new();
             if let Some(name) = column.get(NAME) {
                 named.insert(Value::string(NAME.to_string()), name.clone());
             }
-            named.extend(fields);
+            named.extend(of_column);
             Some(Value::mapping(named).with_span(span))
         })
         .collect();
@@ -357,17 +360,17 @@ fn take_keys(mapping: &mut Mapping, keys: &[&str]) -> Mapping {
     taken
 }
 
-/// Gives the extensions of each entry back, with the entry's node: see [`Extension::resolved`].
-/// `node` finds an enabled node of `ctx` by its unique id.
+/// Gives the injected properties of each entry back, with the entry's node: see
+/// [`InjectedProperties::resolved`]. `node` finds an enabled node of `ctx` by its unique id.
 pub(crate) fn give_back<N: InternalDbtNodeAttributes>(
     ctx: &mut ResolveCtx<'_>,
-    extensions: Vec<(String, ReadExtensions)>,
+    injected: Vec<(String, ReadInjectedProperties)>,
     node: impl Fn(&ResolveCtx<'_>, &str) -> Option<Arc<N>>,
 ) -> FsResult<()> {
-    for (unique_id, extensions) in extensions {
+    for (unique_id, injected) in injected {
         if let Some(node) = node(ctx, &unique_id) {
-            for extension in extensions.0 {
-                extension.resolved(node.as_ref(), ctx)?;
+            for properties in injected.0 {
+                properties.resolved(node.as_ref(), ctx)?;
             }
         }
     }
@@ -380,7 +383,7 @@ mod tests {
     use dbt_flags::{Remote, Stage};
     use dbt_yaml::{Spanned, Verbatim};
 
-    /// An extension for the tests: a tag, a label, and a note that is not rendered.
+    /// Injected properties for the tests: a tag, a label, and a note that is not rendered.
     #[derive(Debug, Deserialize)]
     struct Tagged {
         tag: Option<Spanned<String>>,
@@ -388,13 +391,13 @@ mod tests {
         note: Verbatim<Option<String>>,
     }
 
-    impl Extension for Tagged {
-        const FIELDS: &'static [&'static str] = &["tag", "label", "note"];
+    impl InjectedProperties for Tagged {
+        const KEYS: &'static [&'static str] = &["tag", "label", "note"];
     }
 
     static SIZES: FlagDef = FlagDef {
         name: "test_sizes",
-        description: "Sizes, for the tests of extensions.",
+        description: "Sizes, for the tests of injected properties.",
         stage: Stage::Beta,
         default: false,
         remote: Remote::Never,
@@ -405,55 +408,59 @@ mod tests {
         docs_url: None,
     };
 
-    /// Another extension, behind a flag.
+    /// Another type of injected properties, behind a flag.
     #[derive(Debug, Deserialize)]
     #[allow(dead_code)]
     struct Sized {
         size: Option<u64>,
     }
 
-    impl Extension for Sized {
-        const FIELDS: &'static [&'static str] = &["size"];
+    impl InjectedProperties for Sized {
+        const KEYS: &'static [&'static str] = &["size"];
 
         fn flag() -> Option<&'static FlagDef> {
             Some(&SIZES)
         }
     }
 
-    /// An extension that reads a field that [`Tagged`] reads.
+    /// Injected properties with a key that [`Tagged`] has.
     #[derive(Debug, Deserialize)]
     #[allow(dead_code)]
     struct Labelled {
         label: Option<String>,
     }
 
-    impl Extension for Labelled {
-        const FIELDS: &'static [&'static str] = &["label"];
+    impl InjectedProperties for Labelled {
+        const KEYS: &'static [&'static str] = &["label"];
     }
 
     fn yaml(input: &str) -> Value {
         dbt_yaml::from_str(input).expect("valid YAML")
     }
 
-    /// `fields` as the extension `X`.
-    fn typed_as<X: Extension>(fields: &str) -> FsResult<X> {
+    /// `properties` as the injected properties `X`.
+    fn typed_as<X: InjectedProperties>(properties: &str) -> FsResult<X> {
         let jinja_env = JinjaEnv::new(minijinja::Environment::new());
-        typed(yaml(fields), &jinja_env, &BTreeMap::new(), None)
+        typed(yaml(properties), &jinja_env, &BTreeMap::new(), None)
     }
 
-    /// How many extensions of the set `S` are read in `entry`, with the flags that `is_on`.
-    fn read_in<S: ExtensionSet>(
+    /// How many types of the set `S` are read in `entry`, with the flags that `is_on`.
+    fn read_in<S: InjectedPropertiesSet>(
         entry: &mut Value,
         is_on: impl Fn(&'static FlagDef) -> bool,
     ) -> FsResult<usize> {
         let jinja_env = JinjaEnv::new(minijinja::Environment::new());
-        let read =
-            ExtensionReader::new::<S>(is_on).read(entry, &jinja_env, &BTreeMap::new(), None)?;
+        let read = InjectedPropertiesReader::new::<S>(is_on).read(
+            entry,
+            &jinja_env,
+            &BTreeMap::new(),
+            None,
+        )?;
         Ok(read.map_or(0, |read| read.0.len()))
     }
 
     #[test]
-    fn an_extension_is_typed_as_the_entrys_own_properties_are() -> FsResult<()> {
+    fn injected_properties_are_typed_as_the_entrys_own_are() -> FsResult<()> {
         let tagged: Tagged = typed_as(
             "tag: gold
 label: \"{{ 'go' ~ 'ld' }}\"
@@ -463,8 +470,8 @@ note: \"{{ as written }}\"
         // Rendered. `note` is `Verbatim`: it is not.
         assert_eq!(tagged.label.as_deref(), Some("gold"));
         assert_eq!(tagged.note.as_deref(), Some("{{ as written }}"));
-        // A field keeps where it is written.
-        let tag = tagged.tag.expect("the fields have a tag");
+        // A property keeps where it is written.
+        let tag = tagged.tag.expect("the properties have a tag");
         assert_eq!(tag.as_str(), "gold");
         assert_eq!(tag.span().start.line, 1);
 
@@ -474,7 +481,7 @@ note: \"{{ as written }}\"
     }
 
     #[test]
-    fn an_extension_is_read_out_of_an_entry() -> FsResult<()> {
+    fn injected_properties_are_read_out_of_an_entry() -> FsResult<()> {
         let mut entry = yaml(
             "name: orders
 tag: gold
@@ -504,14 +511,14 @@ columns:
     fn what_is_read_keeps_where_the_entry_is_written() {
         let mut entry = yaml("models:\n  - name: orders\n    tag: gold\n");
         let entry = &mut entry["models"][0];
-        let taken = take_fields(entry, Tagged::FIELDS, &[]).expect("the entry has a tag");
+        let taken = take_injected(entry, Tagged::KEYS, &[]).expect("the entry has a tag");
         // The entry starts on the second line, and its tag is on the third.
         assert_eq!(taken.span().start.line, 2);
         assert_eq!(taken["tag"].span().start.line, 3);
     }
 
     #[test]
-    fn an_extension_reads_fields_of_the_entry_only() -> FsResult<()> {
+    fn injected_properties_are_keys_of_the_entry_only() -> FsResult<()> {
         // A column's `tag` and a config's `note` are theirs.
         let input = "name: orders
 columns:
@@ -526,27 +533,27 @@ config:
     }
 
     #[test]
-    fn an_entry_without_the_fields_has_no_extension() -> FsResult<()> {
+    fn an_entry_without_the_keys_has_no_injected_properties() -> FsResult<()> {
         let mut entry = yaml("name: orders\ndescription: Three orders.\n");
         assert_eq!(read_in::<Tagged>(&mut entry, |_| true)?, 0);
         // Nor does an entry that is not a mapping, which its kind reports.
         assert_eq!(read_in::<Tagged>(&mut yaml("orders"), |_| true)?, 0);
-        // `NoExtension` reads nothing.
+        // `NoInjectedProperties` reads nothing.
         let mut entry = yaml("name: orders\ntag: gold\n");
-        assert_eq!(read_in::<NoExtension>(&mut entry, |_| true)?, 0);
+        assert_eq!(read_in::<NoInjectedProperties>(&mut entry, |_| true)?, 0);
         assert_eq!(entry, yaml("name: orders\ntag: gold\n"));
         Ok(())
     }
 
     #[test]
-    fn each_extension_of_a_set_reads_its_own_fields() -> FsResult<()> {
+    fn each_type_of_a_set_reads_its_own_keys() -> FsResult<()> {
         let input = "name: orders\ntag: gold\nsize: 3\n";
 
         let mut entry = yaml(input);
         assert_eq!(read_in::<(Tagged, Sized)>(&mut entry, |_| true)?, 2);
         assert_eq!(entry, yaml("name: orders\n"));
 
-        // An entry with the fields of one has that one.
+        // An entry with the keys of one has that one.
         let mut entry = yaml("name: orders\nsize: 3\n");
         assert_eq!(read_in::<(Tagged, Sized)>(&mut entry, |_| true)?, 1);
         assert_eq!(entry, yaml("name: orders\n"));
@@ -554,14 +561,14 @@ config:
         // A set can hold sets.
         let mut entry = yaml(input);
         assert_eq!(
-            read_in::<(NoExtension, (Tagged, Sized))>(&mut entry, |_| true)?,
+            read_in::<(NoInjectedProperties, (Tagged, Sized))>(&mut entry, |_| true)?,
             2
         );
         Ok(())
     }
 
     #[test]
-    fn an_extension_that_is_off_leaves_its_fields_in_the_entry() -> FsResult<()> {
+    fn injected_properties_that_are_off_leave_their_keys_in_the_entry() -> FsResult<()> {
         let mut entry = yaml("name: orders\ntag: gold\nsize: [not, a, size]\n");
         // `Sized` is behind `test_sizes`. `Tagged` has no flag.
         let read = read_in::<(Tagged, Sized)>(&mut entry, |flag| flag.name != "test_sizes")?;
@@ -571,7 +578,7 @@ config:
         Ok(())
     }
 
-    /// An extension that reads a field of columns, and gets them under `columns`.
+    /// Injected properties with a key of columns, which they get under `columns`.
     #[derive(Debug, Deserialize)]
     #[allow(dead_code)]
     struct Units {
@@ -585,13 +592,13 @@ config:
         unit: String,
     }
 
-    impl Extension for Units {
-        const FIELDS: &'static [&'static str] = &[];
-        const COLUMN_FIELDS: &'static [&'static str] = &["unit"];
+    impl InjectedProperties for Units {
+        const KEYS: &'static [&'static str] = &[];
+        const COLUMN_KEYS: &'static [&'static str] = &["unit"];
     }
 
     #[test]
-    fn an_extension_reads_the_fields_of_columns_that_it_names() -> FsResult<()> {
+    fn injected_properties_read_the_keys_of_columns_that_they_name() -> FsResult<()> {
         let mut entry = yaml(
             "name: orders
 unit: an entry's
@@ -600,14 +607,14 @@ columns:
   - {name: amount, unit: usd, description: d}
 ",
         );
-        let taken = take_fields(&mut entry.clone(), Units::FIELDS, Units::COLUMN_FIELDS)
+        let taken = take_injected(&mut entry.clone(), Units::KEYS, Units::COLUMN_KEYS)
             .expect("a column has a unit");
         assert_eq!(taken, yaml("columns: [{name: amount, unit: usd}]"));
         // The column is on the fifth line.
         assert_eq!(taken["columns"][0].span().start.line, 5);
 
         assert_eq!(read_in::<Units>(&mut entry, |_| true)?, 1);
-        // The entry's own `unit` is not a column's, and the columns keep their other fields.
+        // The entry's own `unit` is not a column's, and the columns keep their other keys.
         assert_eq!(
             entry,
             yaml(
@@ -624,24 +631,24 @@ columns:
     }
 
     #[test]
-    #[should_panic(expected = "`unit` in the columns of `models` is read by two extensions")]
-    fn two_extensions_of_a_kind_do_not_read_the_same_field_of_columns() {
+    #[should_panic(expected = "`unit` in the columns of `models` is injected by two types")]
+    fn two_types_of_a_kind_do_not_inject_the_same_key_of_columns() {
         check_set::<(Units, (Tagged, Units))>("models");
     }
 
     #[test]
-    #[should_panic(expected = "`label` in the entries of `models` is read by two extensions")]
-    fn two_extensions_of_a_kind_do_not_read_the_same_field() {
+    #[should_panic(expected = "`label` in the entries of `models` is injected by two types")]
+    fn two_types_of_a_kind_do_not_inject_the_same_key() {
         check_set::<(Tagged, Labelled)>("models");
     }
 
     #[test]
-    fn extensions_of_different_kinds_can_read_the_same_field() {
+    fn types_of_different_kinds_can_inject_the_same_key() {
         struct Both;
-        impl Extensions for Both {
+        impl InjectedPropertiesByKind for Both {
             type Model = (Tagged, Sized);
             type Seed = Labelled;
-            type Snapshot = NoExtension;
+            type Snapshot = NoInjectedProperties;
             type SourceTable = Tagged;
         }
         check::<Both>();

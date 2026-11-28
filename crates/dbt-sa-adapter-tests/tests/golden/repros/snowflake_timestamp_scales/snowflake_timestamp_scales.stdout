@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/ts_scales.sql
+ Rendering models/ts_scales.sql
+   Running models/ts_scales.sql
+ Succeeded model snowflake_timestamp_scales.ts_scales (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'snowflake' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

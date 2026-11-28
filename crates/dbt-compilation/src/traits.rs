@@ -176,6 +176,7 @@ pub trait TaskExecutionDriver: Send + Sync {
 
     async fn write_metadata(
         &self,
+        compiled: &dyn CompiledProject,
         arg: &EvalArgs,
         run_task_results: &RunTaskResults,
         compilation_cache_state: &dyn CompilationCache,
@@ -183,11 +184,12 @@ pub trait TaskExecutionDriver: Send + Sync {
 
     async fn write_metadata_with_report(
         &self,
+        compiled: &dyn CompiledProject,
         arg: &EvalArgs,
         run_task_results: &RunTaskResults,
         compilation_cache_state: &dyn CompilationCache,
     ) -> FsResult<Option<MetadataWriteReport>> {
-        self.write_metadata(arg, run_task_results, compilation_cache_state)
+        self.write_metadata(compiled, arg, run_task_results, compilation_cache_state)
             .await?;
         Ok(None)
     }

@@ -1,25 +1,31 @@
 use std::collections::HashSet;
 
 use dbt_adapter::sql_types::TypeOpsFactory;
+use dbt_common::io_args::project_flag_lookup;
 use dbt_common::{
     ErrorCode, FsResult,
     artifact_io::{ArtifactSerialization, write_artifact_to_file},
-    constants::DBT_CATALOG_JSON,
+    constants::{DBT_CATALOG_JSON, DBT_PROJECT_YML},
     io_args::{EvalArgs, FsCommand},
     tracing::dbt_emit::{
-        emit_error_log_from_fs_error, emit_info_log_message, emit_warn_log_message,
+        emit_error_log_from_fs_error, emit_info_log_message, emit_warn_log_from_fs_error,
+        emit_warn_log_message,
     },
 };
 use dbt_compilation::traits::{MetadataOutputFamily, MetadataWriteReport};
+use dbt_features::feature_stack::FeatureStack;
 use dbt_features::index::{IndexHooks, write_metadata_parquet_with_errors};
+use dbt_flags::{NoProjectFlags, ProjectFlags};
+use dbt_index_core::info_schema::injected::{self, ResolvedInjectedTable};
 use dbt_index_core::{
     WriteSource,
     ingest::{
         ingest_state::IngestState,
         metadata_to_parquet::{has_persisted_state, ingest_from_metadata_direct},
     },
-    save_artifact_meta, write_info_schema,
+    save_artifact_meta, write_info_schema_with_injected,
 };
+use dbt_loader::{args::LoadArgs, load_simplified_project_only};
 use dbt_schema_store::SchemaStoreTrait;
 use dbt_schemas::{
     schemas::{legacy_catalog::DbtCatalog, manifest::DbtManifest},
@@ -41,6 +47,7 @@ pub(crate) async fn write_metadata(
     run_task_results: &RunTaskResults,
     catalog_data: Option<&DbtCatalog>,
     index_hooks: &dyn IndexHooks,
+    injected_tables: &[ResolvedInjectedTable<'_>],
 ) -> FsResult<()> {
     write_metadata_impl(
         arg,
@@ -51,6 +58,7 @@ pub(crate) async fn write_metadata(
         run_task_results,
         catalog_data,
         index_hooks,
+        injected_tables,
         None,
     )
     .await
@@ -66,6 +74,7 @@ pub(crate) async fn write_metadata_with_report(
     run_task_results: &RunTaskResults,
     catalog_data: Option<&DbtCatalog>,
     index_hooks: &dyn IndexHooks,
+    injected_tables: &[ResolvedInjectedTable<'_>],
     report: &mut MetadataWriteReport,
 ) -> FsResult<()> {
     write_metadata_impl(
@@ -77,6 +86,7 @@ pub(crate) async fn write_metadata_with_report(
         run_task_results,
         catalog_data,
         index_hooks,
+        injected_tables,
         Some(report),
     )
     .await
@@ -92,13 +102,13 @@ async fn write_metadata_impl(
     run_task_results: &RunTaskResults,
     catalog_data: Option<&DbtCatalog>,
     index_hooks: &dyn IndexHooks,
+    injected_tables: &[ResolvedInjectedTable<'_>],
     mut report: Option<&mut MetadataWriteReport>,
 ) -> FsResult<()> {
     if let Some(catalog) = catalog_data {
         write_catalog_epochs(catalog, arg).await;
     }
 
-    let type_ops = type_ops_factory.create(resolved_state.adapter_type);
     let grain_infos = index_hooks.lineage_grain_infos(run_task_results).await?;
     let (node_classifiers, column_classifiers) =
         index_hooks.classifier_results(run_task_results).await?;
@@ -121,7 +131,7 @@ async fn write_metadata_impl(
             manifest,
             Some(resolved_state),
             Some(schema_store),
-            Some(type_ops.as_ref()),
+            Some(type_ops_factory),
             None,
             &recomputed_targets,
             &grain_infos,
@@ -135,7 +145,7 @@ async fn write_metadata_impl(
             manifest,
             Some(resolved_state),
             Some(schema_store),
-            Some(type_ops.as_ref()),
+            Some(type_ops_factory),
             Some(&[]),
             &recomputed_targets,
             &grain_infos,
@@ -160,7 +170,7 @@ async fn write_metadata_impl(
                     manifest,
                     Some(resolved_state),
                     Some(schema_store),
-                    Some(type_ops.as_ref()),
+                    Some(type_ops_factory),
                     Some(&column_lineage),
                     &recomputed_targets,
                     &grain_infos,
@@ -180,7 +190,7 @@ async fn write_metadata_impl(
                     manifest,
                     Some(resolved_state),
                     Some(schema_store),
-                    Some(type_ops.as_ref()),
+                    Some(type_ops_factory),
                     Some(&[]),
                     &empty_targets,
                     &grain_infos,
@@ -279,7 +289,12 @@ async fn write_metadata_impl(
         } else {
             arg.info_schema_staging_dir()
         };
-        if let Err(error) = write_info_schema(&metadata_dir, &info_schema_dir, &staging_dir) {
+        if let Err(error) = write_info_schema_with_injected(
+            &metadata_dir,
+            &info_schema_dir,
+            &staging_dir,
+            injected_tables,
+        ) {
             if let Some(report) = report {
                 report.mark_failed(
                     MetadataOutputFamily::InfoSchema,
@@ -346,6 +361,65 @@ fn write_catalog_columns_epoch(catalog: &DbtCatalog, arg: &EvalArgs) {
         emit_warn_log_message(
             ErrorCode::Generic,
             format!("metadata: catalog_columns: {error}"),
+        );
+    }
+}
+
+/// The tables that the build injects into the information schema, each with whether its flag
+/// is on.
+///
+/// `root_project` is the `flags:` of the root project that the command loaded. A flag is
+/// resolved with them, as the flag of a kind of node is.
+pub(crate) fn resolved_injected_tables(
+    feature_stack: &FeatureStack,
+    root_project: &dyn ProjectFlags,
+) -> Vec<ResolvedInjectedTable<'static>> {
+    injected::resolve(
+        feature_stack.injected_kinds.kinds.injected_tables(),
+        root_project,
+    )
+}
+
+/// [`resolved_injected_tables`], for a command that reads what an earlier command wrote and
+/// loads no project: `dbt show --info`, `dbt docs`.
+///
+/// The root project's `flags:` come from the loader, which loads `dbt_project.yml` alone, as
+/// it does for `dbt deps`. Nothing is loaded for a build that injects no table. Where there
+/// is no `dbt_project.yml`, or it does not load (with a warning), a flag is as the invocation
+/// sets it.
+pub(crate) fn resolved_injected_tables_without_project(
+    feature_stack: &FeatureStack,
+    arg: &EvalArgs,
+) -> Vec<ResolvedInjectedTable<'static>> {
+    let declared = feature_stack.injected_kinds.kinds.injected_tables();
+    if declared.is_empty() || !arg.io.in_dir.join(DBT_PROJECT_YML).exists() {
+        return resolved_injected_tables(feature_stack, &NoProjectFlags);
+    }
+    match load_simplified_project_only(&LoadArgs::from_eval_args(arg)) {
+        Ok(project) => {
+            resolved_injected_tables(feature_stack, &project_flag_lookup(project.flags.as_ref()))
+        }
+        Err(error) => {
+            emit_warn_log_from_fs_error(*error);
+            resolved_injected_tables(feature_stack, &NoProjectFlags)
+        }
+    }
+}
+
+/// Writes anew the tables that the build adds to the information schema, in an information
+/// schema that exists, after a command that did not write the information schema: one of its
+/// tasks may have added rows. Nothing is written where there is no information schema.
+///
+/// A failure warns, as a failed write of the information schema does.
+pub(crate) fn refresh_injected_tables(arg: &EvalArgs, tables: &[ResolvedInjectedTable<'_>]) {
+    if tables.is_empty() {
+        return;
+    }
+    let dir = dbt_index_core::info_schema::versioned_dir(&arg.info_schema_dir());
+    if let Err(error) = injected::publish(tables, &arg.metadata_dir(), &dir) {
+        emit_warn_log_message(
+            ErrorCode::InfoSchemaWriteFailed,
+            format!("dbt: generate-info-schema: {error}"),
         );
     }
 }

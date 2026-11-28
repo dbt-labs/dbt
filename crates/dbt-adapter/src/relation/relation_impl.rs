@@ -15,8 +15,8 @@ use crate::relation::{RelationObject, StaticBaseRelation};
 use crate::value::none_value;
 
 use dbt_adapter_core::AdapterType;
-use dbt_adapter_engine::cow::{lowercase, uppercase};
-use dbt_adapter_sql::ident::max_identifier_length;
+use dbt_adapter_sql::ident::{Ident, max_identifier_length};
+use dbt_adapter_sql::join_dotted;
 use dbt_common::{ErrorCode, FsResult, constants::DBT_CTE_PREFIX, fs_err};
 use dbt_frontend_common::ident::Identifier;
 use dbt_schema_store::CanonicalFqn;
@@ -36,7 +36,6 @@ use minijinja::arg_utils::ArgsIter;
 use serde::Deserialize;
 
 use std::any::Any;
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -1246,15 +1245,6 @@ impl BaseRelation for Relation {
         }
     }
 
-    fn normalize_component<'a>(&self, component: &'a str) -> Cow<'a, str> {
-        use AdapterType::*;
-        match self.adapter_type {
-            Salesforce | Bigquery | ClickHouse => Cow::Borrowed(component),
-            Snowflake => uppercase(component.into()),
-            _ => lowercase(component.into()),
-        }
-    }
-
     fn render_self_as_str(&self) -> String {
         match self.adapter_type {
             AdapterType::DuckDB | AdapterType::MotherDuck => {
@@ -1272,7 +1262,7 @@ impl BaseRelation for Relation {
                 .schema
                 .as_deref()
                 .expect("INFORMATION_SCHEMA relation needs dataset");
-            let dataset = dbt_adapter_sql::ident::bigquery::Ident::new(dataset).to_string();
+            let dataset = Ident::new(dataset, AdapterType::Bigquery);
             let view_name = self.path.identifier.as_deref();
 
             // Detect if user has set `project == location` and normalize
@@ -1296,7 +1286,10 @@ impl BaseRelation for Relation {
             };
 
             let fqn = if let Some(project) = &project {
-                format!("{}.{fqn_no_project}", self.quoted(project))
+                format!(
+                    "{}.{fqn_no_project}",
+                    self.quoted(project).display(self.adapter_type)
+                )
             } else {
                 fqn_no_project
             };
@@ -1313,13 +1306,13 @@ impl BaseRelation for Relation {
 
         let include_policy = self.include_policy;
         let quote_policy = self.quote_policy;
-        let mut parts: Vec<String> = Vec::new();
+        let mut parts: Vec<Ident> = Vec::new();
 
         let quote_part = |val: &str, quote_policy: bool| {
             if quote_policy {
                 self.quoted(val)
             } else {
-                val.to_string()
+                Ident::plain(val)
             }
         };
 
@@ -1342,7 +1335,8 @@ impl BaseRelation for Relation {
             parts.push(quote_part(identifier, quote_policy.identifier));
         }
 
-        let rendered = parts.join(".");
+        let rendered =
+            join_dotted(parts.iter().map(|part| part.display(self.adapter_type))).to_string();
 
         if matches!(self.adapter_type, AdapterType::Databricks) {
             rendered.to_ascii_lowercase()
@@ -2818,6 +2812,146 @@ mod tests {
                 .expect("target_lag going from None to Some always produces a diff");
 
             assert!(changeset.requires_full_refresh());
+        }
+    }
+
+    /// `quoted` renders exactly like the string-based version it replaced,
+    /// kept here as `quoted_v1`.
+    mod quoted {
+        use super::*;
+        use dbt_adapter_core::quote_char;
+        use dbt_adapter_sql::ident::escaped_identifier;
+
+        /// The old string-based `BaseRelation::quoted`: always wrap `id` in
+        /// the adapter's [quote_char], escaping it per the adapter's rules.
+        fn quoted_v1(adapter_type: AdapterType, id: &str) -> String {
+            let quote = quote_char(adapter_type);
+            let escaped = escaped_identifier(id.into(), adapter_type, quote);
+            format!("{quote}{escaped}{quote}")
+        }
+
+        const IDS: &[&str] = &[
+            "",
+            "a",
+            "MixedCase",
+            "UPPER",
+            "snake_case",
+            "with$dollar",
+            "1leading_digit",
+            "select",
+            "a-b",
+            "a b",
+            "a.b",
+            "a\"b",
+            "a\"\"b",
+            "\"",
+            "a`b",
+            "a\\b",
+            "a'b",
+            "a;drop table t;--",
+            "日本語",
+            "café",
+        ];
+
+        fn assert_quoted_matches_v1(adapter_type: AdapterType) {
+            let relation = Relation::new(
+                adapter_type,
+                "db".to_string(),
+                "schema".to_string(),
+                "table".to_string(),
+            );
+            for id in IDS {
+                assert_eq!(
+                    relation.quoted(id).display(adapter_type).to_string(),
+                    quoted_v1(adapter_type, id),
+                    "adapter_type={adapter_type:?} id={id:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn snowflake() {
+            assert_quoted_matches_v1(AdapterType::Snowflake);
+        }
+
+        #[test]
+        fn bigquery() {
+            assert_quoted_matches_v1(AdapterType::Bigquery);
+        }
+
+        #[test]
+        fn databricks() {
+            assert_quoted_matches_v1(AdapterType::Databricks);
+        }
+
+        #[test]
+        fn redshift() {
+            assert_quoted_matches_v1(AdapterType::Redshift);
+        }
+
+        #[test]
+        fn clickhouse() {
+            assert_quoted_matches_v1(AdapterType::ClickHouse);
+        }
+
+        #[test]
+        fn spark() {
+            assert_quoted_matches_v1(AdapterType::Spark);
+        }
+
+        #[test]
+        fn postgres() {
+            assert_quoted_matches_v1(AdapterType::Postgres);
+        }
+
+        #[test]
+        fn duckdb() {
+            assert_quoted_matches_v1(AdapterType::DuckDB);
+        }
+
+        #[test]
+        fn motherduck() {
+            assert_quoted_matches_v1(AdapterType::MotherDuck);
+        }
+
+        #[test]
+        fn lakecompute() {
+            assert_quoted_matches_v1(AdapterType::LakeCompute);
+        }
+
+        #[test]
+        fn salesforce() {
+            assert_quoted_matches_v1(AdapterType::Salesforce);
+        }
+
+        #[test]
+        fn fabric() {
+            assert_quoted_matches_v1(AdapterType::Fabric);
+        }
+
+        #[test]
+        fn athena() {
+            assert_quoted_matches_v1(AdapterType::Athena);
+        }
+
+        #[test]
+        fn trino() {
+            assert_quoted_matches_v1(AdapterType::Trino);
+        }
+
+        #[test]
+        fn starburst() {
+            assert_quoted_matches_v1(AdapterType::Starburst);
+        }
+
+        #[test]
+        fn datafusion() {
+            assert_quoted_matches_v1(AdapterType::Datafusion);
+        }
+
+        #[test]
+        fn exasol() {
+            assert_quoted_matches_v1(AdapterType::Exasol);
         }
     }
 

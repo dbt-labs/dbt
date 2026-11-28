@@ -44,6 +44,7 @@ impl From<Extraction> for ExtractedUpstreams {
         ExtractedUpstreams {
             tables: found.sources.into_iter().map(Into::into).collect(),
             table_functions: found.table_functions,
+            stages: Default::default(),
         }
     }
 }

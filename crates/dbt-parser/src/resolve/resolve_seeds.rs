@@ -1,8 +1,9 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{NodeLayers, ProjectConfigResolver, RootProjectConfigs};
 use crate::renderer::strip_warehouse_keys_in_config_block;
-use crate::resolve::properties_extensions::{
-    self, ExtensionReader, Extensions, NoExtensions, ReadExtensions,
+use crate::resolve::injected_properties::{
+    self, InjectedPropertiesByKind, InjectedPropertiesReader, NoInjectedPropertiesByKind,
+    ReadInjectedProperties,
 };
 use crate::resolve::resolvable_node::{ResolvableNode, ResolveCtx};
 use crate::resolve::resolve_utils::{
@@ -53,25 +54,26 @@ use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
 
-/// How a package's seeds resolve. `E` names the extensions read beside a seed's properties.
-pub(crate) struct Seeds<E = NoExtensions>(PhantomData<E>);
+/// How a package's seeds resolve. `P` names the properties that are injected into the
+/// entries of seeds.
+pub(crate) struct Seeds<P = NoInjectedPropertiesByKind>(PhantomData<P>);
 
-impl<E> Default for Seeds<E> {
+impl<P> Default for Seeds<P> {
     fn default() -> Self {
         Seeds(PhantomData)
     }
 }
 
 #[async_trait]
-impl<E: Extensions> ResolvableNode for Seeds<E> {
+impl<P: InjectedPropertiesByKind> ResolvableNode for Seeds<P> {
     fn properties_keys(&self) -> &'static [&'static str] {
         &["seeds"]
     }
 
     async fn resolve(&self, ctx: &mut ResolveCtx<'_>) -> FsResult<()> {
-        let extensions = ExtensionReader::of::<E::Seed>(ctx);
+        let injected = InjectedPropertiesReader::of::<P::Seed>(ctx);
         // Resolve seeds based on the dbt_state, database, schema, and project name
-        let (seeds, disabled_seeds, extensions) = resolve_seeds(
+        let (seeds, disabled_seeds, injected) = resolve_seeds(
             ctx.arg,
             ctx.properties.take_entries("seeds"),
             ctx.package,
@@ -89,12 +91,12 @@ impl<E: Extensions> ResolvableNode for Seeds<E> {
             ctx.test_name_truncations,
             ctx.seen_generic_test_paths,
             &mut ctx.node_resolver,
-            &extensions,
+            &injected,
         )
         .await?;
         ctx.nodes.seeds.extend(seeds);
         ctx.disabled_nodes.seeds.extend(disabled_seeds);
-        properties_extensions::give_back(ctx, extensions, |ctx, unique_id| {
+        injected_properties::give_back(ctx, injected, |ctx, unique_id| {
             ctx.nodes.seeds.get(unique_id).cloned()
         })
     }
@@ -120,14 +122,14 @@ pub async fn resolve_seeds(
     test_name_truncations: &mut HashMap<String, String>,
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     node_resolver: &mut NodeResolver,
-    extensions: &ExtensionReader,
+    injected: &InjectedPropertiesReader,
 ) -> FsResult<(
     HashMap<String, Arc<DbtSeed>>,
     HashMap<String, Arc<DbtSeed>>,
-    Vec<(String, ReadExtensions)>,
+    Vec<(String, ReadInjectedProperties)>,
 )> {
-    // The extensions of each seed whose entry has some, by the seed's unique id.
-    let mut read_extensions: Vec<(String, ReadExtensions)> = Vec::new();
+    // The injected properties of each seed whose entry has some, by the seed's unique id.
+    let mut read_injected: Vec<(String, ReadInjectedProperties)> = Vec::new();
     let mut seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let mut disabled_seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let io_args = &arg.io;
@@ -306,13 +308,13 @@ pub async fn resolve_seeds(
                 WarningEmission::Emit,
             );
             // Read before the entry is typed as a seed's.
-            if let Some(read) = extensions.read(
+            if let Some(read) = injected.read(
                 &mut mpe.schema_value,
                 jinja_env,
                 base_ctx,
                 dependency_package_name,
             )? {
-                read_extensions.push((unique_id.clone(), read));
+                read_injected.push((unique_id.clone(), read));
             }
             (
                 into_typed_with_jinja::<SeedProperties, _>(
@@ -586,5 +588,5 @@ pub async fn resolve_seeds(
     }
 
     trigger_duplicate_errors(&mut duplicate_errors)?;
-    Ok((seeds, disabled_seeds, read_extensions))
+    Ok((seeds, disabled_seeds, read_injected))
 }

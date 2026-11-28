@@ -1,0 +1,37 @@
+3633da64:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.snowflake_timestamp_scales
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.snowflake_timestamp_scales.ts_scales:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_TIMESTAMP_SCALES" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace transient  table development.snowflake_timestamp_scales.ts_scales
+    
+    
+    
+    
+    
+    
+    as (
+    select
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(0) as ntz_0,
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(1) as ntz_1,
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(2) as ntz_2,
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(3) as ntz_3,
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(4) as ntz_4,
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(5) as ntz_5,
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(6) as ntz_6,
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(7) as ntz_7,
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(8) as ntz_8,
+    '2026-11-16 10:49:35.861123456'::timestamp_ntz(9) as ntz_9
+    )

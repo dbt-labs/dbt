@@ -3,7 +3,7 @@ use dbt_adapter_core::AdapterType;
 use crate::schemas::serde::AdapterTypeOrArray;
 use dbt_common::path::DbtPath;
 use indexmap::IndexMap;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf, sync::LazyLock};
 
 use serde::{Deserialize, Serialize, de::Deserializer};
 use serde_with::skip_serializing_none;
@@ -23,7 +23,7 @@ use crate::schemas::common::{DocsConfig, HardDeletes, OnConfigurationChange, OnE
 use crate::schemas::common::{HookConfig, Hooks, OnSchemaChange};
 use crate::schemas::dbt_column::Granularity;
 use crate::schemas::project::configs::common::{
-    LazyWarehouseSpecificNodeConfig, WarehouseSpecificNodeConfig,
+    LazyDefault, LazyWarehouseSpecificNodeConfig, SharedDefault, WarehouseSpecificNodeConfig,
 };
 use crate::schemas::project::configs::model_config::LatestVersionPointer;
 use crate::schemas::properties::{ModelFreshness, ModelState};
@@ -992,6 +992,26 @@ pub struct ManifestModelConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table_format: Option<String>,
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
+    #[schemars(with = "ManifestModelRareFreshnessConfig")]
+    pub __rare_freshness__: LazyDefault<ManifestModelRareFreshnessConfig>,
+    #[serde(
+        default,
+        serialize_with = "crate::schemas::serde::serialize_none_as_default"
+    )]
+    pub latest_version_pointer: Option<LatestVersionPointer>,
+    #[schemars(with = "ManifestModelRarePythonConfig")]
+    pub __rare_python__: LazyDefault<ManifestModelRarePythonConfig>,
+    // Adapter specific configs
+    #[schemars(with = "WarehouseSpecificNodeConfig")]
+    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
+}
+
+// `ManifestModelConfig` freshness and state keys, which almost every model leaves unset.
+// Flattened into the config at their place in its key order. Plain comments, not doc comments,
+// on both rare groups: a doc comment would become the JSON schema description of the
+// `ManifestModelConfig` that flattens it.
+#[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq, DbtSchema)]
+pub struct ManifestModelRareFreshnessConfig {
     pub freshness: Option<ModelFreshness>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loaded_at_field: Option<String>,
@@ -999,11 +1019,20 @@ pub struct ManifestModelConfig {
     pub loaded_at_query: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ModelState>,
-    #[serde(
-        default,
-        serialize_with = "crate::schemas::serde::serialize_none_as_default"
-    )]
-    pub latest_version_pointer: Option<LatestVersionPointer>,
+}
+
+impl SharedDefault for ManifestModelRareFreshnessConfig {
+    fn shared_default() -> &'static Self {
+        static DEFAULT: LazyLock<ManifestModelRareFreshnessConfig> =
+            LazyLock::new(ManifestModelRareFreshnessConfig::default);
+        &DEFAULT
+    }
+}
+
+// `ManifestModelConfig` SQL header, location, Python and Databricks job, and sync keys, which
+// almost every model leaves unset. Flattened into the config at their place in its key order.
+#[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq, DbtSchema)]
+pub struct ManifestModelRarePythonConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sql_header: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1035,9 +1064,14 @@ pub struct ManifestModelConfig {
     /// Schema synchronization configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncConfig>,
-    // Adapter specific configs
-    #[schemars(with = "WarehouseSpecificNodeConfig")]
-    pub __warehouse_specific_config__: LazyWarehouseSpecificNodeConfig,
+}
+
+impl SharedDefault for ManifestModelRarePythonConfig {
+    fn shared_default() -> &'static Self {
+        static DEFAULT: LazyLock<ManifestModelRarePythonConfig> =
+            LazyLock::new(ManifestModelRarePythonConfig::default);
+        &DEFAULT
+    }
 }
 
 #[skip_serializing_none]
@@ -1246,26 +1280,32 @@ impl From<ModelConfig> for ManifestModelConfig {
             access: config.access,
             table_format: config.table_format,
             static_analysis: config.static_analysis,
-            freshness: config.freshness,
-            loaded_at_field: config.loaded_at_field,
-            loaded_at_query: (*config.loaded_at_query).clone(),
-            state: config.state,
+            __rare_freshness__: ManifestModelRareFreshnessConfig {
+                freshness: config.freshness,
+                loaded_at_field: config.loaded_at_field,
+                loaded_at_query: (*config.loaded_at_query).clone(),
+                state: config.state,
+            }
+            .into(),
             latest_version_pointer: config.latest_version_pointer,
-            sql_header: config.sql_header,
-            location: config.location,
-            predicates: config.predicates,
-            submission_method: config.submission_method.clone(),
-            job_cluster_config: config.job_cluster_config.clone(),
-            python_job_config: config.python_job_config.clone(),
-            cluster_id: config.cluster_id.clone(),
-            http_path: config.http_path.clone(),
-            create_notebook: config.create_notebook,
-            index_url: config.index_url.clone(),
-            additional_libs: config.additional_libs.clone(),
-            user_folder_for_python: config.user_folder_for_python,
-            environment_key: config.environment_key.clone(),
-            environment_dependencies: config.environment_dependencies.clone(),
-            sync: config.sync,
+            __rare_python__: ManifestModelRarePythonConfig {
+                sql_header: config.sql_header,
+                location: config.location,
+                predicates: config.predicates,
+                submission_method: config.submission_method.clone(),
+                job_cluster_config: config.job_cluster_config.clone(),
+                python_job_config: config.python_job_config.clone(),
+                cluster_id: config.cluster_id.clone(),
+                http_path: config.http_path.clone(),
+                create_notebook: config.create_notebook,
+                index_url: config.index_url.clone(),
+                additional_libs: config.additional_libs.clone(),
+                user_folder_for_python: config.user_folder_for_python,
+                environment_key: config.environment_key.clone(),
+                environment_dependencies: config.environment_dependencies.clone(),
+                sync: config.sync,
+            }
+            .into(),
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -1273,6 +1313,8 @@ impl From<ModelConfig> for ManifestModelConfig {
 
 impl From<ManifestModelConfig> for ModelConfig {
     fn from(config: ManifestModelConfig) -> Self {
+        let rare_freshness = config.__rare_freshness__.into_inner();
+        let rare_python = config.__rare_python__.into_inner();
         Self {
             enabled: config.enabled,
             alias: config.alias,
@@ -1331,26 +1373,26 @@ impl From<ManifestModelConfig> for ModelConfig {
             access: config.access,
             table_format: config.table_format,
             static_analysis: config.static_analysis,
-            freshness: config.freshness,
-            loaded_at_field: config.loaded_at_field,
-            loaded_at_query: Verbatim::from(config.loaded_at_query),
-            state: config.state,
+            freshness: rare_freshness.freshness,
+            loaded_at_field: rare_freshness.loaded_at_field,
+            loaded_at_query: Verbatim::from(rare_freshness.loaded_at_query),
+            state: rare_freshness.state,
             latest_version_pointer: config.latest_version_pointer,
-            sql_header: config.sql_header,
-            location: config.location,
-            predicates: config.predicates,
-            submission_method: config.submission_method.clone(),
-            job_cluster_config: config.job_cluster_config.clone(),
-            python_job_config: config.python_job_config.clone(),
-            cluster_id: config.cluster_id.clone(),
-            http_path: config.http_path.clone(),
-            create_notebook: config.create_notebook,
-            index_url: config.index_url.clone(),
-            additional_libs: config.additional_libs.clone(),
-            user_folder_for_python: config.user_folder_for_python,
-            environment_key: config.environment_key.clone(),
-            environment_dependencies: config.environment_dependencies.clone(),
-            sync: config.sync,
+            sql_header: rare_python.sql_header,
+            location: rare_python.location,
+            predicates: rare_python.predicates,
+            submission_method: rare_python.submission_method,
+            job_cluster_config: rare_python.job_cluster_config,
+            python_job_config: rare_python.python_job_config,
+            cluster_id: rare_python.cluster_id,
+            http_path: rare_python.http_path,
+            create_notebook: rare_python.create_notebook,
+            index_url: rare_python.index_url,
+            additional_libs: rare_python.additional_libs,
+            user_folder_for_python: rare_python.user_folder_for_python,
+            environment_key: rare_python.environment_key,
+            environment_dependencies: rare_python.environment_dependencies,
+            sync: rare_python.sync,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
             // config_keys_used and config_keys_defaults are not in ManifestModelConfig
             // They're only in ModelConfig and not persisted to the manifest
@@ -2325,12 +2367,20 @@ mod manifest_model_config_null_omission_tests {
         let config = ManifestModelConfig::default();
         let json = serde_json::to_value(&config).unwrap();
 
-        for key in ["classifiers", "incremental_predicates", "sql_header"] {
+        for key in ["classifiers", "incremental_predicates"] {
             assert!(
                 json.get(key).is_none(),
                 "expected top-level key `{key}` to be omitted when unset, got: {json}"
             );
         }
+
+        let rare_python = json
+            .get("__rare_python__")
+            .expect("__rare_python__ should be present");
+        assert!(
+            rare_python.get("sql_header").is_none(),
+            "expected `sql_header` to be omitted when unset, got: {rare_python}"
+        );
 
         let warehouse_specific = json
             .get("__warehouse_specific_config__")
@@ -2350,7 +2400,9 @@ mod node_adapter_manifest_round_trip_tests {
         AdapterType, DbtModel, DbtSeed, ManifestModel, ManifestModelConfig, ManifestSeedConfig,
         ManifestSnapshotConfig, ModelConfig, NodeBaseAttributes, SeedConfig, SnapshotConfig,
     };
-    use crate::schemas::project::configs::warehouse_config_test_support::assert_warehouse_config_allocates_only_when_set;
+    use crate::schemas::project::configs::warehouse_config_test_support::{
+        assert_warehouse_config_allocates_only_when_set, typed_from_yaml,
+    };
 
     #[test]
     fn canonical_relation_marker_round_trips_for_models_and_seeds() {
@@ -2447,6 +2499,8 @@ mod node_adapter_manifest_round_trip_tests {
     fn default_warehouse_config_stays_unallocated_through_manifest_configs() {
         let model: ManifestModelConfig = ModelConfig::default().into();
         assert!(model.__warehouse_specific_config__.get().is_none());
+        assert!(model.__rare_freshness__.get().is_none());
+        assert!(model.__rare_python__.get().is_none());
         let model: ModelConfig = model.into();
         assert!(model.__warehouse_specific_config__.get().is_none());
 
@@ -2475,6 +2529,96 @@ mod node_adapter_manifest_round_trip_tests {
             "strategy: timestamp\n",
             |config| &config.__warehouse_specific_config__,
         );
+    }
+
+    #[test]
+    fn rare_model_config_keys_allocate_only_when_set_and_keep_key_order() {
+        // Every key of both rare groups, so the serialized run around them is complete.
+        let yaml = "\
+materialized: table
+static_analysis: strict
+freshness:
+  build_after:
+    count: 1
+    period: hour
+loaded_at_field: updated_at
+loaded_at_query: select 1
+state:
+  evaluate_volatile_sql: true
+sql_header: select 1
+location: s3://bucket/path
+predicates: [id > 0]
+submission_method: job_cluster
+job_cluster_config: {num_workers: 1}
+python_job_config: {name: job}
+cluster_id: cluster
+http_path: /sql/path
+create_notebook: true
+index_url: https://index
+additional_libs: [lib]
+user_folder_for_python: true
+environment_key: env
+environment_dependencies: [dep]
+sync:
+  schema_refresh_interval: 1h
+";
+        for borrowed in [false, true] {
+            let (config, unused_keys) = typed_from_yaml::<ManifestModelConfig>(yaml, borrowed);
+            assert!(unused_keys.is_empty(), "{unused_keys:?}");
+            let rare_freshness = config.__rare_freshness__.get().unwrap();
+            assert_eq!(
+                rare_freshness.loaded_at_field.as_deref(),
+                Some("updated_at")
+            );
+            let rare_python = config.__rare_python__.get().unwrap();
+            assert_eq!(rare_python.sql_header.as_deref(), Some("select 1"));
+
+            let serialized = dbt_yaml::to_value(&config).unwrap();
+            let keys: Vec<&str> = serialized
+                .as_mapping()
+                .unwrap()
+                .keys()
+                .filter_map(|key| key.as_str())
+                .skip_while(|key| *key != "static_analysis")
+                .take(21)
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    "static_analysis",
+                    "freshness",
+                    "loaded_at_field",
+                    "loaded_at_query",
+                    "state",
+                    "latest_version_pointer",
+                    "sql_header",
+                    "location",
+                    "predicates",
+                    "submission_method",
+                    "job_cluster_config",
+                    "python_job_config",
+                    "cluster_id",
+                    "http_path",
+                    "create_notebook",
+                    "index_url",
+                    "additional_libs",
+                    "user_folder_for_python",
+                    "environment_key",
+                    "environment_dependencies",
+                    "sync",
+                ]
+            );
+            // Manifest readers deserialize from a `dbt_yaml::Value` of the written JSON.
+            let round_tripped =
+                <ManifestModelConfig as serde::Deserialize>::deserialize(serialized).unwrap();
+            assert_eq!(round_tripped.__rare_freshness__, config.__rare_freshness__);
+            assert_eq!(round_tripped.__rare_python__, config.__rare_python__);
+
+            let (config, _) =
+                typed_from_yaml::<ManifestModelConfig>("materialized: table\n", borrowed);
+            assert!(config.__rare_freshness__.get().is_none());
+            assert!(config.__rare_python__.get().is_none());
+        }
     }
 
     #[test]

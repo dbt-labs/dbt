@@ -11,7 +11,8 @@ use dbt_common::adapter::dialect_of;
 use dbt_frontend_common::{
     Dialect, FullyQualifiedName, ident::Identifier, table_functions::is_pure_generator,
 };
-use sqlparser::ast::{Expr, ObjectName, Query, TableFactor, Visit, Visitor};
+use dbt_sqlparser_compat::{Flow, Visitor, visit};
+use sqlparser::ast::{Expr, ObjectName, Query, TableFactor};
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::Token;
 
@@ -65,7 +66,7 @@ pub(crate) fn extract_from_str(
         .map_err(|e| ExtractSourcesError::Parse(e.to_string()))?;
 
     let mut visitor = SourceExtractor::new(adapter_type, default_catalog, default_schema);
-    let _ = statements.visit(&mut visitor);
+    let _ = visit(&statements, &mut visitor);
     Ok(visitor.into_extraction())
 }
 
@@ -93,7 +94,7 @@ pub(crate) fn extract_from_standalone_expression(
         }
     }
     let mut visitor = SourceExtractor::new(adapter_type, default_catalog, default_schema);
-    let _ = expr.visit(&mut visitor);
+    let _ = visit(&expr, &mut visitor);
     Ok(visitor.into_extraction())
 }
 
@@ -113,9 +114,7 @@ struct SourceExtractor<'a> {
 }
 
 impl Visitor for SourceExtractor<'_> {
-    type Break = ();
-
-    fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
+    fn pre_visit_query(&mut self, query: &Query) -> Flow {
         // Register all CTE names defined by this query up-front, so any
         // reference to one (in any CTE body OR the main body) is filtered.
         //
@@ -133,12 +132,12 @@ impl Visitor for SourceExtractor<'_> {
         ControlFlow::Continue(())
     }
 
-    fn post_visit_query(&mut self, _query: &Query) -> ControlFlow<()> {
+    fn post_visit_query(&mut self, _query: &Query) -> Flow {
         self.cte_scopes.pop();
         ControlFlow::Continue(())
     }
 
-    fn pre_visit_table_factor(&mut self, table_factor: &TableFactor) -> ControlFlow<()> {
+    fn pre_visit_table_factor(&mut self, table_factor: &TableFactor) -> Flow {
         match table_factor {
             // `name(args)` in FROM is a table-valued function, not a table.
             TableFactor::Table {

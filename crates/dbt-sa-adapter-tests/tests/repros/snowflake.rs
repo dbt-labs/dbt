@@ -271,3 +271,23 @@ async fn snowflake_insert_overwrite_contract_column_order() -> FsResult<()> {
     )
     .await
 }
+
+/// From https://github.com/dbt-labs/dbt/issues/17282
+/// `run_query` returned wrong TIMESTAMP_NTZ values for scales other than 0, 3,
+/// 6 and 9 (scale 7 came back in the year 2538). `probe_ts` logs the values
+/// `run_query` returns for TIMESTAMP_NTZ, TIMESTAMP_LTZ and TIMESTAMP_TZ of
+/// every scale, next to Snowflake's own rendering of the NTZ value, and
+/// `probe_time` does the same for TIME.
+#[dbt_runtime::test]
+async fn snowflake_timestamp_scales() -> FsResult<()> {
+    run_fs_record_replay_snowflake(
+        current_function_name!(),
+        "tests/data/repros/snowflake_timestamp_scales",
+        &[
+            "build",
+            "run-operation probe_ts",
+            "run-operation probe_time",
+        ],
+    )
+    .await
+}

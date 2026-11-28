@@ -525,10 +525,26 @@ impl TaskRunnerCtx {
     /// One node's run-phase base context: the node's task keys and its adapter overlay
     /// layered over the run's base context.
     pub fn run_base_context(&self, node: &dyn InternalDbtNodeAttributes) -> FsResult<Value> {
+        self.node_base_context(node, self.adapter_type_for(node))
+    }
+
+    /// A compute_platform node's run base context: its own adapter's overlay, as at compile.
+    pub fn compute_platform_base_context(
+        &self,
+        node: &dyn InternalDbtNodeAttributes,
+    ) -> FsResult<Value> {
+        self.node_base_context(node, node.node_adapter())
+    }
+
+    fn node_base_context(
+        &self,
+        node: &dyn InternalDbtNodeAttributes,
+        adapter_type: AdapterType,
+    ) -> FsResult<Value> {
         let mut ctx = self.base_context_overlay();
         add_task_context(&mut ctx, node.common(), &self.thread_id);
         self.adapter_globals()
-            .insert_for_node(&mut ctx, self.adapter_type_for(node))?;
+            .insert_for_node(&mut ctx, adapter_type)?;
         Ok(Value::from(ctx))
     }
 

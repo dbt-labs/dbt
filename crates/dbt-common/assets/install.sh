@@ -480,6 +480,19 @@ determine_version() {
         err_and_exit "No version information received from $version_url"
     fi
 
+    # Some tracks are aliases of another track: dev -> nightly, canary -> preview, latest -> stable.
+    # Without an entry for the target track, the alias keeps its own entry.
+    alias_target=""
+    case "$specific_version" in
+        dev) alias_target="nightly" ;;
+        canary) alias_target="preview" ;;
+        latest) alias_target="stable" ;;
+    esac
+    if [ -n "$alias_target" ] && echo "$versions" | jq -e --arg track "$alias_target" 'has($track)' > /dev/null; then
+        log_grey "Resolving $specific_version through $alias_target"
+        specific_version="$alias_target"
+    fi
+
     if [ -z "$specific_version" ];then
         log_grey "Checking for stable version"
         TARGET_VERSION=$(echo "$versions" | jq -r ".stable.tag" | sed 's/^v//') || err_and_exit "Failed to parse stable version from versions data."

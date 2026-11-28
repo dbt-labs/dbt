@@ -37,14 +37,6 @@ use crate::{jinja_environment::JinjaEnv, phases::parse::sql_resource::SqlResourc
 
 pub use dbt_jinja_vars::{DBT_INTERNAL_ENV_VAR_PREFIX, SECRET_ENV_VAR_PREFIX};
 
-/// The version of dbt used in this crate
-///
-/// See: fs/sa/crates/dbt-main/src/dbt_lib.rs:660
-pub const DBT_VERSION: &str = match option_env!("DBT_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
-};
-
 /// A lazy initialized mutex-protected hash map for storing environment variables
 pub static ENV_VARS: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));

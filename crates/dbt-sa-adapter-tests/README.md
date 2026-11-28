@@ -40,6 +40,12 @@ Install [cargo-nextest](https://nexte.st). Each test initializes `dbt`'s
 tracing, which works once per process, so run more than one test with
 `cargo nextest`, not `cargo test`.
 
+Debug builds of `dbt` need more stack than the 2 MiB a test thread gets by
+default, and a test that runs out aborts with `SIGABRT` (or `SIGSEGV`) before
+printing anything. Export `RUST_MIN_STACK=16777216` (16 MiB, what
+`cargo xtask test` sets for debug builds) in the shell you run the commands
+below from.
+
 Replaying needs no setup. The tests read the `fusion_tests` profile from
 `~/.dbt/profiles.yml`, and when that file does not define it, they use the
 placeholder profile in
@@ -75,6 +81,27 @@ The existing recordings of a recorded test are deleted first, so record only
 the tests you mean to.
 
 Set `DBT_FS_RECORD_NO_YAML=1` to skip writing `recordings.yaml`.
+
+`ADAPTER_RECORD=1` records only together with `GOLDIE_UPDATE=1`; on its own
+the tests replay as usual.
+
+### Checking a driver change
+
+Replay reads the recorded results, so it never loads a driver. To check how a
+new ADBC driver changes the tests' output, record with it and review the
+goldies with `git diff`, then restore what you don't mean to commit.
+
+Debug builds can load drivers from an
+[arrow-adbc](https://github.com/apache/arrow-adbc) checkout instead of the
+CDN:
+
+```sh
+export ADBC_REPOSITORY=<arrow-adbc>/go/adbc/pkg  # where `make` builds the drivers
+export DISABLE_CDN_DRIVER_CACHE=1
+```
+
+`dbt` runs `make` in that directory before loading a driver; set
+`DISABLE_AUTO_DRIVER_REBUILD=1` to skip it.
 
 Adapters that are not generally available are refused by release builds;
 debug builds (the default for tests) allow them, or set

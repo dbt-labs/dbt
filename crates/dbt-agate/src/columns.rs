@@ -6,7 +6,7 @@ use minijinja::listener::RenderingEventListener;
 use minijinja::value::{Enumerator, Object, ObjectRepr};
 use minijinja::{State, Value};
 
-use crate::table::TableRepr;
+use crate::table_repr::TableRepr;
 use crate::{MappedSequence, Tuple, TupleRepr, ZippedTupleRepr};
 
 #[derive(Debug)]

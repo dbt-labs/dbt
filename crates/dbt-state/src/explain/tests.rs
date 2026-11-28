@@ -920,6 +920,30 @@ fn render_service_explain_response_renders_tree() {
 }
 
 #[test]
+fn render_service_explain_response_renders_shadow_override_badge() {
+    let response = GetExplainMessagesResponse {
+        messages: vec![ExplainMessageEntry {
+            execution_decision_id: "decision-1".to_string(),
+            decision: SubmitSqlResultType::ReadyToExecute as i32,
+            decision_description: "shadow mode override".to_string(),
+            explain_lines: vec![ExplainLine {
+                text: "overridden".to_string(),
+                marker: Some(ExplainMarker::Info as i32),
+                badge: Some(ExplainBadge::ShadowOverride as i32),
+                children: Vec::new(),
+            }],
+        }],
+    };
+
+    let output = render_service_explain_response(&response);
+
+    assert_eq!(
+        output,
+        "READY_TO_EXECUTE decision-1 - shadow mode override\n  - overridden [INFO, SHADOW_OVERRIDE]"
+    );
+}
+
+#[test]
 fn render_service_explain_response_drops_unspecified_line_metadata() {
     let response = GetExplainMessagesResponse {
         messages: vec![ExplainMessageEntry {

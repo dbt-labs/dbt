@@ -593,9 +593,13 @@ impl Task for RunTask {
                         .await
                 }
                 (None, Ok(RunExecutionPath::LakeCompute)) => {
-                    self.task_hooks
-                        .run_on_lake_compute(ctx, Arc::clone(&self.node), task_result.clone())
-                        .await
+                    run_on_lake_compute_with_hooks(
+                        ctx,
+                        &self.node,
+                        task_result.clone(),
+                        &self.task_hooks,
+                    )
+                    .await
                 }
             };
 
@@ -815,7 +819,10 @@ async fn execute_run_cache_service_clone_with_hooks(
             hook_node.grants_order()
         });
     let hook_executor = hook_node
-        .map(|hook_node| build_reuse_hook_executor(ctx, node, task_result, hook_node))
+        .map(|hook_node| {
+            ctx.run_base_context(node)
+                .map(|base_context| build_reuse_hook_executor(base_context, task_result, hook_node))
+        })
         .transpose()
         .map_err(RunCacheCloneError::Fatal)?;
     execute_run_cache_service_clone(
@@ -844,7 +851,8 @@ async fn execute_hooks_for_run_cache_skip_reuse(
     let Some(hook_node) = run_cache_reuse_hook_node(node, service_default) else {
         return Ok(());
     };
-    let hook_executor = build_reuse_hook_executor(ctx, node, task_result, hook_node)?;
+    let hook_executor =
+        build_reuse_hook_executor(ctx.run_base_context(node)?, task_result, hook_node);
     let ctx_inner = ctx.clone();
     run_blocking_task_operation(move || {
         hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
@@ -932,17 +940,15 @@ fn model_grants_order(
 }
 
 fn build_reuse_hook_executor(
-    ctx: &TaskRunnerCtx,
-    node: &dyn InternalDbtNodeAttributes,
+    base_context: minijinja::Value,
     task_result: Option<&TaskResult>,
     hook_node: RunCacheReuseHookNode,
-) -> FsResult<RunCacheReuseHookExecutor> {
-    let base_context = ctx.run_base_context(node)?;
+) -> RunCacheReuseHookExecutor {
     let sql = task_result.map(|task_result| task_result.sql_instruction.sql.clone());
-    Ok(Arc::new(move |ctx, phase| {
+    Arc::new(move |ctx, phase| {
         let sql = sql.as_deref();
         execute_hook_node_blocking(&hook_node, ctx, &base_context, sql, phase)
-    }))
+    })
 }
 
 fn hooks_are_configured(hooks: &Option<dbt_schemas::schemas::common::Hooks>) -> bool {
@@ -1005,6 +1011,47 @@ fn execute_hook_node_blocking(
             phase,
         ),
     }
+}
+
+/// Runs a compute_platform write between the node's pre-hooks and post-hooks, on its own adapter.
+async fn run_on_lake_compute_with_hooks(
+    ctx: &mut TaskRunnerCtx,
+    node: &Arc<dyn InternalDbtNodeAttributes>,
+    task_result: Option<TaskResult>,
+    task_hooks: &Arc<dyn RunTaskHooks>,
+) -> FsResult<NodeStatus> {
+    // The bypass skips the materialization macro, which runs node hooks; of the models,
+    // only a table or an incremental is written.
+    let hook_node =
+        RunCacheReuseHookNode::from_node(node.as_ref()).filter(|hook_node| match hook_node {
+            RunCacheReuseHookNode::Model(model) => matches!(
+                model.materialized(),
+                DbtMaterialization::Table | DbtMaterialization::Incremental
+            ),
+            _ => true,
+        });
+    let Some(hook_node) = hook_node else {
+        return task_hooks
+            .run_on_lake_compute(ctx, Arc::clone(node), task_result)
+            .await;
+    };
+    let hook_executor = build_reuse_hook_executor(
+        ctx.compute_platform_base_context(node.as_ref())?,
+        task_result.as_ref(),
+        hook_node,
+    );
+
+    let pre_hooks = Arc::clone(&hook_executor);
+    let ctx_inner = ctx.clone();
+    run_blocking_task_operation(move || pre_hooks(&ctx_inner, RunCacheReuseHookPhase::Pre))
+        .await??;
+    let status = task_hooks
+        .run_on_lake_compute(ctx, Arc::clone(node), task_result)
+        .await?;
+    let ctx_inner = ctx.clone();
+    run_blocking_task_operation(move || hook_executor(&ctx_inner, RunCacheReuseHookPhase::Post))
+        .await??;
+    Ok(status)
 }
 
 async fn run_cache_after_success_action(

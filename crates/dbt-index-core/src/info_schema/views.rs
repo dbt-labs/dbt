@@ -119,6 +119,18 @@ fn resource_type_literal(table: &TableSpec) -> Option<&'static str> {
     }
 }
 
+/// The statement that `views.sql` has for the table in `file`, `<ns>.<name>.parquet`: what
+/// [`base_view_statement`] gives without a `dir`. `None` for a file that is not named as a
+/// table's is.
+pub fn statement_for_file(file: &str) -> Option<String> {
+    let qualified = file.strip_suffix(".parquet")?;
+    let (ns, name) = qualified.split_once('.')?;
+    let is_table = Ns::ALL.iter().any(|known| known.prefix() == ns) && !name.is_empty();
+    is_table.then(|| {
+        format!("CREATE OR REPLACE VIEW {qualified} AS SELECT * FROM read_parquet('{file}')")
+    })
+}
+
 /// The derived views, in creation order: a view's prerequisites come first, so
 /// a caller executing the list top to bottom never binds against a view that
 /// does not exist yet.

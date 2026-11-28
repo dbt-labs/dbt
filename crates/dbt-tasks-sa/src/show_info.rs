@@ -11,6 +11,7 @@ use dbt_common::io_args;
 use dbt_common::pretty_string::make_title;
 use dbt_common::tracing::emit::emit_info_event;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
+use dbt_index_core::info_schema::injected::ResolvedInjectedTable;
 use dbt_index_core::info_schema::schema::INFO_SCHEMA;
 use dbt_index_core::info_schema::spec::Ns;
 use dbt_pretty_table::{make_column_names, pretty_data_table};
@@ -77,11 +78,13 @@ pub fn run_show_info_schema(
     info: Option<&str>,
     inline: Option<&str>,
     metadata_dir: &Path,
+    tables: &[ResolvedInjectedTable<'static>],
     format: io_args::DisplayFormat,
     limit: Option<usize>,
     token: CancellationToken,
 ) -> FsResult<()> {
-    let sql = render_show_info_sql(info, inline)?;
+    let injected = injected_tables(tables);
+    let sql = render_show_info_sql(info, inline, &injected)?;
     // Reads the project metadata directly, so there is no artifact to generate first and
     // nothing to go stale. What can still be missing is the metadata itself: a project that
     // has only ever been parsed has written no epochs.
@@ -93,7 +96,7 @@ pub fn run_show_info_schema(
             metadata_dir.display()
         ));
     }
-    let adapter = open_epoch_adapter(metadata_dir, token)
+    let adapter = open_epoch_adapter(metadata_dir, tables, token)
         .map_err(|e| fs_err!(ErrorCode::InfoSchemaUnavailable, "{e}"))?;
 
     let limited_sql = wrap_with_limit(sql, limit);
@@ -161,9 +164,26 @@ pub fn run_show_info_schema(
     Ok(())
 }
 
-fn render_show_info_sql(info: Option<&str>, inline: Option<&str>) -> FsResult<String> {
+/// The public injected tables whose flag is on, each with its qualified name: views by their
+/// name, as the catalog's tables are.
+fn injected_tables(tables: &[ResolvedInjectedTable<'static>]) -> Vec<InjectedView> {
+    tables
+        .iter()
+        .filter(|resolved| resolved.is_public())
+        .map(|resolved| (resolved.table.name(), resolved.table.qualified_name()))
+        .collect()
+}
+
+/// The name of an injected table, and its qualified name.
+type InjectedView = (&'static str, String);
+
+fn render_show_info_sql(
+    info: Option<&str>,
+    inline: Option<&str>,
+    injected: &[InjectedView],
+) -> FsResult<String> {
     if let Some(view) = info {
-        return qualify_show_view(view);
+        return qualify_show_view(view, injected);
     }
     let Some(inline) = inline else {
         return Err(fs_err!(
@@ -172,7 +192,7 @@ fn render_show_info_sql(info: Option<&str>, inline: Option<&str>) -> FsResult<St
         ));
     };
     let mut env = minijinja::Environment::new();
-    env.add_global("info_schema", make_show_info_schema_fn());
+    env.add_global("info_schema", make_show_info_schema_fn(injected.to_vec()));
     env.render_str(inline, (), &[]).map_err(|e| {
         fs_err!(
             ErrorCode::InvalidArgument,
@@ -181,35 +201,43 @@ fn render_show_info_sql(info: Option<&str>, inline: Option<&str>) -> FsResult<St
     })
 }
 
-fn qualify_show_view(view: &str) -> FsResult<String> {
-    match public_info_schema_table(view) {
-        Some(spec) => Ok(format!("select * from {}", spec.qualified_name())),
+fn qualify_show_view(view: &str, injected: &[InjectedView]) -> FsResult<String> {
+    match public_info_schema_table(view, injected) {
+        Some(qualified) => Ok(format!("select * from {qualified}")),
         None => Err(fs_err!(
             ErrorCode::InvalidArgument,
             "unknown information schema view '{view}'. Available views: {}",
-            public_info_schema_names()
+            public_info_schema_names(injected)
         )),
     }
 }
 
-fn public_info_schema_table(
-    view: &str,
-) -> Option<&'static dbt_index_core::info_schema::spec::TableSpec> {
+/// The qualified name of the public table `view` names: one of the catalog's, else one of
+/// `injected`.
+fn public_info_schema_table(view: &str, injected: &[InjectedView]) -> Option<String> {
     INFO_SCHEMA
         .iter()
         .find(|t| t.ns != Ns::DbtInternal && t.name == view)
+        .map(|t| t.qualified_name())
+        .or_else(|| {
+            injected
+                .iter()
+                .find(|(name, _)| *name == view)
+                .map(|(_, qualified)| qualified.clone())
+        })
 }
 
-fn public_info_schema_names() -> String {
+fn public_info_schema_names(injected: &[InjectedView]) -> String {
     INFO_SCHEMA
         .iter()
         .filter(|t| t.ns != Ns::DbtInternal)
         .map(|t| t.name)
+        .chain(injected.iter().map(|(name, _)| *name))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn make_show_info_schema_fn() -> Value {
+fn make_show_info_schema_fn(injected: Vec<InjectedView>) -> Value {
     use minijinja::value::Kwargs;
     use minijinja::{Error as MjError, ErrorKind};
     Value::from_function(
@@ -220,24 +248,27 @@ fn make_show_info_schema_fn() -> Value {
                     "info_schema(view): first argument must be a view name string",
                 )
             })?;
-            let spec = public_info_schema_table(view).ok_or_else(|| {
+            let qualified = public_info_schema_table(view, &injected).ok_or_else(|| {
                 MjError::new(
                     ErrorKind::InvalidOperation,
                     format!(
                         "info_schema: '{view}' is not available to dbt show. \
                          Available views: {}",
-                        public_info_schema_names()
+                        public_info_schema_names(&injected)
                     ),
                 )
             })?;
-            Ok(Value::from(spec.qualified_name()))
+            Ok(Value::from(qualified))
         },
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{inline_calls_info_schema, queries_info_schema, wrap_with_limit};
+    use super::{
+        InjectedView, inline_calls_info_schema, queries_info_schema, render_show_info_sql,
+        wrap_with_limit,
+    };
 
     /// This predicate picks the execution engine, so a false positive answers a
     /// warehouse question from local parquet. Everything here is a routing case.
@@ -304,5 +335,45 @@ mod tests {
         assert!(queries_info_schema(Some("models"), None));
         assert!(!queries_info_schema(None, Some("select 1 as one")));
         assert!(!queries_info_schema(None, None));
+    }
+
+    /// A table that the build injects is a view, by its name, to `--info` and to
+    /// `info_schema()`. A table of the catalog keeps its own schema. Without the injected
+    /// table, its name is unknown.
+    #[test]
+    fn injected_tables_are_views() {
+        let injected: Vec<InjectedView> = vec![("widget_runs", "dbt_rt.widget_runs".to_string())];
+        assert_eq!(
+            render_show_info_sql(Some("widget_runs"), None, &injected).unwrap(),
+            "select * from dbt_rt.widget_runs"
+        );
+        assert_eq!(
+            render_show_info_sql(
+                None,
+                Some("select * from {{ info_schema('widget_runs') }}"),
+                &injected
+            )
+            .unwrap(),
+            "select * from dbt_rt.widget_runs"
+        );
+        assert_eq!(
+            render_show_info_sql(Some("models"), None, &injected).unwrap(),
+            "select * from dbt.models"
+        );
+        // The views an unknown view's error lists: the catalog's, then the injected ones.
+        let listed = |injected: &[InjectedView]| -> Vec<String> {
+            let error = render_show_info_sql(Some("nope"), None, injected)
+                .unwrap_err()
+                .to_string();
+            let (_, names) = error.split_once("Available views: ").expect(&error);
+            names.split(", ").map(str::to_string).collect()
+        };
+        let own = listed(&[]);
+        assert!(!own.contains(&"widget_runs".to_string()), "{own:?}");
+        assert!(own.contains(&"models".to_string()), "{own:?}");
+        let with_injected = listed(&injected);
+        assert_eq!(with_injected[..own.len()], own[..]);
+        assert_eq!(with_injected[own.len()..], ["widget_runs"]);
+        assert!(render_show_info_sql(Some("widget_runs"), None, &[]).is_err());
     }
 }

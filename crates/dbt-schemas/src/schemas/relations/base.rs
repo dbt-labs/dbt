@@ -6,7 +6,9 @@ pub use crate::schemas::dbt_catalogs::TableFormat;
 
 use chrono::format::SecondsFormat;
 use dbt_adapter_core::{AdapterType, quote_char};
-use dbt_adapter_sql::ident::escaped_identifier;
+use dbt_adapter_sql::ident::Ident;
+use dbt_adapter_sql::join_dotted;
+use dbt_adapter_sql::tokenizer::QuotingStyle;
 use dbt_common::FsResult;
 use dbt_common::constants::DBT_CTE_PREFIX;
 use dbt_schema_store::CanonicalFqn;
@@ -174,7 +176,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         }
     }
 
-    fn database_as_quoted_str(&self) -> Result<String, MinijinjaError> {
+    fn database_as_quoted_str(&self) -> Result<Ident, MinijinjaError> {
         match self.database() {
             Some(val) => Ok(self.quoted(val)),
             None => jinja_err!(
@@ -198,7 +200,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         }
     }
 
-    fn schema_as_quoted_str(&self) -> Result<String, MinijinjaError> {
+    fn schema_as_quoted_str(&self) -> Result<Ident, MinijinjaError> {
         match self.schema() {
             Some(val) => Ok(self.quoted(val)),
             None => jinja_err!(
@@ -409,12 +411,50 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         quote_char(self.adapter_type())
     }
 
-    /// Quote a relation component (database, schema, or identifier)
-    fn quoted(&self, id: &str) -> String {
+    /// Quote a relation component (database, schema, or identifier) with
+    /// `dbt-adapter-sql`'s [Ident]. Render it with `.display(adapter_type)`.
+    ///
+    /// dbt-adapters v1 always quotes a component when its quote policy is on,
+    /// so `must_quote` is `true` here instead of leaving the decision to the
+    /// adapter's identifier rules.
+    fn quoted(&self, id: &str) -> Ident {
+        match self.adapter_type() {
+            // ClickHouse accepts both "..." and `...`. dbt-clickhouse renders
+            // relations with its `quote_character`, the backtick.
+            // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/relation.py
+            AdapterType::ClickHouse => Ident::unquoted(QuotingStyle::Backtick, id),
+            // Athena's DML runs on Trino, which quotes identifiers with "...".
+            // dbt-athena renders relations with its `quote_character`, the
+            // double quote. Backticks are only for Hive DDL.
+            // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-athena/src/dbt/adapters/athena/relation.py
+            AdapterType::Athena => Ident::unquoted(QuotingStyle::Double, id),
+            adapter_type => Ident::from_string(id, true, adapter_type),
+        }
+    }
+
+    /// The database, schema and identifier as [Ident]s that follow this relation's quote
+    /// policy.
+    ///
+    /// Display them with [adapter_type](Self::adapter_type) to render each part
+    /// quoted where the policy or the adapter's identifier rules require it.
+    ///
+    /// An empty database stays an empty, unquoted [Ident] whatever the policy says.
+    #[inline(never)]
+    fn fqn_pieces(&self) -> Result<(Ident, Ident, Ident), MinijinjaError> {
         let adapter_type = self.adapter_type();
-        let quote = quote_char(adapter_type);
-        let escaped = escaped_identifier(id.into(), adapter_type, quote);
-        format!("{quote}{escaped}{quote}")
+        let policy = self.quote_policy();
+
+        let database = self.database_as_str()?;
+        let database = if database.is_empty() {
+            Ident::plain("")
+        } else {
+            Ident::from_string(database, policy.database, adapter_type)
+        };
+        let schema = Ident::from_string(self.schema_as_str()?, policy.schema, adapter_type);
+        let identifier =
+            Ident::from_string(self.identifier_as_str()?, policy.identifier, adapter_type);
+
+        Ok((database, schema, identifier))
     }
 
     /// Get the semantic name fully qualified for a Relation
@@ -453,7 +493,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
             }
         }
 
-        parts.join(".")
+        join_dotted(parts.iter().map(|part| part.display(self.adapter_type()))).to_string()
     }
 
     /// Helper for
@@ -465,7 +505,14 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     ///
     /// This is how a specific database provider resolve and store an object's name if quoting is not used
     /// For example, they'll be upper case in Snowflake https://docs.snowflake.com/en/sql-reference/identifiers-syntax#unquoted-identifiers
-    fn normalize_component<'a>(&self, component: &'a str) -> Cow<'a, str>;
+    fn normalize_component<'a>(&self, component: &'a str) -> Cow<'a, str> {
+        use AdapterType::*;
+        match self.adapter_type() {
+            Salesforce | Bigquery | ClickHouse => Cow::Borrowed(component),
+            Snowflake => Cow::Owned(component.to_uppercase()),
+            _ => Cow::Owned(component.to_lowercase()),
+        }
+    }
 
     /// Render this relation as a string.
     fn render_self_as_str(&self) -> String {
@@ -479,13 +526,13 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
 
         let include_policy = self.include_policy();
         let quote_policy = self.quote_policy();
-        let mut parts: Vec<String> = Vec::new();
+        let mut parts: Vec<Ident> = Vec::new();
 
         let quote_part = |val: &str, quote_policy: bool| {
             if quote_policy {
                 self.quoted(val)
             } else {
-                val.to_string()
+                Ident::plain(val)
             }
         };
 
@@ -508,7 +555,8 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
             parts.push(quote_part(identifier, quote_policy.identifier));
         }
 
-        let rendered = parts.join(".");
+        let rendered =
+            join_dotted(parts.iter().map(|part| part.display(self.adapter_type()))).to_string();
 
         if matches!(self.adapter_type(), AdapterType::Databricks) {
             rendered.to_ascii_lowercase()

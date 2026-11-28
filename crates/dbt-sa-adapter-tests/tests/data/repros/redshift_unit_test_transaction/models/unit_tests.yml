@@ -1,0 +1,10 @@
+unit_tests:
+  - name: test_doubled
+    model: doubled
+    given:
+      - input: ref('src')
+        rows:
+          - {id: 2}
+    expect:
+      rows:
+        - {doubled: 4}

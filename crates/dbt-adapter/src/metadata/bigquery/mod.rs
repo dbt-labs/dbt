@@ -682,10 +682,11 @@ fn qualifier_options_for_info_schema_view(
 ///       the specific requirements for the given view name since this is only used to
 ///       fetch the view schema, so the specific location doesn't really matter.
 pub(crate) fn generate_system_table_fqn(
-    dataset: &str,
+    dataset: &dbt_adapter_sql::ident::Ident,
     view_name: &str,
     user_preferred_region: Option<&str>,
 ) -> String {
+    let dataset = dataset.display(AdapterType::Bigquery);
     let uppercase_view_name = view_name.to_uppercase();
     let qualifier_options = qualifier_options_for_info_schema_view(&uppercase_view_name);
     let sys_ident = if is_sys_identifier(&uppercase_view_name) {
@@ -2148,11 +2149,19 @@ mod tests {
     fn test_generate_system_table_fqn_always_dataset_only() {
         let dataset_only_view = "PARTITIONS";
         assert_eq!(
-            generate_system_table_fqn("`my-project`", dataset_only_view, None),
+            generate_system_table_fqn(
+                &Ident::new("my-project").into_inner(),
+                dataset_only_view,
+                None
+            ),
             "`my-project`.INFORMATION_SCHEMA.PARTITIONS"
         );
         assert_eq!(
-            generate_system_table_fqn("`my-project`", dataset_only_view, Some("eu")),
+            generate_system_table_fqn(
+                &Ident::new("my-project").into_inner(),
+                dataset_only_view,
+                Some("eu")
+            ),
             "`my-project`.INFORMATION_SCHEMA.PARTITIONS"
         );
     }
@@ -2167,12 +2176,20 @@ mod tests {
         let dataset_or_region_view = "TABLES";
 
         assert_eq!(
-            generate_system_table_fqn("`my_dataset`", dataset_or_region_view, None),
+            generate_system_table_fqn(
+                &Ident::from_unquoted("my_dataset").into_inner(),
+                dataset_or_region_view,
+                None
+            ),
             "`my_dataset`.INFORMATION_SCHEMA.TABLES"
         );
         // prefer user's region settings if specified
         assert_eq!(
-            generate_system_table_fqn("`my_dataset`", dataset_or_region_view, Some("eu")),
+            generate_system_table_fqn(
+                &Ident::from_unquoted("my_dataset").into_inner(),
+                dataset_or_region_view,
+                Some("eu")
+            ),
             "`region-eu`.INFORMATION_SCHEMA.TABLES"
         );
     }
@@ -2188,12 +2205,20 @@ mod tests {
 
         // use US as the default region if the user hasn't specified one
         assert_eq!(
-            generate_system_table_fqn("`my_dataset`", region_only_view, None),
+            generate_system_table_fqn(
+                &Ident::from_unquoted("my_dataset").into_inner(),
+                region_only_view,
+                None
+            ),
             "`region-us`.INFORMATION_SCHEMA.JOBS"
         );
         // prefer user's region settings if specified
         assert_eq!(
-            generate_system_table_fqn("`my_dataset`", region_only_view, Some("eu")),
+            generate_system_table_fqn(
+                &Ident::from_unquoted("my_dataset").into_inner(),
+                region_only_view,
+                Some("eu")
+            ),
             "`region-eu`.INFORMATION_SCHEMA.JOBS"
         );
     }
@@ -2201,11 +2226,15 @@ mod tests {
     #[test]
     fn generate_system_table_fqn_quotes_empty_and_keyword_view_names() {
         assert_eq!(
-            generate_system_table_fqn("`dataset`", "", None),
+            generate_system_table_fqn(&Ident::from_unquoted("dataset").into_inner(), "", None),
             "INFORMATION_SCHEMA.``"
         );
         assert_eq!(
-            generate_system_table_fqn("`dataset`", "select", None),
+            generate_system_table_fqn(
+                &Ident::from_unquoted("dataset").into_inner(),
+                "select",
+                None
+            ),
             "INFORMATION_SCHEMA.`SELECT`"
         );
     }
@@ -2213,7 +2242,7 @@ mod tests {
     #[test]
     fn generate_system_table_fqn_quotes_unknown_view_and_region() {
         let fqn = generate_system_table_fqn(
-            "`dataset`",
+            &Ident::from_unquoted("dataset").into_inner(),
             r"unknown\`; SELECT 1; --",
             Some(r"eu\`; SELECT 2; --"),
         );
@@ -2225,8 +2254,11 @@ mod tests {
             vec![sql.as_str()]
         );
 
-        let region_fqn =
-            generate_system_table_fqn("`dataset`", "JOBS", Some(r"eu\`; SELECT 2; --"));
+        let region_fqn = generate_system_table_fqn(
+            &Ident::from_unquoted("dataset").into_inner(),
+            "JOBS",
+            Some(r"eu\`; SELECT 2; --"),
+        );
         let region_sql = format!("SELECT * FROM {region_fqn} LIMIT 0");
         assert_eq!(
             DefaultStmtSplitter.split(&region_sql, AdapterType::Bigquery),

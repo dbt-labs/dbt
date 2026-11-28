@@ -3,7 +3,7 @@ use dbt_adapter_core::AdapterType;
 /// Escape `s` for inclusion inside a single-quoted SQL *string literal*, so a
 /// value can never terminate the literal early. The literal-value member of
 /// the family next to [`sanitize_identifier`](crate::ident::sanitize_identifier)
-/// (strip) and [`quote_identifier`](crate::ident::quote_identifier) (quote),
+/// (strip) and [`Ident::from_unquoted`](crate::ident::Ident::from_unquoted) (quote),
 /// which handle identifiers.
 pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
     match backend {

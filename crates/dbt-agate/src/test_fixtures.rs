@@ -116,3 +116,22 @@ pub fn stringly_rows_of(table: &AgateTable, sep: &str) -> Vec<String> {
         })
         .collect()
 }
+
+/// | id: i32 | country: str |
+#[cfg(test)]
+pub(crate) fn simple_record_batch() -> Arc<RecordBatch> {
+    use arrow_array::{ArrayRef, Int32Array};
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, true),
+        Field::new("country", DataType::Utf8, true),
+    ]));
+    let id_array: ArrayRef = Arc::new(Int32Array::from(vec![Some(42), Some(43), Some(44)]));
+    let country_array: ArrayRef = Arc::new(StringArray::from(vec![
+        Some("Brazil"),
+        Some("USA"),
+        Some("Canada"),
+    ]));
+    let batch = RecordBatch::try_new(schema, vec![id_array, country_array]).unwrap();
+    Arc::new(batch)
+}
