@@ -472,6 +472,7 @@ impl JinjaEnvBuilder {
 
     fn register_filters(&mut self) {
         dbt_jinja_filters::register_filters(&mut self.env);
+        dbt_agate::register_decimal_int_filter(&mut self.env);
     }
 
     fn register_tests(&mut self) {

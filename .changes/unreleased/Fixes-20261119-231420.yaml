@@ -1,0 +1,7 @@
+kind: Fixes
+body: Support the Jinja int filter on Agate decimal values
+time: 2026-11-19T23:14:20.010435+05:00
+custom:
+    author: ViktorBystrov72
+    issue: "17196"
+    project: dbt-core
