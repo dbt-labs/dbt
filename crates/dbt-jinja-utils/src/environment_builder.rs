@@ -424,7 +424,9 @@ impl JinjaEnvBuilder {
 
     /// Build the Minijinja Environment with all configured settings.
     pub fn build(mut self) -> JinjaEnv {
-        // Register dbt filters and extensions to built-ins.
+        // Register filters (as_bool, as_number, as_native, as_text)
+        // These are used to convert values to the appropriate type that might be
+        // expected by the jinja template.
         self.register_filters();
 
         // Register tests

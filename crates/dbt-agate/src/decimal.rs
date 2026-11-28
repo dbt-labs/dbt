@@ -1,5 +1,6 @@
 use arrow::array::ArrowNativeTypeOp as _;
 use arrow::datatypes::{Decimal32Type, Decimal64Type, Decimal128Type, Decimal256Type, DecimalType};
+use arrow_buffer::ArrowNativeType as _;
 use minijinja::arg_utils::ArgsIter;
 use minijinja::value::{Object, ObjectRepr};
 use minijinja::{Environment, Error, ErrorKind, State, Value, assert_nullary_args};
@@ -120,6 +121,54 @@ impl<T: DecimalType> DecimalValue<T> {
         self.value == T::Native::ZERO
     }
 
+    fn to_jinja_integer(&self) -> Result<Value, Error> {
+        self.integer_value().ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidOperation,
+                "Decimal value does not fit in a Jinja integer",
+            )
+        })
+    }
+
+    fn integer_value(&self) -> Option<Value> {
+        let ten = T::Native::usize_as(10);
+        let mut coefficient = if self.scale > 0 {
+            // The quotient truncates toward zero. If the divisor exceeds the native
+            // range, the magnitude of the coefficient must be smaller than the divisor.
+            ten.pow_checked(self.scale as u32)
+                .map_or(T::Native::ZERO, |divisor| self.value.div_wrapping(divisor))
+        } else {
+            self.value
+        };
+        let is_negative = coefficient < T::Native::ZERO;
+        let mut magnitude = 0_u128;
+        let mut place = 1_u128;
+        // Use the native conversion for narrow coefficients and for the remaining
+        // high digits of wider coefficients. A remainder modulo ten always fits i64.
+        while coefficient.to_i64().is_none() {
+            let digit = u128::from(coefficient.mod_wrapping(ten).to_i64()?.unsigned_abs());
+            magnitude = magnitude.checked_add(digit.checked_mul(place)?)?;
+            coefficient = coefficient.div_wrapping(ten);
+            place = place.checked_mul(10)?;
+        }
+        magnitude = magnitude
+            .checked_add(u128::from(coefficient.to_i64()?.unsigned_abs()).checked_mul(place)?)?;
+        if magnitude != 0 && self.scale < 0 {
+            magnitude = magnitude
+                .checked_mul(10_u128.checked_pow(u32::from(self.scale.unsigned_abs()))?)?;
+        }
+        if is_negative {
+            let integer = if magnitude == i128::MIN.unsigned_abs() {
+                i128::MIN
+            } else {
+                -i128::try_from(magnitude).ok()?
+            };
+            Some(Value::from(integer))
+        } else {
+            Some(i128::try_from(magnitude).map_or_else(|_| Value::from(magnitude), Value::from))
+        }
+    }
+
     // TODO: implement operations on decimal scalars like
     // the code in the arrow-arith crate
 }
@@ -151,21 +200,7 @@ impl<T: DecimalType> Object for DecimalValue<T> {
     ) -> Result<Value, Error> {
         if method == "__int__" {
             assert_nullary_args!("DecimalValue.__int__", args)?;
-            // Arrow applies the scale with full decimal precision.
-            let decimal = T::format_decimal(self.value, self.precision, self.scale);
-            let whole = decimal
-                .split_once('.')
-                .map_or(decimal.as_str(), |(whole, _)| whole);
-            return whole
-                .parse::<i128>()
-                .map(Value::from)
-                .or_else(|_| whole.parse::<u128>().map(Value::from))
-                .map_err(|_| {
-                    Error::new(
-                        ErrorKind::InvalidOperation,
-                        "Decimal value does not fit in a Jinja integer",
-                    )
-                });
+            return self.to_jinja_integer();
         }
 
         if let Some(value) = self.get_value(&Value::from(method)) {
@@ -186,33 +221,36 @@ pub fn register_decimal_int_filter(env: &mut Environment<'_>) {
     env.add_filter("int", int_filter);
 }
 
-fn int_filter(state: &State<'_, '_>, args: &[Value]) -> Result<Value, Error> {
-    let Some(decimal) = args
+fn int_filter(args: &[Value]) -> Result<Value, Error> {
+    let integer = args
         .iter()
         .find(|value| !value.is_kwargs())
         .and_then(Value::as_object)
-        .filter(|object| {
+        .and_then(|object| {
             object
                 .downcast_ref::<DecimalValue<Decimal32Type>>()
-                .is_some()
-                || object
-                    .downcast_ref::<DecimalValue<Decimal64Type>>()
-                    .is_some()
-                || object
-                    .downcast_ref::<DecimalValue<Decimal128Type>>()
-                    .is_some()
-                || object
-                    .downcast_ref::<DecimalValue<Decimal256Type>>()
-                    .is_some()
-        })
-    else {
-        return minijinja::filters::int(args);
-    };
+                .map(DecimalValue::to_jinja_integer)
+                .or_else(|| {
+                    object
+                        .downcast_ref::<DecimalValue<Decimal64Type>>()
+                        .map(DecimalValue::to_jinja_integer)
+                })
+                .or_else(|| {
+                    object
+                        .downcast_ref::<DecimalValue<Decimal128Type>>()
+                        .map(DecimalValue::to_jinja_integer)
+                })
+                .or_else(|| {
+                    object
+                        .downcast_ref::<DecimalValue<Decimal256Type>>()
+                        .map(DecimalValue::to_jinja_integer)
+                })
+        });
 
-    match decimal.call_method(state, "__int__", &[], &[]) {
-        // Out-of-range decimals use the built-in filter's default argument.
-        Err(error) if error.kind() == ErrorKind::InvalidOperation => minijinja::filters::int(args),
-        result => result,
+    match integer {
+        Some(Ok(value)) => Ok(value),
+        // Non-decimals and out-of-range decimals retain the built-in behavior.
+        _ => minijinja::filters::int(args),
     }
 }
 
@@ -269,6 +307,11 @@ mod tests {
                 0,
                 "340282366920938463463374607431768211456|7",
             ),
+            (
+                i256::from_i128(i128::MIN),
+                0,
+                "-170141183460469231731687303715884105728|-170141183460469231731687303715884105728",
+            ),
         ]
         .map(|(value, scale, expected)| {
             (
@@ -296,6 +339,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rendered, "False|True|True");
+    }
+
+    #[test]
+    fn narrow_decimals_use_the_same_integer_conversion_in_both_jinja_paths() {
+        let env = decimal_environment();
+        let template = env
+            .template_from_str("{{ value | int }}|{{ value.__int__() }}")
+            .unwrap();
+        let cases = [
+            (
+                Value::from_object(DecimalValue::<Decimal32Type>::new(-199, 3, 2)),
+                "-1|-1",
+            ),
+            (
+                Value::from_object(DecimalValue::<Decimal64Type>::new(9_999_999_999, 10, -2)),
+                "999999999900|999999999900",
+            ),
+        ];
+        for (value, expected) in cases {
+            let rendered = template
+                .render(minijinja::context!(value => value), &[])
+                .unwrap();
+            assert_eq!(rendered, expected);
+        }
     }
 
     #[test]
